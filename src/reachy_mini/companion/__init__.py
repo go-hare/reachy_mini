@@ -1,7 +1,7 @@
 """Companion-layer orchestration between kernel truth and outer expression."""
 
-from emoticorebot.companion.models import CompanionIntent, SurfaceExpression
-from emoticorebot.companion.orchestrator import build_companion_surface
+from reachy_mini.companion.models import CompanionIntent, SurfaceExpression
+from reachy_mini.companion.orchestrator import build_companion_surface
 
 __all__ = [
     "CompanionIntent",
