@@ -1,10 +1,10 @@
-"""Prompt assembly for the front-only agent runtime."""
+"""Prompt assembly for the front service."""
 
 from __future__ import annotations
 
 from datetime import datetime
 
-from reachy_mini.agent_runtime.memory import MemoryView
+from reachy_mini.agent_core.memory import MemoryView
 
 _STYLE_HINTS = {
     "friendly_concise": "语气温和、自然、简洁，像就在桌边陪着说话。",
@@ -14,7 +14,7 @@ _STYLE_HINTS = {
 
 
 class FrontPromptBuilder:
-    """Build user prompts for the front-only text layer."""
+    """Build prompts for fast user-facing replies."""
 
     def build_user_prompt(
         self,
@@ -79,6 +79,44 @@ class FrontPromptBuilder:
                 sections.extend(["", "## 最近对话", "\n".join(lines)])
 
         sections.extend(["", "## 当前用户输入", user_text.strip()])
+        return "\n".join(part for part in sections if part is not None)
+
+    def build_presentation_prompt(
+        self,
+        *,
+        user_text: str,
+        kernel_output: str,
+        memory: MemoryView,
+        style: str,
+    ) -> str:
+        """Build the front prompt that beautifies kernel output."""
+        sections: list[str] = [
+            "## 任务",
+            "你现在只负责把 kernel 的原始结果整理成最终给用户看的自然回复。",
+            "不得改变事实、路径、结论、命令或错误信息。",
+            "可以增加一点在场感，但不要新增 kernel 没有给出的事实。",
+            "",
+            "## 表达风格",
+            _STYLE_HINTS.get(style, _STYLE_HINTS["friendly_concise"]),
+        ]
+
+        soul_anchor = str(memory.projections.get("soul_anchor", "") or "").strip()
+        user_anchor = str(memory.projections.get("user_anchor", "") or "").strip()
+        if soul_anchor:
+            sections.extend(["", "## 人格锚点", soul_anchor])
+        if user_anchor:
+            sections.extend(["", "## 用户锚点", user_anchor])
+
+        sections.extend(
+            [
+                "",
+                "## 当前用户输入",
+                user_text.strip(),
+                "",
+                "## Kernel 原始输出",
+                kernel_output.strip(),
+            ]
+        )
         return "\n".join(part for part in sections if part is not None)
 
     @staticmethod

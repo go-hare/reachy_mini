@@ -1,9 +1,16 @@
 """Agent runtime helpers for Reachy Mini."""
 
-from .config import AgentProfileConfig, FrontModelConfig, load_agent_profile_config
-from .memory import FrontSessionStore, MemoryView
+from reachy_mini.agent_core.memory import MemoryView
+
+from .config import (
+    AgentProfileConfig,
+    FrontModelConfig,
+    KernelModelConfig,
+    load_agent_profile_config,
+)
 from .profile_loader import ProfileWorkspace, load_profile_workspace
 from .runner import FrontAgentRunner
+from .session_store import FrontSessionStore
 from .workspace import create_profile_workspace
 
 __all__ = [
@@ -11,6 +18,7 @@ __all__ = [
     "FrontAgentRunner",
     "FrontModelConfig",
     "FrontSessionStore",
+    "KernelModelConfig",
     "MemoryView",
     "ProfileWorkspace",
     "create_profile_workspace",

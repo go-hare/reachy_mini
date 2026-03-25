@@ -1,4 +1,4 @@
-"""CLI entry point for the stage-2 front-only agent runtime."""
+"""CLI entry point for the Reachy Mini text agent runtime."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ EXIT_COMMANDS = {"exit", "quit", "/exit", "/quit", ":q"}
 def parse_args() -> argparse.Namespace:
     """Parse the ``reachy-mini-agent`` command line."""
     parser = argparse.ArgumentParser(
-        description="Front-only Reachy Mini agent runtime.",
+        description="Reachy Mini profile text runtime.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -38,7 +38,7 @@ def parse_args() -> argparse.Namespace:
 
     agent_parser = subparsers.add_parser(
         "agent",
-        help="Run the front-only profile -> front -> text runtime.",
+        help="Run the profile -> front -> kernel -> text runtime.",
     )
     agent_parser.add_argument(
         "profile",
@@ -60,6 +60,11 @@ def parse_args() -> argparse.Namespace:
         "--thread-id",
         default="cli:main",
         help="Thread id used for session memory.",
+    )
+    agent_parser.add_argument(
+        "--front-only",
+        action="store_true",
+        help="Skip the kernel and keep the old front-only text path.",
     )
     agent_parser.add_argument(
         "--provider",
@@ -87,6 +92,33 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=None,
         help="Override the front model temperature.",
+    )
+    agent_parser.add_argument(
+        "--kernel-provider",
+        choices=["mock", "openai", "ollama"],
+        default=None,
+        help="Override the kernel model provider from config.jsonl.",
+    )
+    agent_parser.add_argument(
+        "--kernel-model",
+        default=None,
+        help="Override the kernel model name from config.jsonl.",
+    )
+    agent_parser.add_argument(
+        "--kernel-base-url",
+        default=None,
+        help="Override the kernel provider base URL.",
+    )
+    agent_parser.add_argument(
+        "--kernel-api-key-env",
+        default=None,
+        help="Override the env var used for the kernel API key.",
+    )
+    agent_parser.add_argument(
+        "--kernel-temperature",
+        type=float,
+        default=None,
+        help="Override the kernel model temperature.",
     )
     agent_parser.add_argument(
         "--history-limit",
@@ -118,7 +150,7 @@ def handle_create(args: argparse.Namespace) -> None:
 
 
 async def handle_agent(args: argparse.Namespace) -> None:
-    """Run the front-only agent command."""
+    """Run the text agent command."""
     profile_path = resolve_profile_path(args.profile, args.profiles_root)
     profile = load_profile_workspace(profile_path)
     config = apply_runtime_overrides(
@@ -128,9 +160,18 @@ async def handle_agent(args: argparse.Namespace) -> None:
         base_url=args.base_url,
         api_key_env=args.api_key_env,
         temperature=args.temperature,
+        kernel_provider=args.kernel_provider,
+        kernel_model=args.kernel_model,
+        kernel_base_url=args.kernel_base_url,
+        kernel_api_key_env=args.kernel_api_key_env,
+        kernel_temperature=args.kernel_temperature,
         history_limit=args.history_limit,
     )
-    runner = FrontAgentRunner(profile=profile, config=config)
+    runner = FrontAgentRunner.from_profile(
+        profile=profile,
+        config=config,
+        enable_kernel=not args.front_only,
+    )
 
     if str(args.message or "").strip():
         await run_one_turn(

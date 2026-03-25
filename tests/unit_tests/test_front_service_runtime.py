@@ -5,9 +5,9 @@ from pathlib import Path
 
 from langchain_core.messages import AIMessage
 
-from reachy_mini.agent_runtime.front_service import FrontService
-from reachy_mini.agent_runtime.memory import MemoryView
+from reachy_mini.agent_core.memory import MemoryView
 from reachy_mini.agent_runtime.profile_loader import load_profile_workspace
+from reachy_mini.front import FrontService
 
 
 class RecordingModel:

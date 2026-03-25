@@ -326,7 +326,7 @@
 
 - `src/reachy_mini/agent_core/`
   放置迁入的 `emoticorebot` 核心能力或适配后的大脑层
-- `src/reachy_mini/agent_core/brain_kernel/`
+- `src/reachy_mini/agent_core/`
 - `src/reachy_mini/agent_core/runtime/`
 - `src/reachy_mini/agent_core/front/`
 - `src/reachy_mini/agent_core/affect/`
@@ -690,10 +690,11 @@ profile 不再是旧 conversation 的提示词目录，而是新 Agent 的完整
 
 - `src/reachy_mini/agent_runtime/main.py`
 - `src/reachy_mini/agent_runtime/config.py`
-- `src/reachy_mini/agent_runtime/front_service.py`
-- `src/reachy_mini/agent_runtime/front_prompt.py`
+- `src/reachy_mini/front/service.py`
+- `src/reachy_mini/front/prompt.py`
 - `src/reachy_mini/agent_runtime/model_factory.py`
 - `src/reachy_mini/agent_runtime/runner.py`
+- `src/reachy_mini/agent_runtime/session_store.py`
 - `src/reachy_mini/agent_runtime/workspace.py`
 
 当前命令形态为：
@@ -712,6 +713,15 @@ profile 不再是旧 conversation 的提示词目录，而是新 Agent 的完整
 
 - `kernel` 已接入主文本链路
 - 旧 realtime 主流程不再承担主脑职责
+
+当前 2026-03-26 的阶段性结果：
+
+- 已将 `emoticorebot` 的 standalone 内核代码直接迁入当前仓库：
+  - `src/reachy_mini/agent_core/`
+- `reachy-mini-agent` 默认链路已经不再是 front-only
+- 当前默认文本链路为：
+  - `profile -> front -> BrainKernel -> front`
+- `--front-only` 仍保留为回退路径
 
 ### 阶段 3：接回机器人动作与音频输出
 

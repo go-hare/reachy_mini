@@ -1,4 +1,4 @@
-"""User-facing front service for the stage-2 runtime."""
+"""User-facing front service."""
 
 from __future__ import annotations
 
@@ -7,14 +7,14 @@ from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from reachy_mini.agent_runtime.front_prompt import FrontPromptBuilder
-from reachy_mini.agent_runtime.memory import MemoryView
-from reachy_mini.agent_runtime.message_utils import extract_message_text
+from reachy_mini.agent_core.memory import MemoryView
+from reachy_mini.agent_core.message_utils import extract_message_text
 from reachy_mini.agent_runtime.profile_loader import ProfileWorkspace
+from reachy_mini.front.prompt import FrontPromptBuilder
 
 
 class FrontService:
-    """Fast text-only front layer driven by a profile workspace."""
+    """Fast conversational layer that talks to the user first."""
 
     def __init__(self, profile: ProfileWorkspace, model: Any):
         """Store the profile workspace and chat model."""
@@ -34,6 +34,26 @@ class FrontService:
         system_text = self._front_system_text()
         user_prompt = self.prompts.build_user_prompt(
             user_text=user_text,
+            memory=memory,
+            style=style,
+        )
+        messages = [SystemMessage(content=system_text), HumanMessage(content=user_prompt)]
+        return await self.run(messages, stream_handler)
+
+    async def present(
+        self,
+        *,
+        user_text: str,
+        kernel_output: str,
+        memory: MemoryView,
+        style: str,
+        stream_handler: Callable[[str], Awaitable[None]] | None = None,
+    ) -> str:
+        """Turn a kernel raw draft into the final user-facing reply."""
+        system_text = self._front_system_text()
+        user_prompt = self.prompts.build_presentation_prompt(
+            user_text=user_text,
+            kernel_output=kernel_output,
             memory=memory,
             style=style,
         )

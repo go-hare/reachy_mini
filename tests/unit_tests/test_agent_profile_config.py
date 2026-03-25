@@ -42,3 +42,26 @@ def test_load_agent_profile_config_reads_front_settings(tmp_path: Path) -> None:
     assert config.front_model.model == "qwen2.5:7b"
     assert config.front_model.base_url == "http://127.0.0.1:11434"
     assert config.front_model.temperature == 0.2
+
+
+def test_load_agent_profile_config_reads_kernel_settings(tmp_path: Path) -> None:
+    """Parse kernel settings from config.jsonl."""
+    profile_root = tmp_path / "demo"
+    profile_root.mkdir()
+    _write_profile(
+        profile_root,
+        config_jsonl=(
+            '{"kind":"model","role":"front","provider":"mock","model":"front-demo","temperature":0.3}\n'
+            '{"kind":"model","role":"kernel","provider":"openai","model":"gpt-4.1-mini","base_url":"https://example.com/v1","api_key_env":"KERNEL_API_KEY","temperature":0.1}\n'
+        ),
+    )
+
+    profile = load_profile_workspace(profile_root)
+    config = load_agent_profile_config(profile)
+
+    assert config.front_model.model == "front-demo"
+    assert config.kernel_model.provider == "openai"
+    assert config.kernel_model.model == "gpt-4.1-mini"
+    assert config.kernel_model.base_url == "https://example.com/v1"
+    assert config.kernel_model.api_key_env == "KERNEL_API_KEY"
+    assert config.kernel_model.temperature == 0.1

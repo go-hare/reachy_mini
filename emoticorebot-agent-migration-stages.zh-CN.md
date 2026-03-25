@@ -172,10 +172,11 @@
 - `src/reachy_mini/agent_runtime/main.py`
 - `src/reachy_mini/agent_runtime/profile_loader.py`
 - `src/reachy_mini/agent_runtime/config.py`
-- `src/reachy_mini/agent_runtime/front_service.py`
-- `src/reachy_mini/agent_runtime/front_prompt.py`
+- `src/reachy_mini/front/service.py`
+- `src/reachy_mini/front/prompt.py`
 - `src/reachy_mini/agent_runtime/model_factory.py`
 - `src/reachy_mini/agent_runtime/runner.py`
+- `src/reachy_mini/agent_runtime/session_store.py`
 - `src/reachy_mini/agent_runtime/workspace.py`
 
 ### 6.5 本阶段交付物
@@ -206,7 +207,7 @@
 - 已新增 standalone `profile workspace` 初始化能力
 - 已新增 `reachy-mini-agent` CLI
 - 已跑通 `profile -> front -> 文本回复`
-- 当前仍是 front-only 文本链路，尚未接入 kernel
+- 仍保留 `--front-only` 作为回退开关
 
 ## 7. 阶段 3：Kernel 接入
 
@@ -233,7 +234,7 @@
 ### 7.4 建议落点
 
 - `src/reachy_mini/agent_runtime/main.py`
-- `src/reachy_mini/agent_core/brain_kernel/`
+- `src/reachy_mini/agent_core/`
 - `src/reachy_mini/agent_core/runtime/`
 - `src/reachy_mini/agent_core/front/`
 
@@ -248,6 +249,29 @@
 - 旧 realtime 主流程已退出文本主链路
 - kernel 已参与主回复生成或主决策链路
 - 文本链路已经具备继续接动作和音频的稳定基础
+
+### 7.7 当前实现状态
+
+截至 2026-03-26，阶段 3 已完成第一版内核接入：
+
+- 已将 `emoticorebot` 的 standalone 内核代码直接迁入：
+  - `src/reachy_mini/agent_core/`
+- `reachy-mini-agent agent` 默认已不再是简化 `kernel_service`，而是直接驱动 `BrainKernel`
+- 当前文本主链路已变为：
+  - `profile -> front(先接住) -> BrainKernel -> front(整理最终回复)`
+- `BrainKernel` 已直接使用 profile workspace 下的：
+  - `memory/`
+  - `session/`
+  - `USER.md`
+  - `SOUL.md`
+  - `TOOLS.md`
+- `--front-only` 仍保留，用于退回阶段 2 的纯 front 文本路径
+
+当前这一版还没有做的内容：
+
+- 还没有把 `emoticorebot/runtime/scheduler.py` 整体迁入当前项目
+- 还没有把 `emoticorebot/front/` 原版整包迁入；当前仍复用 `reachy_mini.agent_runtime.front_service`
+- 还没有接机器人动作、音频、desktop 入口
 
 ## 8. 阶段 4：Reachy 输出执行层接回
 

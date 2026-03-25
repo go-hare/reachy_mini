@@ -1,4 +1,4 @@
-"""Helpers for extracting text from chat model messages."""
+"""Shared helpers for extracting text from chat-model messages."""
 
 from __future__ import annotations
 

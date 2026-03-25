@@ -1,4 +1,4 @@
-"""Minimal session memory for the front-only runtime."""
+"""Front-session storage helpers for the text runtime."""
 
 from __future__ import annotations
 
@@ -8,18 +8,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
-
+from reachy_mini.agent_core.memory import MemoryView
 from reachy_mini.agent_runtime.profile_loader import ProfileWorkspace
-
-
-class MemoryView(BaseModel):
-    """Minimal memory structure exposed to the front layer."""
-
-    raw_layer: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
-    cognitive_layer: list[dict[str, Any]] = Field(default_factory=list)
-    long_term_layer: dict[str, Any] = Field(default_factory=dict)
-    projections: dict[str, str] = Field(default_factory=dict)
 
 
 def now_iso() -> str:
@@ -57,7 +47,7 @@ def _sanitize_thread_id(thread_id: str) -> str:
 
 
 class FrontSessionStore:
-    """Persist recent dialogue in ``session/`` for front-only interactions."""
+    """Persist recent dialogue for the front-only fallback path."""
 
     def __init__(self, profile: ProfileWorkspace):
         """Store the active profile workspace."""
@@ -65,12 +55,16 @@ class FrontSessionStore:
 
     def path_for_thread(self, thread_id: str) -> Path:
         """Return the on-disk session path for one thread."""
-        return self.profile.session_dir / f"{_sanitize_thread_id(thread_id)}.jsonl"
+        return self.path_for_stream(thread_id, "dialogue")
+
+    def path_for_stream(self, thread_id: str, stream: str) -> Path:
+        """Return the on-disk session path for one logical stream."""
+        return self.profile.session_dir / f"{_sanitize_thread_id(thread_id)}.{stream}.jsonl"
 
     def append_dialogue(self, *, thread_id: str, role: str, content: str) -> None:
         """Append one user-visible dialogue turn."""
         _append_jsonl(
-            self.path_for_thread(thread_id),
+            self.path_for_stream(thread_id, "dialogue"),
             [
                 {
                     "role": str(role or "").strip() or "unknown",
@@ -82,12 +76,26 @@ class FrontSessionStore:
 
     def recent_dialogue(self, thread_id: str, limit: int) -> list[dict[str, Any]]:
         """Read recent dialogue rows for a thread."""
-        return _read_jsonl(self.path_for_thread(thread_id))[-max(1, limit) :]
+        return _read_jsonl(self.path_for_stream(thread_id, "dialogue"))[-max(1, limit) :]
+
+    def append_kernel_record(self, *, thread_id: str, content: str) -> None:
+        """Append one raw kernel output record."""
+        _append_jsonl(
+            self.path_for_stream(thread_id, "kernel"),
+            [{"content": str(content or "").strip(), "created_at": now_iso()}],
+        )
+
+    def recent_kernel_records(self, thread_id: str, limit: int) -> list[dict[str, Any]]:
+        """Read recent kernel rows for a thread."""
+        return _read_jsonl(self.path_for_stream(thread_id, "kernel"))[-max(1, limit) :]
 
     def build_memory_view(self, *, thread_id: str, limit: int) -> MemoryView:
         """Build the front memory view for one thread."""
         return MemoryView(
-            raw_layer={"recent_dialogue": self.recent_dialogue(thread_id, limit)},
+            raw_layer={
+                "recent_dialogue": self.recent_dialogue(thread_id, limit),
+                "recent_kernel": self.recent_kernel_records(thread_id, limit),
+            },
             projections={
                 "agent_anchor": self.profile.agents_md,
                 "user_anchor": self.profile.user_md,
