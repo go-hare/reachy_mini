@@ -60,7 +60,7 @@ def create_from_conversation_app(
     console.print("Creating simplified static files...")
     _create_static_files(target_path, app_name, display_name)
 
-    console.print(f"Creating profile folder: profiles/{profile_name}/")
+    console.print(f"Creating profile workspace: profiles/{profile_name}/")
     _create_profile(console, target_path, app_name, profile_name)
 
     console.print("Updating .gitignore...")
@@ -74,20 +74,28 @@ def create_from_conversation_app(
 
     console.print(f"\n✅ Created '{app_name}' in {target_path}/", style="bold green")
     console.print(f"   - Profile locked to: {profile_name}", style="dim")
-    console.print(f"   - Profile folder created: profiles/{profile_name}/", style="dim")
-
-    console.print("\nFiles to customize:", style="bold yellow")
     console.print(
-        f"  profiles/{profile_name}/instructions.txt  - System prompt for the assistant"
+        f"   - Profile workspace created: profiles/{profile_name}/", style="dim"
+    )
+
+    console.print("\nProfile files to customize:", style="bold yellow")
+    console.print(
+        f"  profiles/{profile_name}/AGENTS.md     - Agent rules and hard constraints"
     )
     console.print(
-        f"  profiles/{profile_name}/tools.txt         - Available tools (or 'all')"
+        f"  profiles/{profile_name}/SOUL.md       - Stable personality and values"
+    )
+    console.print(
+        f"  profiles/{profile_name}/FRONT.md      - User-visible tone and reply style"
+    )
+    console.print(
+        f"  profiles/{profile_name}/TOOLS.md      - Tool policy and allowed capabilities"
     )
 
     console.print("\nNext steps:", style="bold")
     console.print(f"  cd {target_path}")
     console.print("  pip install -e .")
-    console.print("  reachy-mini-app-assistant check .")
+    console.print(f"  review src/{app_name}/profiles/{profile_name}/")
     console.print("")
     console.print("To test your app locally:", style="bold")
     console.print(f"  python src/{app_name}/main.py --gradio")
@@ -196,7 +204,7 @@ def _rename_package(console: Console, app_path: Path, app_name: str) -> None:
         if not py_dir.exists():
             continue
         for py_file in py_dir.rglob("*.py"):
-            content = py_file.read_text()
+            content = py_file.read_text(encoding="utf-8")
             # Replace imports like "from reachy_mini_conversation_app" and "import reachy_mini_conversation_app"
             new_content = re.sub(
                 rf"\b{CONVERSATION_APP_PACKAGE}\b",
@@ -208,7 +216,7 @@ def _rename_package(console: Console, app_path: Path, app_name: str) -> None:
                 "ReachyMiniConversationApp", new_class_name
             )
             if new_content != content:
-                py_file.write_text(new_content)
+                py_file.write_text(new_content, encoding="utf-8")
 
 
 def _update_pyproject(console: Console, app_path: Path, app_name: str) -> None:
@@ -226,7 +234,7 @@ def _update_pyproject(console: Console, app_path: Path, app_name: str) -> None:
         )
         exit(1)
 
-    with open(pyproject_path, "r") as f:
+    with open(pyproject_path, "r", encoding="utf-8") as f:
         data = toml.load(f)
 
     # Update project name
@@ -257,7 +265,7 @@ def _update_pyproject(console: Console, app_path: Path, app_name: str) -> None:
                 for folder in isort_config["known-local-folder"]
             ]
 
-    with open(pyproject_path, "w") as f:
+    with open(pyproject_path, "w", encoding="utf-8") as f:
         toml.dump(data, f)
 
 
@@ -278,7 +286,7 @@ def _update_config(
         )
         exit(1)
 
-    content = config_path.read_text()
+    content = config_path.read_text(encoding="utf-8")
 
     # Replace the LOCKED_PROFILE line
     old_line = "LOCKED_PROFILE: str | None = None"
@@ -300,7 +308,7 @@ def _update_config(
         exit(1)
 
     content = content.replace(old_line, new_line)
-    config_path.write_text(content)
+    config_path.write_text(content, encoding="utf-8")
 
 
 def _update_readme(
@@ -323,7 +331,8 @@ def _update_readme(
     readme_path.write_text(
         template.render(
             app_name=app_name, display_name=display_name, profile_name=profile_name
-        )
+        ),
+        encoding="utf-8",
     )
 
 
@@ -335,11 +344,17 @@ def _create_landing_page(app_path: Path, app_name: str, display_name: str) -> No
 
     # Render and write index.html
     index_template = env.get_template("index.html.j2")
-    (app_path / "index.html").write_text(index_template.render(context))
+    (app_path / "index.html").write_text(
+        index_template.render(context),
+        encoding="utf-8",
+    )
 
     # Render and write style.css
     style_template = env.get_template("style.css.j2")
-    (app_path / "style.css").write_text(style_template.render(context))
+    (app_path / "style.css").write_text(
+        style_template.render(context),
+        encoding="utf-8",
+    )
 
 
 def _create_static_files(app_path: Path, app_name: str, display_name: str) -> None:
@@ -353,36 +368,42 @@ def _create_static_files(app_path: Path, app_name: str, display_name: str) -> No
 
     # Render and write simplified static files
     (static_dir / "index.html").write_text(
-        env.get_template("index.html.j2").render(context)
+        env.get_template("index.html.j2").render(context),
+        encoding="utf-8",
     )
-    (static_dir / "main.js").write_text(env.get_template("main.js.j2").render(context))
+    (static_dir / "main.js").write_text(
+        env.get_template("main.js.j2").render(context),
+        encoding="utf-8",
+    )
     (static_dir / "style.css").write_text(
-        env.get_template("style.css.j2").render(context)
+        env.get_template("style.css.j2").render(context),
+        encoding="utf-8",
     )
 
 
 def _create_profile(
     console: Console, app_path: Path, app_name: str, profile_name: str
 ) -> None:
-    """Create profile folder with template files."""
+    """Create a profile workspace from the template tree."""
     new_profile_dir = app_path / "src" / app_name / "profiles" / profile_name
     new_profile_dir.mkdir(parents=True, exist_ok=True)
 
-    # Render all .j2 templates from profile template directory
     template_dir = CONVERSATION_TEMPLATE_DIR / "profile"
     env = Environment(loader=FileSystemLoader(template_dir))
     context = {"profile_name": profile_name, "app_name": app_name}
 
-    for src_file in template_dir.iterdir():
-        if src_file.is_file() and src_file.suffix == ".j2":
-            # Remove .j2 extension for output filename
-            output_name = src_file.stem
-            template = env.get_template(src_file.name)
-            (new_profile_dir / output_name).write_text(template.render(context))
+    for src_file in sorted(template_dir.rglob("*.j2")):
+        relative_path = src_file.relative_to(template_dir)
+        output_path = new_profile_dir / relative_path.with_suffix("")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    console.print("   Created profile with template files:", style="dim")
-    for f in sorted(new_profile_dir.iterdir()):
-        console.print(f"     - {f.name}", style="dim")
+        template = env.get_template(relative_path.as_posix())
+        output_path.write_text(template.render(context), encoding="utf-8")
+
+    console.print("   Created profile workspace files:", style="dim")
+    for path in sorted(new_profile_dir.rglob("*")):
+        if path.is_file():
+            console.print(f"     - {path.relative_to(new_profile_dir)}", style="dim")
 
 
 def _update_gitignore(app_path: Path, app_name: str) -> None:
@@ -391,13 +412,13 @@ def _update_gitignore(app_path: Path, app_name: str) -> None:
     if not gitignore_path.exists():
         return
 
-    content = gitignore_path.read_text()
+    content = gitignore_path.read_text(encoding="utf-8")
     new_content = content.replace(
         f"src/{CONVERSATION_APP_PACKAGE}/",
         f"src/{app_name}/",
     )
     if new_content != content:
-        gitignore_path.write_text(new_content)
+        gitignore_path.write_text(new_content, encoding="utf-8")
 
 
 def _cleanup(app_path: Path, app_name: str, profile_name: str) -> None:

@@ -4,7 +4,6 @@
 
 - User wants to create a new Reachy Mini application
 - User asks how to structure an app
-- User wants to publish an app to Hugging Face
 
 ## Important: Always Python Apps
 
@@ -27,19 +26,14 @@ If an app folder already exists with `README.md` containing `reachy_mini_python_
 
 **CRITICAL: Never create app folders manually.** Always use the assistant - it handles boilerplate, metadata tags, entry points, and proper structure. Manual creation leads to subtle issues that are hard to debug.
 
-**IMPORTANT: Always use `--publish` unless the user explicitly requests a local-only app.** Publishing immediately creates a Git repo on Hugging Face, enabling proper version control and sharing from the start.
-
 **If the command fails for any reason:** Ask the user to run it manually in their terminal rather than attempting complex workarounds.
 
 ```bash
 # Default template - minimal blank app (recommended for most cases):
-reachy-mini-app-assistant create <app_name> <path> --publish
+reachy-mini-app-assistant create <app_name> <path>
 
 # Conversation template - fork of the conversation app:
-reachy-mini-app-assistant create --template conversation <app_name> <path> --publish
-
-# Only if user explicitly wants local-only (no HF repo):
-reachy-mini-app-assistant create <app_name> <path>
+reachy-mini-app-assistant create --template conversation <app_name> <path>
 ```
 
 #### Which template to choose?
@@ -47,24 +41,17 @@ reachy-mini-app-assistant create <app_name> <path>
 | Template | Use when |
 |----------|----------|
 | **default** | Most apps. Gives you a minimal working structure to build from scratch. |
-| **conversation** | App needs LLM integration, speech, or making the robot talk. Forks the conversation app with a locked profile - includes audio pipeline, LLM tools, and all the plumbing already set up. |
+| **conversation** | App needs LLM integration, speech, or making the robot talk. Forks the conversation app with a locked profile workspace and existing agent-oriented plumbing. |
 
 **IMPORTANT: Both `app_name` AND `path` are required for non-interactive mode.** If either is omitted, the command will prompt interactively (which fails in non-TTY environments like Claude Code).
 
 Options:
 - `--template conversation` - Fork the conversation app (for LLM/speech apps)
-- `--publish` - Create a Git repo on Hugging Face immediately **(always use this)**
-- `--private` - Make the HF Space private (default is public)
-
-**Prerequisite for `--publish`:** Must be logged in to Hugging Face first:
-```bash
-hf auth login
-```
 
 Example:
 ```bash
-reachy-mini-app-assistant create my_app_name . --publish
-reachy-mini-app-assistant create --template conversation my_assistant . --publish
+reachy-mini-app-assistant create my_app_name .
+reachy-mini-app-assistant create --template conversation my_assistant .
 ```
 
 ### Step 2: Understand the Generated Structure
@@ -85,11 +72,30 @@ my_app/
         └── main.js
 ```
 
+Conversation-template apps also generate a locked profile workspace under:
+
+```
+src/<app_name>/profiles/<profile_name>/
+├── AGENTS.md
+├── USER.md
+├── SOUL.md
+├── TOOLS.md
+├── FRONT.md
+├── config.jsonl
+├── memory/
+├── skills/
+├── session/
+├── tools/
+└── prompts/
+```
+
 ### Step 3: Development Workflow
 
-1. **Create and publish immediately** with `--publish` to get a Git repo
-2. **Develop iteratively** using standard git: `git add`, `git commit`, `git push`
-3. **Validate** with `reachy-mini-app-assistant check /path/to/app`
+1. **Create the app scaffold** with `reachy-mini-app-assistant create`
+2. **For conversation apps, fill in the locked profile workspace** under `src/<app_name>/profiles/<profile_name>/`
+3. **Develop iteratively** using standard git: `git add`, `git commit`, `git push`
+
+The app assistant no longer owns a `check` or `publish` flow.
 
 ### Step 4: Before Writing Code
 

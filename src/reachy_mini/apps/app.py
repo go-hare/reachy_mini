@@ -212,11 +212,9 @@ def main() -> None:
         if args.template == "conversation":
             from reachy_mini.apps.fork_conversation import create_from_conversation_app
 
-            created_path = create_from_conversation_app(
-                console, args.app_name, args.path
-            )
+            create_from_conversation_app(console, args.app_name, args.path)
         else:
-            created_path = assistant.create(console, app_name=args.app_name, app_path=args.path)
+            assistant.create(console, app_name=args.app_name, app_path=args.path)
 
 
 if __name__ == "__main__":

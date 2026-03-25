@@ -686,6 +686,21 @@ profile 不再是旧 conversation 的提示词目录，而是新 Agent 的完整
 - 文本回复链路已经接通 `front`
 - `agent` 命令行入口已可用于文本级启动和验证
 
+当前第一版实现已经落到：
+
+- `src/reachy_mini/agent_runtime/main.py`
+- `src/reachy_mini/agent_runtime/config.py`
+- `src/reachy_mini/agent_runtime/front_service.py`
+- `src/reachy_mini/agent_runtime/front_prompt.py`
+- `src/reachy_mini/agent_runtime/model_factory.py`
+- `src/reachy_mini/agent_runtime/runner.py`
+- `src/reachy_mini/agent_runtime/workspace.py`
+
+当前命令形态为：
+
+- `reachy-mini-agent create <profile_name>`
+- `reachy-mini-agent agent <profile_name|profile_path>`
+
 ### 阶段 2：再接入 kernel
 
 目标：

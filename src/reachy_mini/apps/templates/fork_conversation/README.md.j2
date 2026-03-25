@@ -15,9 +15,10 @@ tags:
 Forked from the Reachy Mini conversation app.
 
 Use the `src/{{ app_name }}/profiles/{{ profile_name }}` folder to customize your own app from this template:
-- Edit instructions `{{ profile_name }}/instructions.txt`
-- Edit available tools in `{{ profile_name }}/tools.txt`
-- You can create your own tools in `{{ profile_name }}` by subclassing the `Tool` class.
+- Edit `AGENTS.md`, `SOUL.md`, `FRONT.md`, `TOOLS.md`, and `USER.md`
+- Add profile-local tool modules in `tools/`
+- Use `config.jsonl` for structured profile settings
+- Keep long-lived state in `memory/`, `session/`, `skills/`, and `prompts/`
 
 Do not forget to customize:
 - this `README.md` file

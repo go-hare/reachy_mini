@@ -3,7 +3,17 @@
 Reachy Mini is designed for AI Builders. Here is how to integrate LLMs and share your work.
 
 ## Building an App
-We provide a CLI tool to generate, check and publish a standard App structure (compatible with Hugging Face Spaces).
+We provide a CLI tool to generate a standard app structure.
+
+For conversation-style apps, the generated project also includes a locked profile workspace that can hold:
+
+- `AGENTS.md`
+- `USER.md`
+- `SOUL.md`
+- `TOOLS.md`
+- `FRONT.md`
+- `config.jsonl`
+- `memory/`, `skills/`, `session/`, `tools/`, and `prompts/`
 
 *See our blog post tutorial: [Make and Publish Reachy Mini Apps](https://huggingface.co/blog/pollen-robotics/make-and-publish-your-reachy-mini-apps)*
 

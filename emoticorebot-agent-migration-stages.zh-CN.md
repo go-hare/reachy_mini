@@ -171,7 +171,12 @@
 
 - `src/reachy_mini/agent_runtime/main.py`
 - `src/reachy_mini/agent_runtime/profile_loader.py`
-- `src/reachy_mini/agent_core/` 下的新主入口或适配层
+- `src/reachy_mini/agent_runtime/config.py`
+- `src/reachy_mini/agent_runtime/front_service.py`
+- `src/reachy_mini/agent_runtime/front_prompt.py`
+- `src/reachy_mini/agent_runtime/model_factory.py`
+- `src/reachy_mini/agent_runtime/runner.py`
+- `src/reachy_mini/agent_runtime/workspace.py`
 
 ### 6.5 本阶段交付物
 
@@ -182,12 +187,26 @@
 - 得到文本级回复
 - `agent` 命令行可以直接用于文本级验证
 
+当前已落地的具体 CLI 为：
+
+- `reachy-mini-agent create <profile_name>`
+- `reachy-mini-agent agent <profile_name|profile_path>`
+
 ### 6.6 本阶段验收标准
 
 - 文本输入已由 `emoticorebot` 接管
 - 文本回复已经经过 `front`
 - profile workspace 能真正影响当前 agent 的行为与配置
 - `agent` 命令行已成为可用入口
+
+### 6.7 当前实现状态
+
+截至 2026-03-26，阶段 2 的最小闭环已经有第一版实现：
+
+- 已新增 standalone `profile workspace` 初始化能力
+- 已新增 `reachy-mini-agent` CLI
+- 已跑通 `profile -> front -> 文本回复`
+- 当前仍是 front-only 文本链路，尚未接入 kernel
 
 ## 7. 阶段 3：Kernel 接入
 
@@ -335,7 +354,6 @@
 
 - 是否保留 `reachy-mini-app-assistant create`
 - 是否将 `create` 演进为更接近 `onboard` 的 workspace 初始化命令
-- 最终是否需要新的 Reachy 侧统一 agent CLI
 
 ## 11. 推荐执行顺序
 

@@ -1,8 +1,7 @@
 """Reachy Mini app assistant functions."""
 
-from pathlib import Path
-import os
 import subprocess
+from pathlib import Path
 
 import questionary
 from jinja2 import Environment, FileSystemLoader
@@ -16,7 +15,10 @@ def validate_app_name(text: str) -> bool | str:
     if " " in text:
         return "App name cannot contain spaces."
     if "-" in text:
-        return "App name cannot contain dashes ('-'). Please use underscores ('_') instead."
+        return (
+            "App name cannot contain dashes ('-'). "
+            "Please use underscores ('_') instead."
+        )
     if "/" in text or "\\" in text:
         return "App name cannot contain slashes or backslashes ('/' or '\\')."
     if "*" in text or "?" in text or "." in text:
@@ -105,7 +107,9 @@ def create(console: Console, app_name: str | None, app_path: Path | None) -> Pat
     module_name = app_name
     entrypoint_name = app_name.replace("-", "_")
     class_name = "".join(word.capitalize() for word in module_name.split("_"))
-    class_name_display = " ".join(word.capitalize() for word in module_name.split("_"))
+    class_name_display = " ".join(
+        word.capitalize() for word in module_name.split("_")
+    )
 
     (base_path / module_name / "static").mkdir(parents=True)
 

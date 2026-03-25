@@ -1,4 +1,4 @@
-"""Custom tool template - modify this to create your own tools."""
+"""Custom tool template for `{{ profile_name }}`."""
 
 import logging
 from typing import Any
@@ -12,13 +12,13 @@ class CustomTool(Tool):
     """A custom tool template. Modify this to create your own tool."""
 
     name = "custom_tool"
-    description = "A placeholder custom tool - replace this with your own implementation"
+    description = "A placeholder custom tool. Replace this with your own implementation."
     parameters_schema = {
         "type": "object",
         "properties": {
             "message": {
                 "type": "string",
-                "description": "An optional message to log",
+                "description": "An optional message to log.",
             },
         },
         "required": [],
@@ -27,9 +27,9 @@ class CustomTool(Tool):
     async def __call__(self, deps: ToolDependencies, **kwargs: Any) -> dict[str, Any]:
         """Execute the custom tool."""
         message = kwargs.get("message", "no message")
-        logger.info(f"CustomTool called with message: {message}")
+        logger.info("CustomTool called with message: %s", message)
 
-        # TODO: Add your custom logic here
+        # TODO: Add your custom logic here.
         # You have access to:
         # - deps.reachy_mini: the robot SDK
         # - deps.movement_manager: for queueing movements

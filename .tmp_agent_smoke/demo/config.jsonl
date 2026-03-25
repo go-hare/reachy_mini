@@ -1,0 +1,3 @@
+{"kind":"profile","name":"demo"}
+{"kind":"front","mode":"text","style":"friendly_concise","history_limit":6}
+{"kind":"front_model","provider":"mock","model":"reachy_mini_front_mock","temperature":0.4}
