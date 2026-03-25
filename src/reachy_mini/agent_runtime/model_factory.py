@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import re
 from typing import Any
 
 from langchain_core.messages import AIMessage
@@ -27,7 +26,10 @@ class MockFrontModel:
 
     def _render_reply(self, messages: list[Any]) -> str:
         prompt = extract_message_text(messages[-1]) if messages else ""
-        kernel_output = self._extract_section(prompt, "Kernel 原始输出")
+        kernel_output = (
+            self._extract_section(prompt, "后台主脑原始结果")
+            or self._extract_section(prompt, "Kernel 原始输出")
+        )
         if kernel_output:
             return kernel_output
         user_text = self._extract_user_text(prompt)
@@ -39,21 +41,26 @@ class MockFrontModel:
 
     @classmethod
     def _extract_user_text(cls, prompt: str) -> str:
-        user_text = cls._extract_section(prompt, "当前用户输入")
+        user_text = (
+            cls._extract_section(prompt, "当前用户输入")
+            or cls._extract_section(prompt, "用户输入")
+            or cls._extract_section(prompt, "用户原始输入")
+        )
         if not user_text:
             return prompt.strip().splitlines()[-1].strip() if prompt.strip() else ""
         return user_text
 
     @staticmethod
     def _extract_section(prompt: str, title: str) -> str:
-        match = re.search(
-            rf"## {re.escape(title)}\s*(.+?)(?=\n## |\Z)",
-            prompt,
-            re.DOTALL,
-        )
-        if match is None:
+        marker = f"## {title}"
+        start = prompt.find(marker)
+        if start < 0:
             return ""
-        return match.group(1).strip()
+        remainder = prompt[start + len(marker) :].lstrip()
+        next_header = remainder.find("\n## ")
+        if next_header >= 0:
+            remainder = remainder[:next_header]
+        return remainder.strip()
 
     @staticmethod
     def _needs_verification(user_text: str) -> bool:

@@ -71,12 +71,11 @@ def test_front_service_uses_profile_workspace_context(tmp_path: Path) -> None:
         assert reply == "前台回复"
         assert model.messages is not None
         assert "你要像贴在身边的陪伴者一样说话。" in model.messages[0].content
-        assert "## Agent 规则" in model.messages[1].content
-        assert "不要撒谎" in model.messages[1].content
+        assert "## 外显目标" in model.messages[1].content
         assert "用户喜欢直接一点" in model.messages[1].content
         assert "温柔、稳定" in model.messages[1].content
-        assert "不要假装已经运行工具" in model.messages[1].content
-        assert "昨天也卡住了" in model.messages[1].content
+        assert "这是一个需要核实事实的请求" in model.messages[1].content
         assert "帮我看看日志" in model.messages[1].content
+        assert "昨天也卡住了" not in model.messages[1].content
 
     asyncio.run(_exercise())
