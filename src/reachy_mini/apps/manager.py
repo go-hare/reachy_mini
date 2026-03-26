@@ -70,6 +70,45 @@ class AppManager:
         if self.is_app_running():
             await self.stop_current_app()
 
+    async def autostart_installed_app(self) -> Optional[AppStatus]:
+        """Autostart the only installed app, if the choice is unambiguous."""
+        if self.is_app_running():
+            assert self.current_app is not None
+            self.logger.getChild("runner").info(
+                "Skipping autostart because app '%s' is already running",
+                self.current_app.status.info.name,
+            )
+            return self.current_app.status
+
+        installed_apps = await self.list_available_apps(SourceKind.INSTALLED)
+        if not installed_apps:
+            self.logger.getChild("runner").info(
+                "Skipping app autostart because no installed apps were found"
+            )
+            return None
+
+        if len(installed_apps) > 1:
+            app_names = ", ".join(sorted(app.name for app in installed_apps))
+            self.logger.getChild("runner").info(
+                "Skipping app autostart because multiple installed apps were found: %s",
+                app_names,
+            )
+            return None
+
+        app_name = installed_apps[0].name
+        self.logger.getChild("runner").info(
+            "Autostarting the only installed app: %s",
+            app_name,
+        )
+        try:
+            return await self.start_app(app_name)
+        except Exception:
+            self.logger.getChild("runner").exception(
+                "Failed to autostart installed app '%s'",
+                app_name,
+            )
+            return None
+
     def _kill_process_tree(self, pid: int) -> None:
         """Kill a process and all its children recursively."""
         try:

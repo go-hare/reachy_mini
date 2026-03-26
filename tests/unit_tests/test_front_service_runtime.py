@@ -1,12 +1,12 @@
-"""Tests for the front-only runtime pieces."""
+"""Tests for the front runtime pieces."""
 
 import asyncio
 from pathlib import Path
 
 from langchain_core.messages import AIMessage
 
-from reachy_mini.agent_core.memory import MemoryView
-from reachy_mini.agent_runtime.profile_loader import load_profile_workspace
+from reachy_mini.core.memory import MemoryView
+from reachy_mini.runtime.profile_loader import load_profile_bundle
 from reachy_mini.front import FrontService
 
 
@@ -37,15 +37,15 @@ def _write_profile(profile_root: Path) -> None:
         (profile_root / directory).mkdir()
 
 
-def test_front_service_uses_profile_workspace_context(tmp_path: Path) -> None:
-    """Front replies should be built from the new profile workspace files."""
+def test_front_service_uses_profile_bundle_context(tmp_path: Path) -> None:
+    """Front replies should be built from the app profile files."""
 
     async def _exercise() -> None:
         profile_root = tmp_path / "demo"
         profile_root.mkdir()
         _write_profile(profile_root)
 
-        profile = load_profile_workspace(profile_root)
+        profile = load_profile_bundle(profile_root)
         model = RecordingModel()
         service = FrontService(profile, model)
 

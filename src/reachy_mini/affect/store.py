@@ -10,11 +10,11 @@ from reachy_mini.utils.helpers import ensure_dir
 
 
 class AffectStateStore:
-    """Persist affect state under workspace/memony/affect_state.json."""
+    """Persist affect state under profile_root/memory/affect_state.json."""
 
-    def __init__(self, workspace: Path) -> None:
-        self.workspace = workspace
-        self.path = self.workspace / "memony" / "affect_state.json"
+    def __init__(self, profile_root: Path) -> None:
+        self.profile_root = profile_root
+        self.path = self.profile_root / "memory" / "affect_state.json"
 
     def ensure(self) -> AffectState:
         state = self.load()

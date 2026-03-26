@@ -1,45 +1,13 @@
-"""Utility functions for emoticorebot."""
+"""Generic utility helpers."""
 
 from pathlib import Path
 from datetime import datetime
+
 
 def ensure_dir(path: Path) -> Path:
     """Ensure a directory exists, creating it if necessary."""
     path.mkdir(parents=True, exist_ok=True)
     return path
-
-
-def get_data_path() -> Path:
-    """Get the emoticorebot data directory (~/.emoticorebot)."""
-    return ensure_dir(Path.home() / ".emoticorebot")
-
-
-def get_workspace_path(workspace: str | None = None) -> Path:
-    """
-    Get the workspace path.
-    
-    Args:
-        workspace: Optional workspace path. Defaults to ~/.emoticorebot/workspace.
-    
-    Returns:
-        Expanded and ensured workspace path.
-    """
-    if workspace:
-        path = Path(workspace).expanduser()
-    else:
-        path = Path.home() / ".emoticorebot" / "workspace"
-    return ensure_dir(path)
-
-
-def get_sessions_path() -> Path:
-    """Get the sessions storage directory."""
-    return ensure_dir(get_data_path() / "sessions")
-
-
-def get_skills_path(workspace: Path | None = None) -> Path:
-    """Get the skills directory within the workspace."""
-    ws = workspace or get_workspace_path()
-    return ensure_dir(ws / "skills")
 
 
 def timestamp() -> str:

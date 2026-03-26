@@ -2,7 +2,7 @@
 
 ## 1. 文档目标
 
-本文档定义 `/Users/apple/work-py/reachy_mini` 的 Agent 改造方向：
+本文档定义 `D:/work/py/reachy_mini` 的 Agent 改造方向：
 
 - 保留 Reachy Mini 原项目的机器人基础能力
 - 退役旧的 conversation / realtime agent 主流程
@@ -15,6 +15,18 @@
 配套的阶段性执行文档见：
 
 - `emoticorebot-agent-migration-stages.zh-CN.md`
+
+对话通道与 WebSocket 事件流的补充决策见：
+
+- `emoticorebot-agent-dialogue-websocket.zh-CN.md`
+
+目录命名收口结论：
+
+- `src/reachy_mini/apps/`
+- `src/reachy_mini/runtime/`
+- `src/reachy_mini/core/`
+
+其中当前代码中的 `agent_runtime/` 与 `agent_core/` 视为过渡命名，目标统一收口到 `runtime/` 与 `core/`。
 
 ## 2. 结论先行
 
@@ -57,17 +69,19 @@
 
 ### 3.2 当前仓库中和旧 Agent 最接近的部分
 
-当前仓库中和旧 conversation agent 最相关的代码只有：
+当前仓库中和旧 conversation agent 最相关的遗留代码曾经主要有：
 
 - `src/reachy_mini/apps/app.py`
-- `src/reachy_mini/apps/fork_conversation.py`
-- `src/reachy_mini/apps/templates/fork_conversation/`
+- 旧 `src/reachy_mini/apps/fork_conversation.py`
+- 旧 `src/reachy_mini/apps/templates/fork_conversation/`
 
 这些代码的职责不是实现完整 Agent，而是：
 
 - 创建 app
 - fork 外部 `reachy_mini_conversation_app`
 - 生成 profile / tools / README / static 页面
+
+其中旧的 `fork_conversation` 入口和模板目录现在已经从仓库中删除。
 
 也就是说，当前仓库并没有一个完整、可直接替换的旧 Agent 内核。旧脑子主要存在于外部 conversation app 仓库中。
 
@@ -121,26 +135,37 @@
 
 这些都应作为新大脑可调用的能力层继续存在。
 
-### 4.3 profile 升级为新 Agent workspace 包
+### 4.3 `profiles/<name>/` 升级为用户创建的 App 项目目录
 
-改造后，profile 不再以旧的 `instructions.txt`、`tools.txt` 为主结构，而是统一采用 `profiles/<name>/` 目录作为正式 workspace 包。
+改造后，profile 不再以旧的 `instructions.txt`、`tools.txt` 为主结构，而是统一采用 `profiles/<name>/` 目录来承载用户创建的 app 项目。
 
-建议的 profile 结构如下：
+当前项目中的结构建议如下：
 
-- `profiles/<name>/AGENTS.md`
-- `profiles/<name>/USER.md`
-- `profiles/<name>/SOUL.md`
-- `profiles/<name>/TOOLS.md`
-- `profiles/<name>/FRONT.md`
-- `profiles/<name>/config.jsonl`
-- `profiles/<name>/memory/`
-- `profiles/<name>/skills/`
-- `profiles/<name>/session/`
-- `profiles/<name>/tools/`
-- `profiles/<name>/prompts/`
+- `profiles/<name>/README.md`
+- `profiles/<name>/pyproject.toml`
+- `profiles/<name>/.gitignore`
+- `profiles/<name>/index.html`
+- `profiles/<name>/style.css`
+- `profiles/<name>/<name>/main.py`
+- `profiles/<name>/<name>/static/`
+- `profiles/<name>/profiles/AGENTS.md`
+- `profiles/<name>/profiles/USER.md`
+- `profiles/<name>/profiles/SOUL.md`
+- `profiles/<name>/profiles/TOOLS.md`
+- `profiles/<name>/profiles/FRONT.md`
+- `profiles/<name>/profiles/config.jsonl`
+- `profiles/<name>/profiles/memory/`
+- `profiles/<name>/profiles/skills/`
+- `profiles/<name>/profiles/session/`
+- `profiles/<name>/profiles/tools/`
+- `profiles/<name>/profiles/prompts/`
 
 其中：
 
+- `profiles/<name>/`
+  是用户看到的 app 项目根目录，负责安装、启动和静态壳文件
+- `profiles/<name>/<name>/`
+  是 app 的 Python 启动包和静态前端目录
 - `AGENTS.md`
   定义系统行为原则、约束和 Agent 规则
 - `USER.md`
@@ -166,7 +191,7 @@
 
 本项目的 profile 结构中不包含 `HEARTBEAT.md`。
 
-现有的 `profile loader` 可以继续保留，但其读取目标应改为上述新结构。
+现有的 `profile loader` 可以继续保留，但其读取目标应改为上述新结构中的内部 profile 包，即 `profiles/<name>/profiles/`。同时，为了兼容当前项目生成出来的 app 项目根目录，loader 也应允许从 `profiles/<name>/` 进入后自动解析到内部 profile 包。
 
 真正要替换的是 profile loader 后面接入的主脑：
 
@@ -207,15 +232,20 @@
 
 这些模块代表旧 conversation 路线，应退役：
 
-- `src/reachy_mini/apps/fork_conversation.py`
-- `src/reachy_mini/apps/templates/fork_conversation/`
-- `src/reachy_mini/apps/app.py` 中 `conversation` 模板创建分支
+- 旧 `src/reachy_mini/apps/fork_conversation.py`
+- 旧 `src/reachy_mini/apps/templates/fork_conversation/`
+- `src/reachy_mini/apps/app.py` 中旧的 `conversation/legacy-conversation` 模板创建分支
 - `reachy-mini-app-assistant` 中的 `check` / `publish` 子命令
 
 注意：
 
 - 如果短期内仍需要兼容旧 fork 流程，可以先“降级为 legacy”，不要立刻物理删除。
 - 如果决定彻底切换，可以在第二阶段删除。
+
+当前状态：
+
+- 上述 `fork_conversation` 文件与模板目录已删除
+- `conversation/legacy-conversation` 模板别名已从 `app.py` 中移除
 
 ### 5.3 从旧 conversation app 保留并迁入的能力
 
@@ -228,7 +258,7 @@
 - `tools/`
   作为机器人能力工具层保留
 - `profiles/`
-  升级为新 Agent 的 profile 配置包
+  升级为新 Agent 的 app 项目目录
 - `prompts/`
   保留可复用提示词素材
 
@@ -324,19 +354,15 @@
 
 建议在当前仓库内增加以下目录：
 
-- `src/reachy_mini/agent_core/`
+- `src/reachy_mini/core/`
   放置迁入的 `emoticorebot` 核心能力或适配后的大脑层
-- `src/reachy_mini/agent_core/`
-- `src/reachy_mini/agent_core/runtime/`
-- `src/reachy_mini/agent_core/front/`
-- `src/reachy_mini/agent_core/affect/`
-- `src/reachy_mini/agent_core/companion/`
-- `src/reachy_mini/agent_core/providers/`
-- `src/reachy_mini/agent_core/config/`
+- `src/reachy_mini/core/memory.py`
+- `src/reachy_mini/core/`
+  以及后续收口后的 kernel / memory / affect / companion / providers 等核心能力
 
 建议增加 Reachy 专属执行层目录：
 
-- `src/reachy_mini/agent_runtime/`
+- `src/reachy_mini/runtime/`
 
 建议增加正式 profile 目录：
 
@@ -371,48 +397,56 @@
 注意：
 
 - `profiles/` 不建议继续作为 legacy 资产归档目录
-- `profiles/` 应升级为当前系统的正式 profile 配置目录
+- `profiles/` 应升级为当前系统的正式 app 项目目录，内部 profile 文件包位于 `profiles/<name>/profiles/`
 
 ## 8. 旧资产如何接入新大脑
 
 ### 8.1 profiles 的处理方式
 
-改造后，`profiles/<name>/` 应作为当前系统的正式 profile workspace 目录，而不是旧 conversation app 的兼容残留。
+改造后，`profiles/<name>/` 应作为当前系统中用户创建 app 的正式项目目录，而不是旧 conversation app 的兼容残留。
 
 标准结构建议如下：
 
-- `profiles/<name>/AGENTS.md`
-- `profiles/<name>/USER.md`
-- `profiles/<name>/SOUL.md`
-- `profiles/<name>/TOOLS.md`
-- `profiles/<name>/FRONT.md`
-- `profiles/<name>/config.jsonl`
-- `profiles/<name>/memory/`
-- `profiles/<name>/skills/`
-- `profiles/<name>/session/`
-- `profiles/<name>/tools/`
-- `profiles/<name>/prompts/`
+- `profiles/<name>/README.md`
+- `profiles/<name>/pyproject.toml`
+- `profiles/<name>/.gitignore`
+- `profiles/<name>/index.html`
+- `profiles/<name>/style.css`
+- `profiles/<name>/<name>/main.py`
+- `profiles/<name>/<name>/static/`
+- `profiles/<name>/profiles/AGENTS.md`
+- `profiles/<name>/profiles/USER.md`
+- `profiles/<name>/profiles/SOUL.md`
+- `profiles/<name>/profiles/TOOLS.md`
+- `profiles/<name>/profiles/FRONT.md`
+- `profiles/<name>/profiles/config.jsonl`
+- `profiles/<name>/profiles/memory/`
+- `profiles/<name>/profiles/skills/`
+- `profiles/<name>/profiles/session/`
+- `profiles/<name>/profiles/tools/`
+- `profiles/<name>/profiles/prompts/`
 
 其中不包含 `HEARTBEAT.md`。
 
 `profile loader` 的职责应调整为：
 
-- 读取上述 profile 文件
-- 读取 `config.jsonl`
-- 绑定 `memory/`、`skills/`、`session/` 等 profile 级目录
+- 从 `profiles/<name>/` 项目根目录或 `profiles/<name>/profiles/` 内部包目录加载
+- 读取内部 profile 包中的 profile 文件
+- 读取内部 profile 包中的 `config.jsonl`
+- 绑定内部 profile 包中的 `memory/`、`skills/`、`session/` 等 profile 级目录
 - 校验 profile 结构是否完整
 - 对缺失文件应用默认值或空值策略
 - 将 profile 内容装配到 `emoticorebot` 的运行时输入
 
-这里的重点不是“保留旧 profile 文本格式”，而是把 profile 本身升级为新系统的原生 workspace 模型。
+这里的重点不是“保留旧 profile 文本格式”，而是把这套 profile 文件升级为当前 app 项目中的原生内部包模型。
 
 一句话总结：
 
-profile 不再是旧 conversation 的提示词目录，而是新 Agent 的完整 persona/config/workspace 包。
+profile 不再是旧 conversation 的提示词目录，而是新 Agent 的完整 persona/config/app 文件包。
 
 ### 8.2 prompts 的处理方式
 
-旧 `prompts/` 中可复用的提示词片段建议保留，并优先迁入 `profiles/<name>/prompts/`，用于：
+旧 `prompts/` 中可复用的提示词片段建议保留，并优先迁入 `profiles/<name>/profiles/prompts/`，用于：
 
 - 构建 persona
 - 构建动作风格提示
@@ -670,7 +704,7 @@ profile 不再是旧 conversation 的提示词目录，而是新 Agent 的完整
 目标：
 
 - 让当前项目能启动文本级主入口
-- 跑通 `profile -> front -> 文本回复`
+- 跑通 `app 文件包 -> front -> 文本回复`
 
 本阶段不做：
 
@@ -682,25 +716,25 @@ profile 不再是旧 conversation 的提示词目录，而是新 Agent 的完整
 
 成功标准：
 
-- profile 已真正驱动 `front`
+- app 文件包已真正驱动 `front`
 - 文本回复链路已经接通 `front`
 - `agent` 命令行入口已可用于文本级启动和验证
 
 当前第一版实现已经落到：
 
-- `src/reachy_mini/agent_runtime/main.py`
-- `src/reachy_mini/agent_runtime/config.py`
+- `src/reachy_mini/runtime/main.py`
+- `src/reachy_mini/runtime/config.py`
 - `src/reachy_mini/front/service.py`
 - `src/reachy_mini/front/prompt.py`
-- `src/reachy_mini/agent_runtime/model_factory.py`
-- `src/reachy_mini/agent_runtime/runner.py`
-- `src/reachy_mini/agent_runtime/session_store.py`
-- `src/reachy_mini/agent_runtime/workspace.py`
+- `src/reachy_mini/runtime/model_factory.py`
+- `src/reachy_mini/runtime/scheduler.py`
+- `src/reachy_mini/core/memory.py`
+- `src/reachy_mini/runtime/project.py`
 
 当前命令形态为：
 
-- `reachy-mini-agent create <profile_name>`
-- `reachy-mini-agent agent <profile_name|profile_path>`
+- `reachy-mini-agent create <app_name>`
+- `reachy-mini-agent agent <app_name|app_path>`
 
 ### 阶段 2：再接入 kernel
 
@@ -717,11 +751,11 @@ profile 不再是旧 conversation 的提示词目录，而是新 Agent 的完整
 当前 2026-03-26 的阶段性结果：
 
 - 已将 `emoticorebot` 的 standalone 内核代码直接迁入当前仓库：
-  - `src/reachy_mini/agent_core/`
-- `reachy-mini-agent` 默认链路已经不再是 front-only
+  - `src/reachy_mini/core/`
+- `reachy-mini-agent` 默认链路已经完全切到 resident kernel
 - 当前默认文本链路为：
-  - `profile -> front -> BrainKernel -> front`
-- `--front-only` 仍保留为回退路径
+  - `app 文件包 -> front -> BrainKernel -> front`
+- resident runtime scheduler 已接入，内核以常驻生命周期运行，不再保留旧回退参数
 
 ### 阶段 3：接回机器人动作与音频输出
 
@@ -771,11 +805,8 @@ profile 不再是旧 conversation 的提示词目录，而是新 Agent 的完整
   - 升级 Python 版本
   - 引入新脑子需要的依赖
 - `src/reachy_mini/apps/app.py`
-  - 删除 conversation 模板入口或改成 legacy
+  - 删除旧的 `conversation/legacy-conversation` 模板入口
   - 删除 `check` / `publish` 子命令，以及相关 `--publish`、`--private` 等发布参数
-- `src/reachy_mini/apps/fork_conversation.py`
-  - 标记 legacy 或删除
-  - 清理创建完成后的 `check` 指引文案
 - `docs/source/index.mdx`
   - 后续重写 AI/Conversation 说明
 - `docs/source/SDK/integration.md`
@@ -783,15 +814,15 @@ profile 不再是旧 conversation 的提示词目录，而是新 Agent 的完整
 
 ### 14.2 当前仓库中建议新增的文件
 
-- `src/reachy_mini/agent_runtime/main.py`
-- `src/reachy_mini/agent_runtime/surface_driver.py`
-- `src/reachy_mini/agent_runtime/speech_driver.py`
-- `src/reachy_mini/agent_runtime/robot_tools.py`
-- `src/reachy_mini/agent_runtime/profile_loader.py`
+- `src/reachy_mini/runtime/main.py`
+- `src/reachy_mini/runtime/surface_driver.py`
+- `src/reachy_mini/runtime/speech_driver.py`
+- `src/reachy_mini/runtime/robot_tools.py`
+- `src/reachy_mini/runtime/profile_loader.py`
 
 ### 14.3 当前仓库中建议新增的目录
 
-- `src/reachy_mini/agent_core/`
+- `src/reachy_mini/core/`
 - `src/reachy_mini/legacy_conversation_assets/`
 - `profiles/`
 
@@ -800,12 +831,12 @@ profile 不再是旧 conversation 的提示词目录，而是新 Agent 的完整
 - 旧 `moves.py` -> `src/reachy_mini/legacy_conversation_assets/moves.py`
 - 旧 `camera_worker.py` -> `src/reachy_mini/legacy_conversation_assets/camera_worker.py`
 - 通用机器人 `tools/` -> `src/reachy_mini/legacy_conversation_assets/tools/`
-- 旧 `profiles/` 内容 -> 重构为 `profiles/<name>/AGENTS.md`、`USER.md`、`SOUL.md`、`TOOLS.md`、`FRONT.md`、`config.jsonl`
-- profile 级记忆数据 -> `profiles/<name>/memory/`
-- profile 级 skills -> `profiles/<name>/skills/`
-- profile 级会话数据 -> `profiles/<name>/session/`
-- 旧 profile 私有工具 -> `profiles/<name>/tools/`
-- 旧 profile 私有提示素材 -> `profiles/<name>/prompts/`
+- 旧 `profiles/` 内容 -> 重构为 `profiles/<name>/profiles/AGENTS.md`、`USER.md`、`SOUL.md`、`TOOLS.md`、`FRONT.md`、`config.jsonl`
+- profile 级记忆数据 -> `profiles/<name>/profiles/memory/`
+- profile 级 skills -> `profiles/<name>/profiles/skills/`
+- profile 级会话数据 -> `profiles/<name>/profiles/session/`
+- 旧 profile 私有工具 -> `profiles/<name>/profiles/tools/`
+- 旧 profile 私有提示素材 -> `profiles/<name>/profiles/prompts/`
 
 ## 15. 风险清单
 
@@ -888,7 +919,7 @@ profile 不再是旧 conversation 的提示词目录，而是新 Agent 的完整
 建议严格按以下顺序执行：
 
 1. 先接入新大脑，不动复杂动作
-2. 先跑通 `profile -> front -> 文本回复`
+2. 先跑通 `app 文件包 -> front -> 文本回复`
 3. 再接入 `kernel`
 4. 再把 `reply` 接回音频
 5. 再把 `surface_state` 接回头部/天线
@@ -932,8 +963,14 @@ profile 不再是旧 conversation 的提示词目录，而是新 Agent 的完整
 3. 不保留旧 conversation app 的 realtime 主流程作为主脑。
 4. 将 `emoticorebot` 作为新的唯一大脑接入当前项目。
 5. 用 `surface_state / reply / tool call` 接管旧控制层。
-6. 退役 `reachy-mini-app-assistant` 的 `check` / `publish` 命令，不再保留旧 app store 发布流。
+6. 退役 `reachy-mini-app-assistant` 的 `check` / `publish` 命令，不再保留旧发布流。
 7. 迁入 `emoticorebot` 的 `agent` 命令行入口，作为文本级主入口之一。
 8. 暂不接入 `emoticorebot` 现有的 `desktop / desktop-dev` 入口，先聚焦 Reachy 主路径。
 
 这就是本项目后续改造的统一基线。
+
+
+
+
+
+

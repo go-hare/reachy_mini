@@ -6,14 +6,14 @@ from datetime import datetime
 from pathlib import Path
 
 from reachy_mini.affect import EmotionSignal
-from reachy_mini.agent_core.memory import MemoryView
+from reachy_mini.core.memory import MemoryView
 
 
 class FrontPromptBuilder:
     """Build prompts for fast user-facing replies."""
 
-    def __init__(self, workspace: Path | None = None):
-        self.workspace = workspace
+    def __init__(self, profile_root: Path | None = None):
+        self.profile_root = profile_root
 
     def build_user_prompt(
         self,

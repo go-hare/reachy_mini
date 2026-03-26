@@ -2,8 +2,8 @@
 
 from pathlib import Path
 
-from reachy_mini.agent_runtime.config import load_agent_profile_config
-from reachy_mini.agent_runtime.profile_loader import load_profile_workspace
+from reachy_mini.runtime.config import load_profile_runtime_config
+from reachy_mini.runtime.profile_loader import load_profile_bundle
 
 
 def _write_profile(profile_root: Path, *, config_jsonl: str) -> None:
@@ -20,7 +20,7 @@ def _write_profile(profile_root: Path, *, config_jsonl: str) -> None:
         (profile_root / directory).mkdir()
 
 
-def test_load_agent_profile_config_reads_front_settings(tmp_path: Path) -> None:
+def test_load_profile_runtime_config_reads_front_settings(tmp_path: Path) -> None:
     """Parse front settings from config.jsonl."""
     profile_root = tmp_path / "demo"
     profile_root.mkdir()
@@ -32,8 +32,8 @@ def test_load_agent_profile_config_reads_front_settings(tmp_path: Path) -> None:
         ),
     )
 
-    profile = load_profile_workspace(profile_root)
-    config = load_agent_profile_config(profile)
+    profile = load_profile_bundle(profile_root)
+    config = load_profile_runtime_config(profile)
 
     assert config.front_mode == "text"
     assert config.front_style == "warm_precise"
@@ -44,7 +44,7 @@ def test_load_agent_profile_config_reads_front_settings(tmp_path: Path) -> None:
     assert config.front_model.temperature == 0.2
 
 
-def test_load_agent_profile_config_reads_kernel_settings(tmp_path: Path) -> None:
+def test_load_profile_runtime_config_reads_kernel_settings(tmp_path: Path) -> None:
     """Parse kernel settings from config.jsonl."""
     profile_root = tmp_path / "demo"
     profile_root.mkdir()
@@ -56,8 +56,8 @@ def test_load_agent_profile_config_reads_kernel_settings(tmp_path: Path) -> None
         ),
     )
 
-    profile = load_profile_workspace(profile_root)
-    config = load_agent_profile_config(profile)
+    profile = load_profile_bundle(profile_root)
+    config = load_profile_runtime_config(profile)
 
     assert config.front_model.model == "front-demo"
     assert config.kernel_model.provider == "openai"

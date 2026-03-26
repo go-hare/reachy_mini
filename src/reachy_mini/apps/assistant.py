@@ -3,7 +3,6 @@
 import subprocess
 from pathlib import Path
 
-import questionary
 from jinja2 import Environment, FileSystemLoader
 from rich.console import Console
 
@@ -53,6 +52,8 @@ def create_cli(
 ) -> tuple[str, Path]:
     """Gather the values needed to create a new app project."""
     if app_name is None:
+        import questionary
+
         console.print("$ What is the name of your app?")
         app_name = questionary.text(
             ">",
@@ -67,6 +68,8 @@ def create_cli(
     app_name = app_name.replace("-", "_")
 
     if app_path is None:
+        import questionary
+
         console.print("\n$ Where do you want to create your app project?")
         app_path_value = questionary.path(
             ">",
@@ -92,7 +95,7 @@ def create(console: Console, app_name: str | None, app_path: Path | None) -> Pat
     """Create a new Reachy Mini app project."""
     app_name, app_path = create_cli(console, app_name, app_path)
 
-    template_dir = Path(__file__).parent / "templates"
+    template_dir = Path(__file__).parent / "templates" / "app"
     env = Environment(loader=FileSystemLoader(template_dir))
 
     def render_template(filename: str, context: dict[str, str]) -> str:
@@ -120,9 +123,13 @@ def create(console: Console, app_name: str | None, app_path: Path | None) -> Pat
         "class_name": class_name,
         "class_name_display": class_name_display,
         "entrypoint_name": entrypoint_name,
+        "include_profile_bundle": False,
     }
 
-    (base_path / module_name / "__init__.py").touch()
+    (base_path / module_name / "__init__.py").write_text(
+        render_template("__init__.py.j2", context),
+        encoding="utf-8",
+    )
     (base_path / module_name / "main.py").write_text(
         render_template("main.py.j2", context),
         encoding="utf-8",

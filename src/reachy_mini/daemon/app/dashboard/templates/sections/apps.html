@@ -1,6 +1,38 @@
 <section class="w-full">
     <div class="app-section">
         <div class="app-section-title">Applications</div>
+        <div
+            id="current-app-summary"
+            class="mb-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3"
+        >
+            <div class="flex flex-wrap items-center gap-2">
+                <span class="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                    Current app
+                </span>
+                <span
+                    id="current-app-summary-state"
+                    class="inline-flex items-center rounded-full bg-slate-200 px-2.5 py-1 text-xs font-medium text-slate-700"
+                >
+                    Idle
+                </span>
+            </div>
+            <div
+                id="current-app-summary-title"
+                class="mt-2 text-base font-semibold text-slate-900"
+            >
+                No app running
+            </div>
+            <div
+                id="current-app-summary-note"
+                class="mt-1 text-sm text-slate-600"
+            >
+                Daemon will autostart the only installed app on startup.
+            </div>
+            <div
+                id="current-app-summary-error"
+                class="mt-2 hidden rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700"
+            ></div>
+        </div>
         <div class="">
             <ul id="installed-apps" class="overflow-y-auto max-h-96"></ul>
         </div>

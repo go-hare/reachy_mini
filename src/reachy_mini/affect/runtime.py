@@ -153,7 +153,10 @@ class AffectRuntime:
             pressure_delta=pressure_delta,
             emotion_signal=emotion_signal,
         )
-def create_affect_runtime(workspace: Path, model_path: Path | str | None) -> AffectRuntime | None:
+def create_affect_runtime(
+    profile_root: Path,
+    model_path: Path | str | None,
+) -> AffectRuntime | None:
     """Create a Chordia-backed affect runtime from an explicit model path."""
 
     if model_path is None or ort is None:
@@ -165,7 +168,7 @@ def create_affect_runtime(workspace: Path, model_path: Path | str | None) -> Aff
     if not resolved.exists():
         return None
 
-    store = AffectStateStore(workspace)
+    store = AffectStateStore(profile_root)
     predictor = ChordiaOnnxRunner(resolved)
     return AffectRuntime(store=store, predictor=predictor)
 

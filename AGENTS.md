@@ -31,20 +31,20 @@ Unless the user explicitly requests otherwise:
 ### Always Create Python Apps
 
 When creating apps:
-- **Always use Python** - Python apps are discoverable and shareable via the robot's app store
+- **Always use Python** - Python apps are the standard packaged app format in this repository
 - **NEVER create app folders manually** - always use the app assistant (handles metadata, entry points, structure)
 - **If the command fails** - ask the user to run it in their terminal; don't attempt complex workarounds
 - **Web UIs go in `static/`** - Python apps can have web frontends
 
 ```bash
-# Default template (minimal app - good for most cases):
-reachy-mini-app-assistant create <app_name> <path> --publish
+# Python app package:
+reachy-mini-app-assistant create <app_name> <path>
 
-# Conversation template (for LLM integration, speech, making robot talk):
-reachy-mini-app-assistant create --template conversation <app_name> <path> --publish
+# Shared-runtime app project:
+reachy-mini-agent create <app_name>
 ```
 
-See `skills/create-app.md` for details. JS-only apps are not yet supported for discovery/sharing.
+See `skills/create-app.md` for details. JS-only apps are not yet supported as the standard packaged app path.
 
 ### Always Create plan.md Before Coding
 
@@ -225,3 +225,7 @@ mini.play_move(moves.get("happy"), initial_goto_duration=1.0)
 - **Source code**: https://github.com/pollen-robotics/reachy_mini
 - **Community apps**: https://huggingface.co/spaces?q=reachy_mini
 - **Discord**: https://discord.gg/Y7FgMqHsub
+
+
+
+

@@ -8,13 +8,13 @@ from typing import TYPE_CHECKING, Any
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from reachy_mini.affect import AffectState, EmotionSignal
-from reachy_mini.agent_core.memory import MemoryView
+from reachy_mini.core.memory import MemoryView
 from reachy_mini.companion import CompanionIntent, SurfaceExpression
 from reachy_mini.front.prompt import FrontPromptBuilder
 from reachy_mini.utils.llm_utils import extract_message_text
 
 if TYPE_CHECKING:
-    from reachy_mini.agent_runtime.profile_loader import ProfileWorkspace
+    from reachy_mini.runtime.profile_loader import ProfileBundle
 
 _INTENT_MODE_HINTS = {
     "comfort": "把人先接住，贴近一点，安抚感放到前面，再慢慢把事往前带。",
@@ -158,11 +158,11 @@ _SUPPORT_NEED_HINTS = {
 class FrontService:
     """Fast conversational layer that talks to the user first."""
 
-    def __init__(self, profile: "ProfileWorkspace", model: Any):
+    def __init__(self, profile: "ProfileBundle", model: Any):
         self.profile = profile
-        self.workspace = profile.root
+        self.profile_root = profile.root
         self.model = model
-        self.prompts = FrontPromptBuilder(self.workspace)
+        self.prompts = FrontPromptBuilder(self.profile_root)
 
     async def reply(
         self,

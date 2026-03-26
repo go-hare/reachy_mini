@@ -79,6 +79,7 @@ class Args:
     check_collision: bool = False
 
     autostart: bool = True
+    autostart_installed_app: bool = True
     timeout_health_check: float | None = None
 
     wake_up_on_start: bool = True
@@ -163,6 +164,8 @@ def create_app(args: Args, health_check_event: asyncio.Event | None = None) -> F
                     localhost_only=localhost_only,
                     hardware_config_filepath=args.hardware_config_filepath,
                 )
+                if args.autostart_installed_app:
+                    await app.state.app_manager.autostart_installed_app()
 
             # Register mDNS service only after the daemon is ready
             mdns.register()
@@ -508,6 +511,18 @@ def main() -> None:
         type=float,
         default=None,
         help="Set the health check timeout in seconds (default: None).",
+    )
+    parser.add_argument(
+        "--autostart-installed-app",
+        action="store_true",
+        default=default_args.autostart_installed_app,
+        help="Autostart the only installed app after the daemon backend is ready (default: True).",
+    )
+    parser.add_argument(
+        "--no-autostart-installed-app",
+        action="store_false",
+        dest="autostart_installed_app",
+        help="Do not autostart an installed app on daemon startup (default: False).",
     )
     parser.add_argument(
         "--wake-up-on-start",

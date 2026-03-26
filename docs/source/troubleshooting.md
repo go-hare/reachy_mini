@@ -184,7 +184,7 @@ Wireless units do not expose the robot over USB the way the Lite version does, s
 Instead:
 
 - Join the robot to your Wi-Fi network and use the SDK client on your laptop to control it remotely.
-- If you want to run code directly on the embedded Raspberry Pi, SSH in and execute your scripts there (this is what Reachy Mini Control does after you publish/install an app).
+- If you want to run code directly on the embedded Raspberry Pi, SSH in and execute your scripts there (this is what Reachy Mini Control does after it installs and starts an app).
 - For a tethered link, use a USB-C-to-Ethernet adapter plus an Ethernet cable—this simply replaces Wi-Fi with wired Ethernet.
 
 </details>
@@ -322,9 +322,9 @@ Note that you may also need to use mirrors to reach services like PyPI and GitHu
 </details>
 
 <details>
-<summary><strong>How to make the conversation app work in China?</strong></summary>
+<summary><strong>How to make the legacy conversation app work in China?</strong></summary>
 
-Reachy Mini conversation app relies on OpenAI gpt-realtime API, which might be inaccessible from China.
+The legacy Reachy Mini conversation app relies on OpenAI gpt-realtime API, which might be inaccessible from China.
 
 The best workaround at the moment is to set up a VPN on your machine (Lite version), on the robot (Wireless version), or directly on your router.
 
@@ -516,13 +516,15 @@ with ReachyMini() as mini:
 </details>
 
 <details>
-<summary><strong>How do I create a new App?</strong></summary>
+<summary><strong>How do I create a new app?</strong></summary>
 
-1.  Use the generator: `reachy-mini-make-app my_app_name`.
-2.  Edit `main.py` in the generated folder.
-3.  Run it: `python my_app_name/main.py`.
+Current paths:
 
-Check the [Hugging Face Tutorial](https://huggingface.co/blog/pollen-robotics/make-and-publish-your-reachy-mini-apps) for details.
+1.  For a Python app package, use: `reachy-mini-app-assistant create my_app_name`
+2.  For a shared-runtime app project, use: `reachy-mini-agent create my_app`
+3.  Run the shared resident runtime with: `reachy-mini-agent agent my_app`
+
+The older Hugging Face tutorial remains useful for optional app publishing, but it is no longer the main local AI workflow in this repository.
 
 </details>
 
@@ -818,3 +820,5 @@ If you couldn't find the answer to your issue in this guide, please reach out to
 The Pollen Robotics team and the community are active on Discord to help you troubleshoot specific problems.
 
 👉 **[Join the Pollen Robotics Discord](https://discord.gg/Y7FgMqHsub)**
+
+

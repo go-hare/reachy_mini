@@ -2,7 +2,7 @@
 
 ## 1. 文档定位
 
-本文档是 `/Users/apple/work-py/reachy_mini` 的阶段性改造执行文档。
+本文档是 `D:/work/py/reachy_mini` 的阶段性改造执行文档。
 
 它不重复展开完整架构设计，而是回答下面几个问题：
 
@@ -15,6 +15,18 @@
 对应的架构基线、模块取舍和设计背景，见：
 
 - `emoticorebot-agent-migration.zh-CN.md`
+
+对话通道与 WebSocket 事件流的补充决策，见：
+
+- `emoticorebot-agent-dialogue-websocket.zh-CN.md`
+
+目录命名目标统一为：
+
+- `src/reachy_mini/apps/`
+- `src/reachy_mini/runtime/`
+- `src/reachy_mini/core/`
+
+其中当前实现里的 `agent_runtime/` 与 `agent_core/` 视为过渡命名。
 
 ## 2. 当前已确认基线
 
@@ -29,23 +41,30 @@
    - app 生命周期
 2. 旧 conversation / realtime 主脑不再作为未来主干保留。
 3. 新系统只保留一个脑子：`emoticorebot`。
-4. `profile` 不再是旧 conversation 的提示词目录，而是新的 profile workspace。
-5. `profile` 的标准目录形态为：
-   - `profiles/<name>/AGENTS.md`
-   - `profiles/<name>/USER.md`
-   - `profiles/<name>/SOUL.md`
-   - `profiles/<name>/TOOLS.md`
-   - `profiles/<name>/FRONT.md`
-   - `profiles/<name>/config.jsonl`
-   - `profiles/<name>/memory/`
-   - `profiles/<name>/skills/`
-   - `profiles/<name>/session/`
-   - `profiles/<name>/tools/`
-   - `profiles/<name>/prompts/`
+4. `profiles/<name>/` 不再只是旧 conversation 的提示词目录，而是用户创建的 app 项目目录。
+5. 当前项目中，app 项目的标准目录形态为：
+   - `profiles/<name>/README.md`
+   - `profiles/<name>/pyproject.toml`
+   - `profiles/<name>/.gitignore`
+   - `profiles/<name>/index.html`
+   - `profiles/<name>/style.css`
+   - `profiles/<name>/<name>/main.py`
+   - `profiles/<name>/<name>/static/`
+   - `profiles/<name>/profiles/AGENTS.md`
+   - `profiles/<name>/profiles/USER.md`
+   - `profiles/<name>/profiles/SOUL.md`
+   - `profiles/<name>/profiles/TOOLS.md`
+   - `profiles/<name>/profiles/FRONT.md`
+   - `profiles/<name>/profiles/config.jsonl`
+   - `profiles/<name>/profiles/memory/`
+   - `profiles/<name>/profiles/skills/`
+   - `profiles/<name>/profiles/session/`
+   - `profiles/<name>/profiles/tools/`
+   - `profiles/<name>/profiles/prompts/`
 6. `profile` 结构中不包含 `HEARTBEAT.md`。
 7. `reachy-mini-app-assistant` 的 `check` / `publish` 命令将退役。
 8. `emoticorebot` 的 `agent` 命令行入口需要迁过来，作为文本级主入口之一。
-9. 阶段 2 先跑通 `profile -> front -> 文本回复`。
+9. 阶段 2 先跑通 `app 文件包 -> front -> 文本回复`。
 10. 在阶段 2 稳定后，再单独接入 `kernel`。
 11. `emoticorebot` 现有的 `desktop / desktop-dev` 入口暂不纳入首批迁移主路径。
 
@@ -56,8 +75,8 @@
 | 阶段 | 名称 | 核心目标 |
 |------|------|----------|
 | 0 | 基线冻结 | 固定方向、目录模型、CLI 取舍、文档口径 |
-| 1 | Profile Workspace 与入口整理 | 先把 profile workspace 和 CLI 边界理顺 |
-| 2 | 新脑子接入 | 跑通 `profile -> front -> 文本回复` |
+| 1 | App 文件包与入口整理 | 先把 app 文件包和 CLI 边界理顺 |
+| 2 | 新脑子接入 | 跑通 `app 文件包 -> front -> 文本回复` |
 | 3 | Kernel 接入 | 在 front 文本层稳定后，接入 kernel |
 | 4 | Reachy 输出执行层接回 | 跑通 `surface_state` 和 `reply` 到机器人动作/音频 |
 | 5 | 旧资产迁移与主干收口 | 迁移旧资产，清理旧入口，完成语义收口 |
@@ -67,7 +86,7 @@
 ### 4.1 目标
 
 - 固定“Reachy 做身体，emoticorebot 做大脑”的主方向
-- 固定 `profile workspace` 目录模型
+- 固定 `profiles/<name>/` 这套 app 项目目录模型
 - 固定 CLI 取舍
 - 固定首批不做的内容
 
@@ -87,7 +106,7 @@
 - 阶段 2 与阶段 3 的边界已经明确
 - `desktop / desktop-dev` 已被认定为非首批路径
 
-## 5. 阶段 1：Profile Workspace 与入口整理
+## 5. 阶段 1：App 文件包与入口整理
 
 ### 5.1 目标
 
@@ -95,10 +114,11 @@
 
 核心目标：
 
-- 将 `profiles/<name>/` 明确为新的正式 workspace 单元
-- 让 `profile loader` 面向新的 workspace 结构工作
+- 将 `profiles/<name>/` 明确为用户创建的 app 项目目录
+- 将 `profiles/<name>/profiles/` 明确为 app 内部的 profile 文件包
+- 让 `profile loader` 面向这套 app 文件包结构工作
 - 退役旧 app 发布流相关 CLI
-- 清理旧文档里关于 `check / publish / Hugging Face app store` 的主路径表述
+- 清理旧文档里关于 `check / publish / Hugging Face 发布流` 的主路径表述
 
 ### 5.2 本阶段做什么
 
@@ -123,23 +143,22 @@
 ### 5.4 建议落点
 
 - `profiles/`
-- `src/reachy_mini/agent_runtime/profile_loader.py`
+- `src/reachy_mini/runtime/profile_loader.py`
 - `src/reachy_mini/apps/app.py`
-- `src/reachy_mini/apps/fork_conversation.py`
 - 文档与技能文件中所有 `check / publish` 相关说明
 
 ### 5.5 本阶段交付物
 
-- 新 profile workspace 目录约定落地
+- 新 app 项目目录约定落地
 - `profile loader` 的新职责说明
 - CLI 清理完成
 - 文档口径统一
 
 ### 5.6 本阶段验收标准
 
-- `profiles/<name>/` 结构已经成为主文档的一部分
+- `profiles/<name>/` 项目结构已经成为主文档的一部分
 - 仓库不再把 `check / publish` 当作主路径
-- 当前阶段讨论和实现都围绕 profile workspace，而不是旧 app store 逻辑
+- 当前阶段讨论和实现都围绕用户创建的 app 文件包，而不是旧发布流逻辑
 
 ## 6. 阶段 2：新脑子接入
 
@@ -147,7 +166,7 @@
 
 先跑通最小闭环：
 
-`profile workspace -> front -> 文本回复`
+`app 文件包 -> front -> 文本回复`
 
 这一阶段的目标不是让机器人已经表现自然，而是先让 profile 真正驱动 front，并稳定产出文本回复。
 
@@ -155,7 +174,7 @@
 
 - 建立 Reachy 侧新的主入口
 - 迁入并接通 `agent` 命令行入口
-- 将选中的 profile workspace 装配到新运行时
+- 将选中的 app 文件包装配到新运行时
 - 接通 `front` 层
 - 跑通用户输入到文本回复
 - 明确 front 层与后续 kernel 接入的边界
@@ -169,20 +188,20 @@
 
 ### 6.4 建议落点
 
-- `src/reachy_mini/agent_runtime/main.py`
-- `src/reachy_mini/agent_runtime/profile_loader.py`
-- `src/reachy_mini/agent_runtime/config.py`
+- `src/reachy_mini/runtime/main.py`
+- `src/reachy_mini/runtime/profile_loader.py`
+- `src/reachy_mini/runtime/config.py`
 - `src/reachy_mini/front/service.py`
 - `src/reachy_mini/front/prompt.py`
-- `src/reachy_mini/agent_runtime/model_factory.py`
-- `src/reachy_mini/agent_runtime/runner.py`
-- `src/reachy_mini/agent_runtime/session_store.py`
-- `src/reachy_mini/agent_runtime/workspace.py`
+- `src/reachy_mini/runtime/model_factory.py`
+- `src/reachy_mini/runtime/scheduler.py`
+- `src/reachy_mini/core/memory.py`
+- `src/reachy_mini/runtime/project.py`
 
 ### 6.5 本阶段交付物
 
 - 选 profile
-- 加载 profile workspace
+- 加载 app 文件包
 - 启动新脑子
 - `front` 已参与文本回复链路
 - 得到文本级回复
@@ -190,30 +209,31 @@
 
 当前已落地的具体 CLI 为：
 
-- `reachy-mini-agent create <profile_name>`
-- `reachy-mini-agent agent <profile_name|profile_path>`
+- `reachy-mini-agent create <app_name>`
+- `reachy-mini-agent agent <app_name|app_path>`
 
 ### 6.6 本阶段验收标准
 
 - 文本输入已由 `emoticorebot` 接管
 - 文本回复已经经过 `front`
-- profile workspace 能真正影响当前 agent 的行为与配置
+- app 文件包能真正影响当前 agent 的行为与配置
 - `agent` 命令行已成为可用入口
 
 ### 6.7 当前实现状态
 
 截至 2026-03-26，阶段 2 的最小闭环已经有第一版实现：
 
-- 已新增 standalone `profile workspace` 初始化能力
+- 已新增 `profiles/<name>/` app 项目初始化能力
+- app 内部 profile 文件包当前位于 `profiles/<name>/profiles/`
 - 已新增 `reachy-mini-agent` CLI
-- 已跑通 `profile -> front -> 文本回复`
-- 仍保留 `--front-only` 作为回退开关
+- 已跑通 `app 文件包 -> front -> 文本回复`
+- 当前默认文本链路已切到 resident kernel，并移除了旧回退参数
 
 ## 7. 阶段 3：Kernel 接入
 
 ### 7.1 目标
 
-在 `profile -> front -> 文本回复` 跑稳之后，再把 kernel 接入主流程。
+在 `app 文件包 -> front -> 文本回复` 跑稳之后，再把 kernel 接入主流程。
 
 这一阶段的重点是把真正的决策、工具调用和记忆链路接进来，而不是继续扩大 front 的职责。
 
@@ -233,10 +253,10 @@
 
 ### 7.4 建议落点
 
-- `src/reachy_mini/agent_runtime/main.py`
-- `src/reachy_mini/agent_core/`
-- `src/reachy_mini/agent_core/runtime/`
-- `src/reachy_mini/agent_core/front/`
+- `src/reachy_mini/runtime/main.py`
+- `src/reachy_mini/core/`
+- `src/reachy_mini/runtime/`
+- `src/reachy_mini/front/`
 
 ### 7.5 本阶段交付物
 
@@ -255,22 +275,21 @@
 截至 2026-03-26，阶段 3 已完成第一版内核接入：
 
 - 已将 `emoticorebot` 的 standalone 内核代码直接迁入：
-  - `src/reachy_mini/agent_core/`
+  - `src/reachy_mini/core/`
 - `reachy-mini-agent agent` 默认已不再是简化 `kernel_service`，而是直接驱动 `BrainKernel`
 - 当前文本主链路已变为：
-  - `profile -> front(先接住) -> BrainKernel -> front(整理最终回复)`
-- `BrainKernel` 已直接使用 profile workspace 下的：
+  - `app 文件包 -> front(先接住) -> BrainKernel -> front(整理最终回复)`
+- `BrainKernel` 已直接使用 app 文件包下的：
   - `memory/`
   - `session/`
   - `USER.md`
   - `SOUL.md`
   - `TOOLS.md`
-- `--front-only` 仍保留，用于退回阶段 2 的纯 front 文本路径
+- 已迁入 resident runtime scheduler，内核通过常驻 `start()/publish_user_input()/recv_output()/stop()` 生命周期运行
 
 当前这一版还没有做的内容：
 
-- 还没有把 `emoticorebot/runtime/scheduler.py` 整体迁入当前项目
-- 还没有把 `emoticorebot/front/` 原版整包迁入；当前仍复用 `reachy_mini.agent_runtime.front_service`
+- 还没有把 `emoticorebot/front/` 原版整包迁入；当前仍复用 `reachy_mini.runtime.front_service`
 - 还没有接机器人动作、音频、desktop 入口
 
 ## 8. 阶段 4：Reachy 输出执行层接回
@@ -300,8 +319,8 @@
 
 ### 8.4 建议落点
 
-- `src/reachy_mini/agent_runtime/surface_driver.py`
-- `src/reachy_mini/agent_runtime/speech_driver.py`
+- `src/reachy_mini/runtime/surface_driver.py`
+- `src/reachy_mini/runtime/speech_driver.py`
 
 ### 8.5 本阶段交付物
 
@@ -326,17 +345,17 @@
 - 迁移 `camera_worker.py`
 - 迁移通用机器人 `tools/`
 - 迁移旧 `prompts/`
-- 将旧 profile 内容重构进新的 `profiles/<name>/` workspace
+- 将旧 profile 内容重构进新的 `profiles/<name>/profiles/` profile 文件包
 - 清理 `fork_conversation` 相关入口
 - 清理旧 realtime 主流程
 
 ### 9.3 建议落点
 
 - `src/reachy_mini/legacy_conversation_assets/`
-- `profiles/<name>/tools/`
-- `profiles/<name>/prompts/`
-- `profiles/<name>/memory/`
-- `profiles/<name>/session/`
+- `profiles/<name>/profiles/tools/`
+- `profiles/<name>/profiles/prompts/`
+- `profiles/<name>/profiles/memory/`
+- `profiles/<name>/profiles/session/`
 
 ### 9.4 本阶段交付物
 
@@ -348,7 +367,7 @@
 
 - 项目语义已经稳定为“Reachy Mini + emoticorebot”
 - 旧脑子不再承担主路径职责
-- profile workspace 成为新的用户创建 agent 的正式载体
+- 用户创建的 app 文件包成为新的正式载体
 
 ## 10. CLI 策略
 
@@ -372,19 +391,19 @@
 
 - `emoticorebot agent`
 
-### 10.4 当前未决但不阻塞阶段推进
+### 10.4 当前明确保留
 
-以下事项可以后定，不阻塞前五个阶段：
+以下事项当前明确保留，不作为本轮清理目标：
 
-- 是否保留 `reachy-mini-app-assistant create`
-- 是否将 `create` 演进为更接近 `onboard` 的 workspace 初始化命令
+- `reachy-mini-agent create`，用于创建用户的 app 文件包
+- `profiles/<name>/` 这套项目目录形态，以及其中 `profiles/<name>/profiles/` 这层 profile 文件包布局
 
 ## 11. 推荐执行顺序
 
 建议严格按以下顺序推进：
 
-1. 先做阶段 1，整理 profile workspace 和 CLI 边界
-2. 再做阶段 2，跑通 `profile -> front -> 文本回复`
+1. 先做阶段 1，整理 app 文件包和 CLI 边界
+2. 再做阶段 2，跑通 `app 文件包 -> front -> 文本回复`
 3. 再做阶段 3，单独接入 kernel
 4. 再做阶段 4，把 Reachy 输出执行层接回
 5. 最后做阶段 5，迁移旧资产并清理旧入口
@@ -394,9 +413,9 @@
 为了避免阶段之间互相污染，建议按如下“完成信号”推进：
 
 - 阶段 1 完成信号：
-  profile workspace 已成为正式模型，CLI 不再保留旧发布流
+  app 文件包已成为正式模型，CLI 不再保留旧发布流
 - 阶段 2 完成信号：
-  `profile -> front -> 文本回复` 已稳定跑通
+  `app 文件包 -> front -> 文本回复` 已稳定跑通
 - 阶段 3 完成信号：
   kernel 已稳定接入文本主链路
 - 阶段 4 完成信号：
@@ -408,5 +427,17 @@
 
 这次改造不是“把旧 conversation app 修一修”，而是：
 
-先把用户创建 agent 的单位从旧 app/profile 模板升级为新的 profile workspace，  
+先把用户创建的 app 明确为 `profiles/<name>/` 这套项目目录，内部 profile 文件包位于 `profiles/<name>/profiles/`，  
 再让 `emoticorebot` 成为唯一大脑，最后把 Reachy 的身体能力完整接回去。
+
+
+
+
+
+
+
+
+
+
+
+

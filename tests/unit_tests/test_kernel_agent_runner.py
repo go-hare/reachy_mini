@@ -4,11 +4,11 @@ import asyncio
 from pathlib import Path
 
 from reachy_mini.affect import AffectState, AffectTurnResult, EmotionSignal, PADVector
-from reachy_mini.agent_core import BrainResponse, TaskType
-from reachy_mini.agent_core.memory import MemoryView
-from reachy_mini.agent_runtime.config import load_agent_profile_config
-from reachy_mini.agent_runtime.profile_loader import load_profile_workspace
-from reachy_mini.agent_runtime.runner import FrontAgentRunner
+from reachy_mini.core import BrainOutput, BrainOutputType, BrainResponse, TaskType
+from reachy_mini.core.memory import MemoryView
+from reachy_mini.runtime.config import load_profile_runtime_config
+from reachy_mini.runtime.profile_loader import load_profile_bundle
+from reachy_mini.runtime.scheduler import RuntimeScheduler
 
 
 def _write_profile(profile_root: Path) -> None:
@@ -29,6 +29,29 @@ def _write_profile(profile_root: Path) -> None:
         (profile_root / directory).mkdir()
 
 
+async def _collect_final_reply(runtime: RuntimeScheduler, *, thread_id: str, user_text: str) -> str:
+    queue = runtime.subscribe_front_outputs()
+    final_reply = ""
+    try:
+        await runtime.handle_user_text(
+            thread_id=thread_id,
+            session_id=thread_id,
+            user_id="user",
+            user_text=user_text,
+        )
+        await runtime.wait_for_thread_idle(thread_id)
+        while not queue.empty():
+                packet = queue.get_nowait()
+                try:
+                    if packet.thread_id == thread_id and packet.type == "front_final_done":
+                        final_reply = str(packet.text or "").strip()
+                finally:
+                    queue.task_done()
+        return final_reply
+    finally:
+        runtime.unsubscribe_front_outputs(queue)
+
+
 def test_kernel_agent_runner_uses_brain_kernel_records(tmp_path: Path) -> None:
     """The stage-3 runner should persist front and brain records via BrainKernel."""
 
@@ -37,18 +60,23 @@ def test_kernel_agent_runner_uses_brain_kernel_records(tmp_path: Path) -> None:
         profile_root.mkdir()
         _write_profile(profile_root)
 
-        profile = load_profile_workspace(profile_root)
-        config = load_agent_profile_config(profile)
-        runner = FrontAgentRunner.from_profile(
+        profile = load_profile_bundle(profile_root)
+        config = load_profile_runtime_config(profile)
+        runtime = RuntimeScheduler.from_profile(
             profile=profile,
             config=config,
             enable_affect=False,
         )
 
-        reply = await runner.reply(
-            thread_id="cli:main",
-            user_text="帮我看看日志",
-        )
+        await runtime.start()
+        try:
+            reply = await _collect_final_reply(
+                runtime,
+                thread_id="cli:main",
+                user_text="帮我看看日志",
+            )
+        finally:
+            await runtime.stop()
 
         front_path = profile_root / "session" / "cli_main" / "front.jsonl"
         brain_path = profile_root / "session" / "cli_main" / "brain.jsonl"
@@ -61,6 +89,51 @@ def test_kernel_agent_runner_uses_brain_kernel_records(tmp_path: Path) -> None:
         assert '"role": "assistant"' in brain_text
 
     asyncio.run(_exercise())
+
+
+def test_kernel_agent_runner_handles_multiple_turns_in_one_resident_runtime(
+    tmp_path: Path,
+) -> None:
+    """One started runtime should handle consecutive turns without restarting the kernel."""
+
+    async def _exercise() -> None:
+        profile_root = tmp_path / "demo"
+        profile_root.mkdir()
+        _write_profile(profile_root)
+
+        profile = load_profile_bundle(profile_root)
+        config = load_profile_runtime_config(profile)
+        runtime = RuntimeScheduler.from_profile(
+            profile=profile,
+            config=config,
+            enable_affect=False,
+        )
+
+        await runtime.start()
+        try:
+            first_reply = await _collect_final_reply(
+                runtime,
+                thread_id="cli:main",
+                user_text="先帮我看日志",
+            )
+            assert runtime.kernel.is_running
+
+            second_reply = await _collect_final_reply(
+                runtime,
+                thread_id="cli:main",
+                user_text="再总结一下刚才看到的情况",
+            )
+            assert runtime.kernel.is_running
+        finally:
+            await runtime.stop()
+
+        brain_path = profile_root / "session" / "cli_main" / "brain.jsonl"
+        brain_text = brain_path.read_text(encoding="utf-8")
+
+        assert first_reply
+        assert second_reply
+        assert brain_text.count('"role": "user"') >= 2
+        assert brain_text.count('"role": "assistant"') >= 2
 
 
 class FakeFront:
@@ -97,21 +170,46 @@ class FakeMemoryStore:
 
 
 class FakeKernel:
-    """Kernel stub that records front events and returns one response."""
+    """Resident-kernel stub that emits one queued response."""
 
     def __init__(self) -> None:
         self.agent_id = "demo"
         self.memory_store = FakeMemoryStore()
         self.front_events: list[dict[str, object]] = []
         self.user_inputs: list[dict[str, object]] = []
+        self._output_queue: asyncio.Queue[BrainOutput] = asyncio.Queue()
+        self._running = False
 
-    async def handle_front_event(self, **kwargs):
+    @property
+    def is_running(self) -> bool:
+        return self._running
+
+    async def start(self) -> None:
+        self._running = True
+
+    async def stop(self) -> None:
+        self._running = False
+        await self._output_queue.put(
+            BrainOutput(event_id="stop", type=BrainOutputType.stopped)
+        )
+
+    async def publish_front_event(self, **kwargs):
         self.front_events.append(kwargs)
         return kwargs
 
-    async def handle_user_input(self, **kwargs):
+    async def publish_user_input(self, **kwargs):
         self.user_inputs.append(kwargs)
-        return BrainResponse(task_type=TaskType.simple, reply="kernel raw")
+        await self._output_queue.put(
+            BrainOutput(
+                event_id=str(kwargs.get("event_id", "")),
+                type=BrainOutputType.response,
+                response=BrainResponse(task_type=TaskType.simple, reply="kernel raw"),
+            )
+        )
+        return str(kwargs.get("event_id", ""))
+
+    async def recv_output(self) -> BrainOutput:
+        return await self._output_queue.get()
 
 
 class FakeAffectRuntime:
@@ -154,23 +252,28 @@ def test_kernel_agent_runner_passes_affect_and_companion_through_front(tmp_path:
         profile_root.mkdir()
         _write_profile(profile_root)
 
-        profile = load_profile_workspace(profile_root)
-        config = load_agent_profile_config(profile)
+        profile = load_profile_bundle(profile_root)
+        config = load_profile_runtime_config(profile)
         front = FakeFront()
         kernel = FakeKernel()
         affect_runtime = FakeAffectRuntime()
-        runner = FrontAgentRunner(
-            profile=profile,
-            config=config,
+        runtime = RuntimeScheduler(
+            profile_root=profile.root,
             front=front,
             kernel=kernel,
             affect_runtime=affect_runtime,
+            front_style=config.front_style,
         )
 
-        reply = await runner.reply(
-            thread_id="cli:main",
-            user_text="帮我看看日志",
-        )
+        await runtime.start()
+        try:
+            reply = await _collect_final_reply(
+                runtime,
+                thread_id="cli:main",
+                user_text="帮我看看日志",
+            )
+        finally:
+            await runtime.stop()
 
         assert reply == "front final"
         assert affect_runtime.calls == ["帮我看看日志"]

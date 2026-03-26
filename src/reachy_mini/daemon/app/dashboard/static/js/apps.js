@@ -1,13 +1,158 @@
 const installedApps = {
     refreshAppList: async () => {
-        const appsData = await installedApps.fetchInstalledApps();
-        await installedApps.displayInstalledApps(appsData);
+        const [appsData, currentStatus] = await Promise.all([
+            installedApps.fetchInstalledApps(),
+            installedApps.syncCurrentAppStatus(),
+        ]);
+        installedApps.installedApps = appsData;
+        installedApps.renderCurrentAppSummary();
+        await installedApps.displayInstalledApps(appsData, currentStatus);
     },
 
+    installedApps: [],
+    currentAppStatus: null,
     currentlyRunningApp: null,
     busy: false,
     toggles: {},
     appUpdates: {},  // Store update status by app name
+    statusPollHandle: null,
+
+    buildWsUrl: (path) => {
+        const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+        return `${protocol}://${window.location.host}${path}`;
+    },
+
+    isSlotOccupied: (state) => ['starting', 'running', 'error', 'stopping'].includes(String(state || '').toLowerCase()),
+
+    statusSignature: (status) => JSON.stringify(
+        status
+            ? {
+                name: status?.info?.name || null,
+                state: status?.state || null,
+                error: status?.error || null,
+            }
+            : null
+    ),
+
+    stateMeta: (state) => {
+        const normalized = String(state || '').toLowerCase();
+        if (normalized === 'starting') {
+            return {
+                label: 'Starting',
+                classes: 'bg-amber-100 text-amber-800',
+                summary: 'Daemon autostarted this app and is waiting for it to come up.',
+            };
+        }
+        if (normalized === 'running') {
+            return {
+                label: 'Running',
+                classes: 'bg-emerald-100 text-emerald-800',
+                summary: 'This app is currently hosted by the daemon and kept resident.',
+            };
+        }
+        if (normalized === 'stopping') {
+            return {
+                label: 'Stopping',
+                classes: 'bg-slate-200 text-slate-700',
+                summary: 'Daemon is shutting this app down.',
+            };
+        }
+        if (normalized === 'error') {
+            return {
+                label: 'Error',
+                classes: 'bg-rose-100 text-rose-800',
+                summary: 'This app is still the current selection, but it exited with an error.',
+            };
+        }
+        return {
+            label: 'Idle',
+            classes: 'bg-slate-200 text-slate-700',
+            summary: 'No app is currently hosted by the daemon.',
+        };
+    },
+
+    renderCurrentAppSummary: () => {
+        const stateBadge = document.getElementById('current-app-summary-state');
+        const title = document.getElementById('current-app-summary-title');
+        const note = document.getElementById('current-app-summary-note');
+        const errorBox = document.getElementById('current-app-summary-error');
+        if (!stateBadge || !title || !note || !errorBox) {
+            return;
+        }
+
+        const status = installedApps.currentAppStatus;
+        const meta = installedApps.stateMeta(status?.state);
+
+        stateBadge.textContent = meta.label;
+        stateBadge.className = `inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${meta.classes}`;
+
+        if (status?.info?.name) {
+            title.textContent = status.info.name;
+            note.textContent = meta.summary;
+        } else if (installedApps.installedApps.length === 0) {
+            title.textContent = 'No installed apps';
+            note.textContent = 'Create or install an app first. There is nothing for daemon to autostart yet.';
+        } else if (installedApps.installedApps.length === 1) {
+            title.textContent = 'No app running';
+            note.textContent = 'Daemon will autostart the only installed app on the next startup.';
+        } else {
+            title.textContent = 'No app running';
+            note.textContent = 'Autostart is skipped when multiple installed apps exist. Choose one to run.';
+        }
+
+        if (status?.error) {
+            errorBox.textContent = status.error;
+            errorBox.classList.remove('hidden');
+        } else {
+            errorBox.textContent = '';
+            errorBox.classList.add('hidden');
+        }
+    },
+
+    syncControlAvailability: () => {
+        for (const toggle of Object.values(installedApps.toggles)) {
+            if (installedApps.busy) {
+                toggle.disable();
+            } else {
+                toggle.enable();
+            }
+        }
+
+        document.querySelectorAll('[data-app-remove]').forEach((button) => {
+            const locked = button.dataset.locked === 'true';
+            button.disabled = installedApps.busy || locked;
+            button.classList.toggle('opacity-40', button.disabled);
+            button.classList.toggle('cursor-not-allowed', button.disabled);
+        });
+    },
+
+    syncCurrentAppStatus: async () => {
+        const resp = await fetch('/api/apps/current-app-status');
+        if (!resp.ok) {
+            throw new Error(`Failed to fetch current app status: ${resp.statusText}`);
+        }
+        const data = await resp.json();
+        installedApps.currentAppStatus = data;
+        installedApps.currentlyRunningApp = data?.info?.name || null;
+        installedApps.renderCurrentAppSummary();
+        return data;
+    },
+
+    pollCurrentAppStatus: async () => {
+        if (installedApps.busy) {
+            return;
+        }
+        try {
+            const before = installedApps.statusSignature(installedApps.currentAppStatus);
+            const status = await installedApps.syncCurrentAppStatus();
+            const after = installedApps.statusSignature(status);
+            if (before !== after) {
+                await installedApps.refreshAppList();
+            }
+        } catch (error) {
+            console.error('Failed to poll current app status:', error);
+        }
+    },
 
     checkForUpdates: async (force = false) => {
         try {
@@ -73,7 +218,7 @@ const installedApps = {
         closeButton.classList = "hidden";
         closeButton.textContent = '';
 
-        const ws = new WebSocket(`ws://${location.host}/api/apps/ws/apps-manager/${jobId}`);
+        const ws = new WebSocket(installedApps.buildWsUrl(`/api/apps/ws/apps-manager/${jobId}`));
         ws.onmessage = (event) => {
             try {
                 if (event.data.startsWith('{') && event.data.endsWith('}')) {
@@ -123,15 +268,19 @@ const installedApps = {
         const resp = await fetch(endpoint, { method: 'POST' });
         if (!resp.ok) {
             console.error(`Failed to staret app ${appName}: ${resp.statusText}`);
-            installedApps.toggles[appName].setChecked(false);
+            if (installedApps.toggles[appName]) {
+                installedApps.toggles[appName].setChecked(false);
+            }
             installedApps.setBusy(false);
+            await installedApps.refreshAppList();
             return;
-        } else {
-            console.log(`App ${appName} started successfully.`);
         }
-
-        installedApps.currentlyRunningApp = appName;
+        const status = await resp.json();
+        installedApps.currentAppStatus = status;
+        installedApps.currentlyRunningApp = status?.info?.name || appName;
+        installedApps.renderCurrentAppSummary();
         installedApps.setBusy(false);
+        await installedApps.refreshAppList();
     },
 
     stopApp: async (appName, force = false) => {
@@ -143,7 +292,7 @@ const installedApps = {
 
         console.log(`Stopping app: ${appName}...`);
 
-        if (force) {
+        if (force && installedApps.toggles[appName]) {
             console.log(`Force stopping app: ${appName}...`);
             installedApps.toggles[appName].setChecked(false);
         }
@@ -153,27 +302,26 @@ const installedApps = {
         if (!resp.ok) {
             console.error(`Failed to stop app ${appName}: ${resp.statusText}`);
             installedApps.setBusy(false);
+            await installedApps.refreshAppList();
             return;
-        } else {
-            console.log(`App ${appName} stopped successfully.`);
+        }
+        console.log(`App ${appName} stopped successfully.`);
+        if (installedApps.toggles[appName]) {
             installedApps.toggles[appName].setChecked(false);
         }
 
         if (installedApps.currentlyRunningApp === appName) {
             installedApps.currentlyRunningApp = null;
         }
+        installedApps.currentAppStatus = null;
+        installedApps.renderCurrentAppSummary();
         installedApps.setBusy(false);
+        await installedApps.refreshAppList();
     },
 
     setBusy: (isBusy) => {
         installedApps.busy = isBusy;
-        for (const toggle of Object.values(installedApps.toggles)) {
-            if (isBusy) {
-                toggle.disable();
-            } else {
-                toggle.enable();
-            }
-        }
+        installedApps.syncControlAvailability();
     },
 
     fetchInstalledApps: async () => {
@@ -182,29 +330,33 @@ const installedApps = {
         return appsData;
     },
 
-    displayInstalledApps: async (appsData) => {
+    displayInstalledApps: async (appsData, currentStatus = installedApps.currentAppStatus) => {
         const appsListElement = document.getElementById('installed-apps');
         appsListElement.innerHTML = '';
 
         if (!appsData || appsData.length === 0) {
             appsListElement.innerHTML = '<li>No installed apps found.</li>';
+            installedApps.syncControlAvailability();
             return;
         }
-
-        const runningApp = await installedApps.getRunningApp();
 
         installedApps.toggles = {};
         appsData.forEach(app => {
             const li = document.createElement('li');
             li.className = 'app-list-item';
-            const isRunning = (app.name === runningApp);
-            li.appendChild(installedApps.createAppElement(app, isRunning));
+            const appStatus = currentStatus?.info?.name === app.name ? currentStatus : null;
+            li.appendChild(installedApps.createAppElement(app, appStatus));
             appsListElement.appendChild(li);
         });
+        installedApps.syncControlAvailability();
     },
 
-    createAppElement: (app, isRunning) => {
+    createAppElement: (app, appStatus) => {
         const hasUpdate = installedApps.appUpdates[app.name];
+        const state = appStatus?.state || null;
+        const isCurrent = appStatus?.info?.name === app.name;
+        const isOccupied = installedApps.isSlotOccupied(state);
+        const meta = installedApps.stateMeta(state);
         const container = document.createElement('div');
         // Original 3-column layout
         container.className = 'grid grid-cols-[auto_6rem_2rem] justify-stretch gap-x-2';
@@ -222,6 +374,18 @@ const installedApps = {
         }
 
         title.appendChild(titleSpan);
+
+        if (isCurrent) {
+            const currentBadge = document.createElement('span');
+            currentBadge.textContent = 'Current';
+            currentBadge.className = 'ml-2 inline-flex items-center rounded-full bg-sky-100 px-2.5 py-0.5 text-xs font-medium text-sky-700';
+            title.appendChild(currentBadge);
+
+            const stateBadge = document.createElement('span');
+            stateBadge.textContent = meta.label;
+            stateBadge.className = `ml-2 inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${meta.classes}`;
+            title.appendChild(stateBadge);
+        }
 
         // Add update button inline with title if update available
         if (hasUpdate) {
@@ -249,10 +413,22 @@ const installedApps = {
             settingsLink.rel = 'noopener noreferrer';
             title.appendChild(settingsLink);
         }
+        if (isCurrent) {
+            const helper = document.createElement('div');
+            helper.className = 'mt-1 text-sm text-slate-500';
+            helper.textContent = meta.summary;
+            title.appendChild(helper);
+        }
+        if (appStatus?.error) {
+            const error = document.createElement('div');
+            error.className = 'mt-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700';
+            error.textContent = appStatus.error;
+            title.appendChild(error);
+        }
         container.appendChild(title);
         const slider = document.createElement('div');
         const toggle = new ToggleSlider({
-            checked: isRunning,
+            checked: isOccupied,
             onChange: (checked) => {
                 if (installedApps.busy) {
                     toggle.setChecked(!checked);
@@ -272,8 +448,16 @@ const installedApps = {
         const remove = document.createElement('button');
         remove.innerHTML = '🗑️';
         remove.className = '-translate-y-1 text-xl';
+        remove.dataset.appRemove = app.name;
+        remove.dataset.locked = String(isOccupied);
+        remove.title = isOccupied
+            ? `Stop "${app.name}" before removing it.`
+            : `Remove "${app.name}"`;
         container.appendChild(remove);
         remove.onclick = async () => {
+            if (remove.disabled) {
+                return;
+            }
             console.log(`Removing ${app.name}...`);
             const resp = await fetch(`/api/apps/remove/${app.name}`, { method: 'POST' });
             const data = await resp.json();
@@ -286,13 +470,8 @@ const installedApps = {
     },
 
     getRunningApp: async () => {
-        const resp = await fetch('/api/apps/current-app-status');
-        const data = await resp.json();
-        if (!data) {
-            return null;
-        }
-        installedApps.currentlyRunningApp = data.info.name;
-        return data.info.name;
+        const status = await installedApps.syncCurrentAppStatus();
+        return status?.info?.name || null;
     },
 
     appUninstallLogHandler: async (appName, jobId) => {
@@ -311,7 +490,7 @@ const installedApps = {
         closeButton.classList = "hidden";
         closeButton.textContent = '';
 
-        const ws = new WebSocket(`ws://${location.host}/api/apps/ws/apps-manager/${jobId}`);
+        const ws = new WebSocket(installedApps.buildWsUrl(`/api/apps/ws/apps-manager/${jobId}`));
         ws.onmessage = (event) => {
             try {
                 if (event.data.startsWith('{') && event.data.endsWith('}')) {
@@ -440,6 +619,18 @@ class ToggleSlider {
 
 window.addEventListener('load', async () => {
     await installedApps.refreshAppList();
+    if (installedApps.statusPollHandle) {
+        window.clearInterval(installedApps.statusPollHandle);
+    }
+    installedApps.statusPollHandle = window.setInterval(
+        installedApps.pollCurrentAppStatus,
+        2000,
+    );
+    document.addEventListener('visibilitychange', async () => {
+        if (!document.hidden) {
+            await installedApps.refreshAppList();
+        }
+    });
     // Check for updates in background after initial load (short delay to not block UI)
     setTimeout(() => installedApps.checkForUpdates(), 500);
 });

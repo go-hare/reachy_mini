@@ -27,7 +27,7 @@ with ReachyMini() as mini:
 * **[Installation](installation.md)**: 5 minutes to set up your computer
 * **[Quickstart Guide](quickstart.md)**: Run your first behavior on Reachy Mini
 * **[Python SDK](python-sdk.md)**: Learn to move, see, speak, and hear.
-* **[AI Integrations](integration.md)**: Connect LLMs, build Apps, and publish to Hugging Face.
+* **[AI Integrations](integration.md)**: Connect LLMs, create app projects, and run the shared resident runtime.
 * **[Core Concepts](core-concept.md)**: Architecture, coordinate systems, and safety limits.
 
 ## 📂 Code Examples
@@ -52,3 +52,4 @@ Encountering an issue? 👉 **[Check the Troubleshooting & FAQ Guide](../trouble
 * [Discord](https://discord.gg/Y7FgMqHsub) - Get help and share projects.
 * [Hugging Face Spaces](https://huggingface.co/spaces?q=reachy_mini) - Discover community apps.
 * [GitHub Discussions](https://github.com/pollen-robotics/reachy_mini/discussions) - Feature requests and bugs.
+

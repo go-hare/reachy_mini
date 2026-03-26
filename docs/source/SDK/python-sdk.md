@@ -128,9 +128,10 @@ with ReachyMini() as mini:
 
 ## Next Steps
 * **[Browse the Examples Folder](https://github.com/pollen-robotics/reachy_mini/tree/main/examples)**
-* **[AI Integrations](integration.md)**: Connect LLMs, build Apps, and publish to Hugging Face.
+* **[AI Integrations](integration.md)**: Connect LLMs, create app projects, and run the shared resident runtime.
 * **[Core Concepts](core-concept.md)**: Architecture, coordinate systems, and safety limits.
 
 ## ❓ Troubleshooting
 
 Encountering an issue? 👉 **[Check the Troubleshooting & FAQ Guide](../troubleshooting.md)**
+

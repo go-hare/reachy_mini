@@ -1,0 +1,83 @@
+{% if include_profile_bundle %}
+<!doctype html>
+<html>
+
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width" />
+	<title> {{ class_name_display }} </title>
+	<link rel="stylesheet" href="style.css" />
+</head>
+
+<body>
+	<div class="hero">
+		<div class="hero-content">
+			<div class="app-icon">🤖⚡</div>
+			<h1> {{ class_name_display }} </h1>
+			<p class="tagline">Reachy Mini app with profile bundle</p>
+		</div>
+	</div>
+
+	<div class="container">
+		<div class="main-card">
+			<div class="app-preview">
+				<div class="preview-image">
+					<div class="camera-feed">🧠</div>
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<div class="footer">
+		<p>
+			🤖 {{ class_name_display }} •
+			<a href="https://github.com/pollen-robotics" target="_blank">Pollen Robotics</a> •
+			<a href="https://huggingface.co/spaces/pollen-robotics/reachy-mini-landing-page#apps" target="_blank">Browse More
+				Apps</a>
+		</p>
+	</div>
+</body>
+
+</html>
+{% else %}
+<!doctype html>
+<html>
+
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width" />
+	<title> {{ class_name_display }} </title>
+	<link rel="stylesheet" href="style.css" />
+</head>
+
+<body>
+	<div class="hero">
+		<div class="hero-content">
+			<div class="app-icon">🤖⚡</div>
+			<h1> {{ class_name_display }} </h1>
+			<p class="tagline">Enter your tagline here</p>
+		</div>
+	</div>
+
+	<div class="container">
+		<div class="main-card">
+			<div class="app-preview">
+				<div class="preview-image">
+					<div class="camera-feed">🛠️</div>
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<div class="footer">
+		<p>
+			🤖 {{ class_name_display }} •
+			<a href="https://github.com/pollen-robotics" target="_blank">Pollen Robotics</a> •
+			<a href="https://huggingface.co/spaces/pollen-robotics/reachy-mini-landing-page#apps" target="_blank">Browse More
+				Apps</a>
+		</p>
+	</div>
+</body>
+
+</html>
+{% endif %}

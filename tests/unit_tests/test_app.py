@@ -3,12 +3,15 @@ import threading
 from pathlib import Path
 from threading import Event
 import time
+from unittest.mock import AsyncMock
+
 import pytest
 import uvicorn
+from fastapi.testclient import TestClient
 
 from reachy_mini import ReachyMiniApp
 from reachy_mini.apps import AppInfo, SourceKind
-from reachy_mini.apps.manager import AppManager, AppState
+from reachy_mini.apps.manager import AppManager, AppState, AppStatus
 from reachy_mini.daemon.app.main import Args, create_app
 from reachy_mini.daemon.daemon import Daemon
 from reachy_mini.reachy_mini import ReachyMini
@@ -21,11 +24,12 @@ async def test_app() -> None:
             time.sleep(1)  # Simulate some processing time
 
     args = Args(
-        sim=True,
+        mockup_sim=True,
         headless=True,
         wake_up_on_start=False,
         no_media=True,
         autostart=True,
+        autostart_installed_app=False,
         fastapi_port=0,
     )
     app = create_app(args)
@@ -56,7 +60,7 @@ async def test_app() -> None:
 async def test_app_manager() -> None:
     daemon = Daemon(no_media=True)
     await daemon.start(
-        sim=True,
+        mockup_sim=True,
         headless=True,
         wake_up_on_start=False,
         use_audio=False,
@@ -114,11 +118,12 @@ async def test_faulty_app() -> None:
     # Without a server, the subprocess falls back to reachy-mini.local DNS
     # resolution which hangs in CI, causing the test to time out.
     args = Args(
-        sim=True,
+        mockup_sim=True,
         headless=True,
         wake_up_on_start=False,
         no_media=True,
         autostart=True,
+        autostart_installed_app=False,
         fastapi_port=8000,
     )
     app = create_app(args)
@@ -165,3 +170,101 @@ async def test_faulty_app() -> None:
         await daemon.stop(goto_sleep_on_stop=False)
         server.should_exit = True
         server_thread.join(timeout=10)
+
+
+@pytest.mark.asyncio
+async def test_app_manager_autostarts_single_installed_app(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app_mngr = AppManager()
+
+    async def fake_list_available_apps(source: SourceKind) -> list[AppInfo]:
+        assert source == SourceKind.INSTALLED
+        return [AppInfo(name="solo_app", source_kind=SourceKind.INSTALLED)]
+
+    async def fake_start_app(app_name: str, *args: object, **kwargs: object) -> AppStatus:
+        _ = args
+        _ = kwargs
+        return AppStatus(
+            info=AppInfo(name=app_name, source_kind=SourceKind.INSTALLED),
+            state=AppState.STARTING,
+        )
+
+    start_mock = AsyncMock(side_effect=fake_start_app)
+    monkeypatch.setattr(app_mngr, "list_available_apps", fake_list_available_apps)
+    monkeypatch.setattr(app_mngr, "start_app", start_mock)
+
+    status = await app_mngr.autostart_installed_app()
+
+    assert status is not None
+    assert status.info.name == "solo_app"
+    start_mock.assert_awaited_once_with("solo_app")
+
+
+@pytest.mark.asyncio
+async def test_app_manager_skips_autostart_when_multiple_installed_apps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app_mngr = AppManager()
+
+    async def fake_list_available_apps(source: SourceKind) -> list[AppInfo]:
+        assert source == SourceKind.INSTALLED
+        return [
+            AppInfo(name="app_a", source_kind=SourceKind.INSTALLED),
+            AppInfo(name="app_b", source_kind=SourceKind.INSTALLED),
+        ]
+
+    start_mock = AsyncMock()
+    monkeypatch.setattr(app_mngr, "list_available_apps", fake_list_available_apps)
+    monkeypatch.setattr(app_mngr, "start_app", start_mock)
+
+    status = await app_mngr.autostart_installed_app()
+
+    assert status is None
+    start_mock.assert_not_awaited()
+
+
+def test_create_app_lifespan_autostarts_installed_app(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DummyMdns:
+        def __init__(self, robot_name: str, fastapi_port: int) -> None:
+            _ = robot_name
+            _ = fastapi_port
+
+        def register(self) -> None:
+            return
+
+        def unregister(self) -> None:
+            return
+
+    args = Args(
+        mockup_sim=True,
+        headless=True,
+        wake_up_on_start=False,
+        no_media=True,
+        autostart=True,
+        autostart_installed_app=True,
+        fastapi_port=0,
+    )
+
+    monkeypatch.setattr("reachy_mini.daemon.app.main.MdnsServiceRegistration", DummyMdns)
+
+    app = create_app(args)
+    daemon_start = AsyncMock()
+    daemon_stop = AsyncMock()
+    app_close = AsyncMock()
+    autostart_app = AsyncMock(return_value=None)
+
+    app.state.daemon.start = daemon_start
+    app.state.daemon.stop = daemon_stop
+    app.state.app_manager.close = app_close
+    app.state.app_manager.autostart_installed_app = autostart_app
+
+    with TestClient(app):
+        pass
+
+    daemon_start.assert_awaited_once()
+    autostart_app.assert_awaited_once()
+    app_close.assert_awaited_once()
+    daemon_stop.assert_awaited_once()

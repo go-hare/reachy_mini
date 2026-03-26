@@ -34,11 +34,25 @@
 
 [[autodoc]] reachy_mini.apps.assistant.create
 
-## Profile Workspaces
+## Shared Runtime App Projects
 
-[[autodoc]] reachy_mini.agent_runtime.profile_loader.ProfileWorkspace
+[[autodoc]] reachy_mini.runtime.project.normalize_app_name
 
-[[autodoc]] reachy_mini.agent_runtime.profile_loader.load_profile_workspace
+[[autodoc]] reachy_mini.runtime.project.create_app_project
+
+[[autodoc]] reachy_mini.runtime.profile_loader.ProfileBundle
+
+[[autodoc]] reachy_mini.runtime.profile_loader.load_profile_bundle
+
+[[autodoc]] reachy_mini.runtime.config.ProfileRuntimeConfig
+
+[[autodoc]] reachy_mini.runtime.config.load_profile_runtime_config
+
+## Shared Runtime
+
+[[autodoc]] reachy_mini.runtime.scheduler.FrontOutputPacket
+
+[[autodoc]] reachy_mini.runtime.scheduler.RuntimeScheduler
 
 ## App Sources
 
