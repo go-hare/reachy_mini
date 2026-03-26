@@ -1,8 +1,6 @@
 """Model factory helpers for the runtime."""
 
 from __future__ import annotations
-
-import os
 from typing import Any
 
 from langchain_core.messages import AIMessage
@@ -135,12 +133,9 @@ def _build_remote_model(
     """Build one remote-backed chat model."""
     provider = str(config.provider or "mock").strip().lower()
     if provider == "openai":
-        api_key = os.getenv(config.api_key_env, "").strip() if config.api_key_env else ""
+        api_key = str(config.api_key or "").strip()
         if not api_key:
-            raise RuntimeError(
-                f"{layer_name} provider 'openai' requires the env var "
-                f"{config.api_key_env!r}."
-            )
+            raise RuntimeError(f"{layer_name} provider 'openai' requires `api_key`.")
         if not config.model.strip():
             raise RuntimeError(f"{layer_name} provider 'openai' requires a model name.")
         kwargs: dict[str, Any] = {

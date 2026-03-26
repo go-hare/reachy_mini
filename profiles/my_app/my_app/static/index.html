@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>My App settings</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body>
+    <div class="shell">
+        <section class="hero card">
+            <div>
+                <p class="eyebrow">Reachy Mini app</p>
+                <h1>My App</h1>
+                <p class="subtitle">这个页面直接挂在当前用户 app 的入口上，可以把消息送进这个 app 对应的常驻 runtime。</p>
+            </div>
+            <div class="status-wrap">
+                <span class="status-dot" id="status-dot"></span>
+                <span id="status">Checking runtime...</span>
+            </div>
+        </section>
+
+        <section class="layout">
+            <div class="card chat-card">
+                <div class="chat-header">
+                    <h2>Chat</h2>
+                    <p>消息会按当前 app 内部的 <code>profiles/</code> 文件来驱动前台和内核。</p>
+                </div>
+
+                <div class="chat-log" id="chat-log">
+                    <div class="message assistant">
+                        <div class="bubble">我已经在这里了。你可以直接发一句话，我会按这个 app 的 profile 来回复。</div>
+                    </div>
+                </div>
+
+                <form class="composer" id="chat-form">
+                    <label class="sr-only" for="message-input">Message</label>
+                    <textarea id="message-input" rows="3" placeholder="比如：帮我看看这个 app 现在的行为对不对"></textarea>
+                    <div class="composer-bar">
+                        <span class="hint">Enter 发送，Shift+Enter 换行</span>
+                        <button type="submit" id="send-button">Send</button>
+                    </div>
+                </form>
+            </div>
+
+            <div class="side-panel">
+                <div class="card">
+                    <h2>Editable files</h2>
+                    <ul>
+                        <li><code>profiles/AGENTS.md</code></li>
+                        <li><code>profiles/USER.md</code></li>
+                        <li><code>profiles/SOUL.md</code></li>
+                        <li><code>profiles/TOOLS.md</code></li>
+                        <li><code>profiles/FRONT.md</code></li>
+                        <li><code>profiles/config.jsonl</code></li>
+                    </ul>
+                </div>
+
+                <div class="card">
+                    <h2>Flow</h2>
+                    <ol>
+                        <li><code>ReachyMiniApp</code> 常驻托管当前 app 的 runtime</li>
+                        <li>页面通过 <code>/ws/agent</code> 把用户文本发进 runtime</li>
+                        <li><code>front</code> 先回一轮可见 hint，再把消息投给 <code>kernel</code></li>
+                        <li><code>kernel</code> 处理完成后，再交给 <code>front</code> 输出 final</li>
+                        <li>页面持续监听 <code>surface_state</code>、hint、final 和错误事件</li>
+                    </ol>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/main.js"></script>
+</body>
+
+</html>

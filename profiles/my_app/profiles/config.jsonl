@@ -1,0 +1,4 @@
+{"kind":"profile","name":"my_app"}
+{"kind":"front","mode":"text","style":"friendly_concise","history_limit":6}
+{"kind":"front_model","provider":"openai","model":"deepseek-chat","base_url":"https://api.deepseek.com/v1","api_key":"sk-5e7333b1a1e147d88f6bfba20cfc4ae7","temperature":0.4}
+{"kind":"kernel_model","provider":"openai","model":"deepseek-chat","base_url":"https://api.deepseek.com/v1","api_key":"sk-5e7333b1a1e147d88f6bfba20cfc4ae7","temperature":0.2}

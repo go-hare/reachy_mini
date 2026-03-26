@@ -61,6 +61,7 @@ wireless-version = [
     "lgpio>=0.2.2.0; sys_platform == 'linux'",
 ]
 opencv = ["opencv-python<=5.0", "cv2_enumerate_cameras>=1.2.1"]
+mcp-tools = ["httpx>=0.27,<1", "mcp>=1.0.0", "loguru>=0.7,<1"]
 all = [
     "reachy_mini[examples]",
     "reachy_mini[mujoco]",
@@ -68,7 +69,8 @@ all = [
     "reachy_mini[placo_kinematics]",
     "reachy_mini[rerun]",
     "reachy_mini[wireless-version]",
-    "reachy_mini[opencv]"
+    "reachy_mini[opencv]",
+    "reachy_mini[mcp-tools]"
 ]
 
 [dependency-groups]

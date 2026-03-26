@@ -20,6 +20,7 @@ from reachy_mini.reachy_mini import ReachyMini
 
 if TYPE_CHECKING:
     from reachy_mini.runtime.scheduler import RuntimeScheduler
+    from reachy_mini.runtime.tools import ReachyToolContext
 
 
 class ChatRequest(BaseModel):
@@ -87,6 +88,7 @@ class ReachyMiniApp:
         self.runtime: RuntimeScheduler | None = None
         self.runtime_loop: asyncio.AbstractEventLoop | None = None
         self.runtime_ready = threading.Event()
+        self.runtime_tool_context: Any | None = None
 
         self.settings_app: FastAPI | None = None
         if self.custom_app_url is not None and not self.dont_start_webserver:
@@ -196,8 +198,166 @@ class ReachyMiniApp:
                 "profile_root_relative_path to use the resident runtime."
             )
 
-        _ = reachy_mini
-        self.run_resident_runtime(stop_event)
+        self.runtime_tool_context = self.build_runtime_tool_context(reachy_mini)
+        try:
+            self.run_resident_runtime(stop_event)
+        finally:
+            self.cleanup_runtime_tool_context(self.runtime_tool_context)
+            self.runtime_tool_context = None
+
+    def build_runtime_tool_context(
+        self,
+        reachy_mini: ReachyMini | Any,
+    ) -> "ReachyToolContext | None":
+        """Build optional runtime tool dependencies from the running app instance."""
+        from reachy_mini.runtime.moves import MovementManager
+        from reachy_mini.runtime.tools import ReachyToolContext
+        from reachy_mini.runtime.config import (
+            VisionRuntimeConfig,
+            load_profile_runtime_config,
+        )
+        from reachy_mini.runtime.profile_loader import load_profile_bundle
+
+        if reachy_mini is None or not hasattr(reachy_mini, "goto_target"):
+            return None
+
+        vision_config = VisionRuntimeConfig()
+        if self.profile_root is not None:
+            profile = load_profile_bundle(self.profile_root)
+            runtime_config = load_profile_runtime_config(profile)
+            vision_config = runtime_config.vision
+
+        camera_worker = None
+        vision_processor = None
+        movement_manager = None
+        head_wobbler = None
+
+        if not vision_config.no_camera:
+            media = getattr(reachy_mini, "media", None)
+            if media is not None and hasattr(media, "get_frame"):
+                head_tracker = self._build_head_tracker(vision_config)
+                try:
+                    from reachy_mini.runtime.camera_worker import CameraWorker
+
+                    camera_worker = CameraWorker(reachy_mini, head_tracker)
+                    camera_worker.start()
+                except Exception as exc:
+                    self.logger.warning("Failed to start camera worker: %s", exc)
+
+            if vision_config.local_vision:
+                vision_processor = self._build_vision_processor(vision_config)
+
+        if all(
+            hasattr(reachy_mini, attribute)
+            for attribute in (
+                "set_target",
+                "get_current_head_pose",
+                "get_current_joint_positions",
+            )
+        ):
+            try:
+                movement_manager = MovementManager(
+                    reachy_mini,
+                    camera_worker=camera_worker,
+                )
+                movement_manager.start()
+            except Exception as exc:
+                self.logger.warning("Failed to start movement manager: %s", exc)
+
+        if movement_manager is not None:
+            try:
+                from reachy_mini.runtime.audio import HeadWobbler
+
+                head_wobbler = HeadWobbler(movement_manager.set_speech_offsets)
+                head_wobbler.start()
+            except Exception as exc:
+                self.logger.warning("Failed to start head wobbler: %s", exc)
+
+        return ReachyToolContext(
+            reachy_mini=reachy_mini,
+            camera_worker=camera_worker,
+            vision_processor=vision_processor,
+            movement_manager=movement_manager,
+            head_wobbler=head_wobbler,
+        )
+
+    def _build_head_tracker(self, vision_config: Any) -> Any | None:
+        """Build the configured head tracker using legacy conversation-app semantics."""
+        tracker_kind = str(getattr(vision_config, "head_tracker", "") or "").strip()
+        if not tracker_kind:
+            return None
+        if tracker_kind == "yolo":
+            from reachy_mini.runtime.vision.yolo_head_tracker import HeadTracker
+
+            return HeadTracker()
+        if tracker_kind == "mediapipe":
+            try:
+                from reachy_mini_toolbox.vision import HeadTracker
+            except ImportError as exc:
+                raise ImportError(
+                    "MediaPipe head tracking requires reachy_mini_toolbox vision support."
+                ) from exc
+            return HeadTracker()
+        raise ValueError(f"Unsupported head_tracker setting: {tracker_kind}")
+
+    def _build_vision_processor(self, vision_config: Any) -> Any:
+        """Build the configured local vision processor."""
+        from reachy_mini.runtime.vision.processors import (
+            VisionConfig,
+            initialize_vision_processor,
+        )
+
+        return initialize_vision_processor(
+            VisionConfig(
+                model_path=(
+                    str(getattr(vision_config, "local_vision_model", "") or "").strip()
+                    or VisionConfig().model_path
+                ),
+                hf_home=(
+                    str(getattr(vision_config, "hf_home", "") or "").strip()
+                    or VisionConfig().hf_home
+                ),
+            )
+        )
+
+    def cleanup_runtime_tool_context(self, context: Any | None) -> None:
+        """Stop runtime-managed helper resources."""
+        if context is None:
+            return
+        head_wobbler = getattr(context, "head_wobbler", None)
+        if head_wobbler is not None and hasattr(head_wobbler, "stop"):
+            try:
+                head_wobbler.stop()
+            except Exception as exc:
+                self.logger.warning("Failed to stop head wobbler: %s", exc)
+        movement_manager = getattr(context, "movement_manager", None)
+        if movement_manager is not None and hasattr(movement_manager, "stop"):
+            try:
+                movement_manager.stop()
+            except Exception as exc:
+                self.logger.warning("Failed to stop movement manager: %s", exc)
+        camera_worker = getattr(context, "camera_worker", None)
+        if camera_worker is not None and hasattr(camera_worker, "stop"):
+            try:
+                camera_worker.stop()
+            except Exception as exc:
+                self.logger.warning("Failed to stop camera worker: %s", exc)
+
+    def feed_runtime_audio_delta(self, delta_b64: str) -> bool:
+        """Feed one assistant audio delta into the runtime head wobbler."""
+        head_wobbler = getattr(self.runtime_tool_context, "head_wobbler", None)
+        if head_wobbler is None or not hasattr(head_wobbler, "feed"):
+            return False
+        head_wobbler.feed(delta_b64)
+        return True
+
+    def reset_runtime_audio_motion(self) -> bool:
+        """Reset queued speech-motion audio state for the resident runtime."""
+        head_wobbler = getattr(self.runtime_tool_context, "head_wobbler", None)
+        if head_wobbler is None or not hasattr(head_wobbler, "reset"):
+            return False
+        head_wobbler.reset()
+        return True
 
     def stop(self) -> None:
         """Stop the app gracefully."""
@@ -233,7 +393,11 @@ class ReachyMiniApp:
 
         profile = load_profile_bundle(profile_root)
         config = load_profile_runtime_config(profile)
-        return RuntimeScheduler.from_profile(profile=profile, config=config)
+        return RuntimeScheduler.from_profile(
+            profile=profile,
+            config=config,
+            runtime_tool_context=self.runtime_tool_context,
+        )
 
     def wait_until_runtime_ready(self, timeout: float = 10.0) -> bool:
         """Block until the resident runtime is ready."""

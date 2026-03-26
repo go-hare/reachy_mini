@@ -456,19 +456,137 @@ profile 不再是旧 conversation 的提示词目录，而是新 Agent 的完整
 
 ### 8.3 tools 的处理方式
 
-旧 `tools/` 中的工具应整体保留，但要进行接口改造。
+`tools` 现在需要明确分成两层，而不是继续混在一个旧 conversation 目录里：
 
-目标不是继续让旧 realtime handler 直接调用它们，而是：
+- 系统级工具：
+  放在 `src/reachy_mini/runtime/tools/`
+- app/profile 私有工具：
+  放在 `profiles/<name>/profiles/tools/`
 
-- 让 `emoticorebot.brain_kernel` 能调用这些工具
-- 让这些工具输出对新运行时更友好的结果结构
+当前项目里这两层的语义已经确定：
 
-建议改造方向：
+- `src/reachy_mini/runtime/tools/`
+  是所有 app 共享的系统工具目录
+- `profiles/<name>/profiles/tools/`
+  是当前 app 自己增加的私有工具目录
 
-- 保留工具名字和能力定义
-- 将旧工具的执行入口适配为 `emoticorebot` 可调用格式
-- 统一工具返回值结构
-- 清理旧实时对话专属依赖
+运行时加载顺序也应按这个模型固定：
+
+1. 先加载系统级工具
+2. 再加载当前 app 的 profile 私有工具
+3. 最终把两者合并后交给 `BrainKernel`
+
+这里的重点不是继续兼容旧 `tools.txt`，而是让新 runtime 直接读取目录。
+
+截至 2026-03-26，当前实现已经有第一版落地：
+
+- `src/reachy_mini/runtime/tool_loader.py`
+  负责合并系统工具与 profile 工具
+- `src/reachy_mini/runtime/tools/__init__.py`
+  负责构建系统工具实例
+- `profiles/<name>/profiles/tools/`
+  已作为 profile 私有工具的标准目录
+
+当前默认已接入的系统工具是工作区文件工具，具备真实文件读写能力，不再只是模型口头声称“已经创建文件”。
+
+#### 8.3.1 旧 emoticorebot 系统工具的去向
+
+从 `emoticorebot/emoticorebot/tools` 迁来的内容，属于系统级工具，应归入：
+
+- `src/reachy_mini/runtime/tools/`
+
+这一层是 runtime 自己的工具底座，不属于用户 profile。
+
+#### 8.3.2 旧 conversation app tools 的分流规则
+
+`/Users/apple/Downloads/reachy_mini_conversation_app-main/src/reachy_mini_conversation_app/tools/`
+里的内容不能原封不动并入当前 runtime，需要先分流。
+
+第一组：不应直接迁入当前主运行时
+
+- `__init__.py`
+- `core_tools.py`
+
+原因：
+
+- 这套加载逻辑建立在旧 `tools.txt` 和旧 conversation app 动态导入约定上
+- 当前项目已经改为 `runtime/tool_loader.py + profiles/<name>/profiles/tools/`
+
+第二组：保留能力语义，但不要原封不动照搬
+
+- `background_tool_manager.py`
+- `task_status.py`
+- `task_cancel.py`
+- `tool_constants.py`
+
+原因：
+
+- 这组文件绑定的是旧的后台工具编排模型
+- 它们依赖旧的 dispatch 入口、idle 通知、后台任务状态机
+- 当前 resident runtime 还没有完全等价的后台工具管理层
+
+这组内容如果后续要接，应该按当前 runtime 生命周期重写，而不是直接复制。
+
+建议落点：
+
+- 原始资产归档：
+  `src/reachy_mini/legacy_conversation_assets/tools/`
+- 真正给 runtime 使用的重写版本：
+  统一放到 `src/reachy_mini/runtime/tools/`
+
+第三组：优先迁移的机器人能力工具
+
+- `move_head.py`
+- `play_emotion.py`
+- `dance.py`
+- `camera.py`
+- `head_tracking.py`
+- `stop_dance.py`
+- `stop_emotion.py`
+- `do_nothing.py`
+
+这一组的价值在于“机器人会什么”，不是“旧 conversation 主流程怎么调度它们”。
+
+因此建议保留：
+
+- 工具名
+- 参数语义
+- 能力边界
+
+但要改造：
+
+- import 路径
+- 依赖注入方式
+- 返回值结构
+- 对旧 `movement_manager`、`camera_worker`、`vision_processor`、`dance_emotion_moves` 的耦合方式
+
+#### 8.3.3 旧 conversation app tools 的迁移顺序
+
+建议顺序如下：
+
+1. 先保留当前已接入的系统文件工具，保证 kernel 具备真实文件操作能力
+2. 再迁移上面那批机器人能力工具
+3. 最后再决定是否需要重建后台工具管理层
+
+不建议一开始就迁：
+
+- `background_tool_manager.py`
+- `task_status.py`
+- `task_cancel.py`
+
+因为这会把旧 conversation 的后台执行模型一起带回来，容易把当前 runtime 再拉回旧架构。
+
+#### 8.3.4 config.jsonl 的模型密钥约定
+
+当前 runtime 的模型配置已经统一使用：
+
+- `api_key`
+
+不再使用：
+
+- `api_key_env`
+
+也就是说，`profiles/<name>/profiles/config.jsonl` 中的 `front_model` 和 `kernel_model` 记录，当前都应直接写 `api_key`。
 
 ### 8.4 moves 的处理方式
 
@@ -817,20 +935,23 @@ profile 不再是旧 conversation 的提示词目录，而是新 Agent 的完整
 - `src/reachy_mini/runtime/main.py`
 - `src/reachy_mini/runtime/surface_driver.py`
 - `src/reachy_mini/runtime/speech_driver.py`
-- `src/reachy_mini/runtime/robot_tools.py`
 - `src/reachy_mini/runtime/profile_loader.py`
+- `src/reachy_mini/runtime/tool_loader.py`
+- `src/reachy_mini/runtime/web.py`
 
 ### 14.3 当前仓库中建议新增的目录
 
 - `src/reachy_mini/core/`
 - `src/reachy_mini/legacy_conversation_assets/`
 - `profiles/`
+- `src/reachy_mini/runtime/tools/`
 
 ### 14.4 旧资产迁入后建议位置
 
 - 旧 `moves.py` -> `src/reachy_mini/legacy_conversation_assets/moves.py`
 - 旧 `camera_worker.py` -> `src/reachy_mini/legacy_conversation_assets/camera_worker.py`
-- 通用机器人 `tools/` -> `src/reachy_mini/legacy_conversation_assets/tools/`
+- 旧 conversation app 原始 `tools/` 资产归档 -> `src/reachy_mini/legacy_conversation_assets/tools/`
+- 系统级共享工具与迁入的 Reachy 机器人工具 -> `src/reachy_mini/runtime/tools/`
 - 旧 `profiles/` 内容 -> 重构为 `profiles/<name>/profiles/AGENTS.md`、`USER.md`、`SOUL.md`、`TOOLS.md`、`FRONT.md`、`config.jsonl`
 - profile 级记忆数据 -> `profiles/<name>/profiles/memory/`
 - profile 级 skills -> `profiles/<name>/profiles/skills/`
@@ -966,10 +1087,12 @@ profile 不再是旧 conversation 的提示词目录，而是新 Agent 的完整
 6. 退役 `reachy-mini-app-assistant` 的 `check` / `publish` 命令，不再保留旧发布流。
 7. 迁入 `emoticorebot` 的 `agent` 命令行入口，作为文本级主入口之一。
 8. 暂不接入 `emoticorebot` 现有的 `desktop / desktop-dev` 入口，先聚焦 Reachy 主路径。
+9. 当前要接入主运行时的工具统一落到 `src/reachy_mini/runtime/tools/`。
+10. `profiles/<name>/profiles/tools/` 继续保留给 app 私有扩展工具，不承载主运行时内置工具。
+11. 旧 conversation app 的机器人能力工具按当前 runtime 重写接入，不直接复用旧 `core_tools.py` 和旧后台工具编排层。
+12. `config.jsonl` 的模型配置统一使用 `api_key`，不再使用 `api_key_env`。
 
 这就是本项目后续改造的统一基线。
-
-
 
 
 

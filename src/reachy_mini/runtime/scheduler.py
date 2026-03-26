@@ -26,6 +26,8 @@ from reachy_mini.core import (
     make_id,
 )
 from reachy_mini.runtime.model_factory import build_front_model, build_kernel_model
+from reachy_mini.runtime.tool_loader import build_runtime_tool_bundle
+from reachy_mini.runtime.tools import ReachyToolContext
 from reachy_mini.companion import CompanionIntent, SurfaceExpression, build_companion_surface
 from reachy_mini.front.service import FrontService
 
@@ -34,7 +36,13 @@ if TYPE_CHECKING:
     from reachy_mini.runtime.profile_loader import ProfileBundle
 
 
-def _build_kernel_system_prompt(profile: "ProfileBundle") -> str:
+def _build_kernel_system_prompt(
+    profile: "ProfileBundle",
+    *,
+    workspace_root: Path | None = None,
+    system_tool_names: list[str] | None = None,
+    profile_tool_names: list[str] | None = None,
+) -> str:
     """Compile the profile files into one kernel system prompt."""
     sections = [profile.agents_md.strip()]
     if profile.user_md.strip():
@@ -43,6 +51,34 @@ def _build_kernel_system_prompt(profile: "ProfileBundle") -> str:
         sections.append(f"## SOUL\n{profile.soul_md.strip()}")
     if profile.tools_md.strip():
         sections.append(f"## TOOLS\n{profile.tools_md.strip()}")
+    tool_policy_lines: list[str] = []
+    resolved_system_tool_names = [
+        name for name in (system_tool_names or []) if str(name or "").strip()
+    ]
+    resolved_profile_tool_names = [
+        name for name in (profile_tool_names or []) if str(name or "").strip()
+    ]
+    if workspace_root is not None or resolved_system_tool_names or resolved_profile_tool_names:
+        tool_policy_lines.append("## RUNTIME_TOOL_POLICY")
+        if workspace_root is not None:
+            tool_policy_lines.append(f"- Current app workspace root: {workspace_root}")
+        if resolved_system_tool_names:
+            tool_policy_lines.append(
+                f"- System tools: {', '.join(resolved_system_tool_names)}"
+            )
+        if resolved_profile_tool_names:
+            tool_policy_lines.append(
+                f"- Profile tools: {', '.join(resolved_profile_tool_names)}"
+            )
+        tool_policy_lines.extend(
+            [
+                "- If the user asks you to create, edit, inspect, search, or list files in the workspace, use the appropriate tool.",
+                "- Never claim a file or workspace change succeeded unless a tool result confirms it.",
+                "- If no tool has run yet, describe the next action instead of pretending it is already done.",
+            ]
+        )
+    if tool_policy_lines:
+        sections.append("\n".join(tool_policy_lines))
     return "\n\n".join(section for section in sections if section).strip()
 
 
@@ -89,16 +125,28 @@ class RuntimeScheduler:
         profile: "ProfileBundle",
         config: "ProfileRuntimeConfig",
         enable_affect: bool = True,
+        runtime_tool_context: ReachyToolContext | None = None,
     ) -> "RuntimeScheduler":
         """Build a runtime scheduler directly from one loaded profile bundle."""
         front = FrontService(profile, build_front_model(config.front_model))
         kernel_model = build_kernel_model(config.kernel_model)
+        tool_bundle = build_runtime_tool_bundle(
+            profile,
+            runtime_context=runtime_tool_context,
+        )
+        kernel_tools = tool_bundle.all_tools if hasattr(kernel_model, "bind_tools") else []
         kernel = BrainKernel(
             agent_id=profile.name,
             model=kernel_model,
             task_router_model=kernel_model,
+            tools=kernel_tools,
             memory_store=JsonlMemoryStore(profile.root),
-            system_prompt=_build_kernel_system_prompt(profile),
+            system_prompt=_build_kernel_system_prompt(
+                profile,
+                workspace_root=tool_bundle.workspace_root if kernel_tools else None,
+                system_tool_names=tool_bundle.system_tool_names if kernel_tools else None,
+                profile_tool_names=tool_bundle.profile_tool_names if kernel_tools else None,
+            ),
         )
         affect_runtime = None
         if enable_affect:

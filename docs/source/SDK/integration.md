@@ -18,6 +18,18 @@ Run the resident runtime:
 reachy-mini-agent agent my_app
 ```
 
+Run the generated app's web UI without connecting Reachy hardware:
+
+```bash
+reachy-mini-agent web my_app
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8042/
+```
+
 Each user-created app project lives under `profiles/<name>/`. The runtime loads the inner `profiles/` directory from that project and uses it as content, config, prompts, tools, memory, and session state. The app project does not ship its own separate runtime host.
 
 Each app project contains:
@@ -61,6 +73,13 @@ Suggested responsibilities:
 - `memory/`: durable memory storage
 - `session/`: per-thread session streams such as `front.jsonl` and `brain.jsonl`
 
+Tool loading is layered:
+
+- System tools: built into the runtime and available across app projects
+- Profile tools: optional Python tools loaded from `profiles/<name>/profiles/tools/`
+
+The runtime merges them in that order. System tools cover the common workspace actions for the current app project. Profile tools are where app-specific capabilities should be added.
+
 At startup, the runtime creates a resident kernel and keeps it running in the background for the process lifetime. User turns flow through:
 
 `app project -> front -> BrainKernel -> front`
@@ -79,6 +98,14 @@ Where this happens in code:
 - Resident kernel bridge: `RuntimeScheduler.start()` and `RuntimeScheduler.stop()`
 
 From the CLI, this runtime stays alive for as long as the `reachy-mini-agent` process stays alive. When the generated app is installed and launched by the daemon, `AppManager` keeps that app process resident in the background.
+
+There are two different launch modes:
+
+- `reachy-mini-agent agent my_app`: terminal-only text runtime
+- `reachy-mini-agent web my_app`: browser UI plus `/ws/agent`, without opening a robot connection
+- `python -m my_app.main`: full generated app process, including the normal `ReachyMini(...)` connection path
+
+Use `reachy-mini-agent web` while developing profile/front/kernel behavior on a machine that does not have a daemon or robot connected. Use `python -m my_app.main` when you do want the generated app process to connect to Reachy.
 
 For one-shot runs from the terminal:
 

@@ -1,4 +1,4 @@
-"""CLI entry point for the Reachy Mini app text runtime."""
+"""CLI entry point for Reachy Mini app runtime tools."""
 
 from __future__ import annotations
 
@@ -14,8 +14,10 @@ from reachy_mini.runtime.profile_loader import load_profile_bundle
 from reachy_mini.runtime.scheduler import FrontOutputPacket, RuntimeScheduler
 from reachy_mini.runtime.project import (
     create_app_project,
+    inspect_app_project,
     normalize_app_name,
 )
+from reachy_mini.runtime.web import build_web_host, resolve_web_binding, run_web_host
 
 EXIT_COMMANDS = {"exit", "quit", "/exit", "/quit", ":q"}
 
@@ -51,7 +53,7 @@ def _get_apps_root(args: argparse.Namespace) -> Path:
 def parse_args() -> argparse.Namespace:
     """Parse the ``reachy-mini-agent`` command line."""
     parser = argparse.ArgumentParser(
-        description="Reachy Mini app text runtime.",
+        description="Reachy Mini app runtime tools.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -99,9 +101,9 @@ def parse_args() -> argparse.Namespace:
         help="Override the provider base URL.",
     )
     agent_parser.add_argument(
-        "--api-key-env",
+        "--api-key",
         default=None,
-        help="Override the env var used for the OpenAI-compatible API key.",
+        help="Override the front model API key from config.jsonl.",
     )
     agent_parser.add_argument(
         "--temperature",
@@ -126,9 +128,9 @@ def parse_args() -> argparse.Namespace:
         help="Override the kernel provider base URL.",
     )
     agent_parser.add_argument(
-        "--kernel-api-key-env",
+        "--kernel-api-key",
         default=None,
-        help="Override the env var used for the kernel API key.",
+        help="Override the kernel model API key from config.jsonl.",
     )
     agent_parser.add_argument(
         "--kernel-temperature",
@@ -142,6 +144,33 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Override how many recent turns the front sees.",
     )
+
+    web_parser = subparsers.add_parser(
+        "web",
+        help="Run an app's web UI and resident runtime without connecting hardware.",
+    )
+    web_parser.add_argument(
+        "app",
+        help="App name or explicit app path.",
+    )
+    _add_apps_root_argument(web_parser)
+    web_parser.add_argument(
+        "--host",
+        default=None,
+        help="Override the bind host from the generated app's custom_app_url.",
+    )
+    web_parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="Override the bind port from the generated app's custom_app_url.",
+    )
+    web_parser.add_argument(
+        "--startup-timeout",
+        type=float,
+        default=10.0,
+        help="Seconds to wait for the resident runtime before failing.",
+    )
     return parser.parse_args()
 
 
@@ -153,6 +182,10 @@ def main() -> None:
         return
     if args.command == "agent":
         asyncio.run(handle_agent(args))
+        return
+    if args.command == "web":
+        handle_web(args)
+        return
 
 
 def handle_create(args: argparse.Namespace) -> None:
@@ -176,12 +209,12 @@ async def handle_agent(args: argparse.Namespace) -> None:
         provider=args.provider,
         model=args.model,
         base_url=args.base_url,
-        api_key_env=args.api_key_env,
+        api_key=args.api_key,
         temperature=args.temperature,
         kernel_provider=args.kernel_provider,
         kernel_model=args.kernel_model,
         kernel_base_url=args.kernel_base_url,
-        kernel_api_key_env=args.kernel_api_key_env,
+        kernel_api_key=args.kernel_api_key,
         kernel_temperature=args.kernel_temperature,
         history_limit=args.history_limit,
     )
@@ -202,6 +235,28 @@ async def handle_agent(args: argparse.Namespace) -> None:
         await run_interactive(runtime, thread_id=args.thread_id)
     finally:
         await runtime.stop()
+
+
+def handle_web(args: argparse.Namespace) -> None:
+    """Run the host-only web UI for one app project."""
+    app_path = resolve_app_path(args.app, _get_apps_root(args))
+    app_project = inspect_app_project(app_path)
+    binding = resolve_web_binding(
+        app_project,
+        host=args.host,
+        port=args.port,
+    )
+    app = build_web_host(app_project, bind_url=binding.bind_url)
+    print(
+        f"Serving {app_project.name} at {binding.browser_url} "
+        f"(bind {binding.host}:{binding.port})"
+    )
+    run_web_host(
+        app,
+        host=binding.host,
+        port=binding.port,
+        startup_timeout=args.startup_timeout,
+    )
 
 
 def resolve_app_path(app: str, apps_root: Path) -> Path:

@@ -7,7 +7,7 @@ import pytest
 
 from reachy_mini.runtime.main import handle_create
 from reachy_mini.runtime.profile_loader import load_profile_bundle
-from reachy_mini.runtime.project import create_app_project
+from reachy_mini.runtime.project import create_app_project, inspect_app_project
 
 
 def _write_profile_fixture(profile_root: Path) -> None:
@@ -104,6 +104,17 @@ def test_create_app_project_scaffolds_expected_tree(tmp_path: Path) -> None:
     bundle = load_profile_bundle(project_root)
     assert bundle.root == bundle_root.resolve()
     assert bundle.name == "demo"
+    config_jsonl = (bundle_root / "config.jsonl").read_text(encoding="utf-8")
+    assert '"kind":"vision"' in config_jsonl
+
+    app_project = inspect_app_project(project_root)
+    assert app_project.name == "demo"
+    assert app_project.module_name == "demo"
+    assert app_project.module_dir == package_root.resolve()
+    assert app_project.main_file == (package_root / "main.py").resolve()
+    assert app_project.static_dir == (package_root / "static").resolve()
+    assert app_project.profile_root == bundle_root.resolve()
+    assert app_project.custom_app_url == "http://0.0.0.0:8042"
 
 
 def test_handle_create_normalizes_app_name(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

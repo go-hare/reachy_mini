@@ -211,6 +211,7 @@
 
 - `reachy-mini-agent create <app_name>`
 - `reachy-mini-agent agent <app_name|app_path>`
+- `reachy-mini-agent web <app_name|app_path>`
 
 ### 6.6 本阶段验收标准
 
@@ -228,6 +229,8 @@
 - 已新增 `reachy-mini-agent` CLI
 - 已跑通 `app 文件包 -> front -> 文本回复`
 - 当前默认文本链路已切到 resident kernel，并移除了旧回退参数
+- 已新增 `web` 启动方式，可在不连硬件的情况下跑浏览器 UI 和 `/ws/agent`
+- `config.jsonl` 的模型配置当前统一使用 `api_key`，不再使用 `api_key_env`
 
 ## 7. 阶段 3：Kernel 接入
 
@@ -369,6 +372,78 @@
 - 旧脑子不再承担主路径职责
 - 用户创建的 app 文件包成为新的正式载体
 
+### 9.6 旧 conversation app tools 迁移清单
+
+针对：
+
+- `/Users/apple/Downloads/reachy_mini_conversation_app-main/src/reachy_mini_conversation_app/tools/`
+
+建议按三组处理。
+
+第一组：不要迁成当前主运行时的一部分
+
+- `__init__.py`
+- `core_tools.py`
+
+原因：
+
+- 这组文件绑定旧 `tools.txt` 和旧 conversation app 的动态发现方式
+- 当前项目已经改为 `runtime/tool_loader.py`
+- 当前 app 私有工具目录已经固定为 `profiles/<name>/profiles/tools/`
+
+第二组：保留语义，但后置重写
+
+- `background_tool_manager.py`
+- `task_status.py`
+- `task_cancel.py`
+- `tool_constants.py`
+
+原因：
+
+- 这组文件绑定旧后台工具任务模型
+- 当前 resident runtime 还没有等价的后台工具状态层
+
+建议处理：
+
+- 先归档到 `src/reachy_mini/legacy_conversation_assets/tools/`
+- 等前台文本链路、内核链路、机器人工具链路稳定后，再决定是否重建后台任务模型
+
+第三组：优先迁移的机器人能力工具
+
+- `move_head.py`
+- `play_emotion.py`
+- `dance.py`
+- `camera.py`
+- `head_tracking.py`
+- `stop_dance.py`
+- `stop_emotion.py`
+- `do_nothing.py`
+
+建议处理：
+
+- 保留工具名和参数语义
+- 不原封不动复制旧 import 结构
+- 按当前 runtime 的依赖注入方式重写
+- 运行时接入统一放到 `src/reachy_mini/runtime/tools/`
+
+### 9.7 当前已完成的 tools 基线
+
+截至 2026-03-26，当前仓库里已经有一版新 tools 基线：
+
+- 系统级共享工具目录：
+  `src/reachy_mini/runtime/tools/`
+- profile 私有工具目录：
+  `profiles/<name>/profiles/tools/`
+- 运行时合并入口：
+  `src/reachy_mini/runtime/tool_loader.py`
+
+当前约定收口为：
+
+- 主运行时内置工具统一放到 `src/reachy_mini/runtime/tools/`
+- `profiles/<name>/profiles/tools/` 继续保留给 app 私有扩展
+
+当前默认已接入的是系统文件工具，已经可以让 kernel 真正读写 app 工作区文件，而不是只做文本声明。
+
 ## 10. CLI 策略
 
 ### 10.1 当前明确退役
@@ -396,6 +471,7 @@
 以下事项当前明确保留，不作为本轮清理目标：
 
 - `reachy-mini-agent create`，用于创建用户的 app 文件包
+- `reachy-mini-agent web`，用于在不连硬件时直接跑网页和 resident runtime
 - `profiles/<name>/` 这套项目目录形态，以及其中 `profiles/<name>/profiles/` 这层 profile 文件包布局
 
 ## 11. 推荐执行顺序
@@ -429,8 +505,6 @@
 
 先把用户创建的 app 明确为 `profiles/<name>/` 这套项目目录，内部 profile 文件包位于 `profiles/<name>/profiles/`，  
 再让 `emoticorebot` 成为唯一大脑，最后把 Reachy 的身体能力完整接回去。
-
-
 
 
 

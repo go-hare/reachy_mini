@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+
+[project]
+name = "demo_web"
+version = "0.1.0"
+description = "Reachy Mini app project"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "reachy-mini"
+]
+keywords = ["reachy-mini-app"]
+
+[project.entry-points."reachy_mini_apps"]
+demo_web = "demo_web.main:DemoWeb"
+
+[tool.setuptools]
+package-dir = { "" = "." }
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["demo_web", "profiles"]
+
+[tool.setuptools.package-data]
+demo_web = ["**/*"] # Also include all non-.py files
+profiles = ["**/*"]

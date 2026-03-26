@@ -1,0 +1,21 @@
+{
+  "current_pad": {
+    "pleasure": -0.017993,
+    "arousal": 0.402857,
+    "dominance": 0.144825
+  },
+  "last_user_pad": {
+    "pleasure": 0.0,
+    "arousal": 0.0,
+    "dominance": 0.0
+  },
+  "last_delta_pad": {
+    "pleasure": -0.003721,
+    "arousal": 0.042887,
+    "dominance": 0.023345
+  },
+  "vitality": 0.615127,
+  "pressure": 0.116555,
+  "turn_count": 7,
+  "updated_at": "2026-03-27T00:12:50"
+}

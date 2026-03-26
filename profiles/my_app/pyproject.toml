@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+
+[project]
+name = "my_app"
+version = "0.1.0"
+description = "Reachy Mini app project"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "reachy-mini"
+]
+keywords = ["reachy-mini-app"]
+
+[project.entry-points."reachy_mini_apps"]
+my_app = "my_app.main:MyApp"
+
+[tool.setuptools]
+package-dir = { "" = "." }
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["my_app", "profiles"]
+
+[tool.setuptools.package-data]
+my_app = ["**/*"] # Also include all non-.py files
+profiles = ["**/*"]
