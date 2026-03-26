@@ -5,7 +5,6 @@ import importlib
 import logging
 import threading
 import traceback
-from collections.abc import Awaitable, Callable
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -459,6 +458,7 @@ class ReachyMiniApp:
         await websocket.accept()
 
         outbound_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        tracked_thread_ids: set[str] = set()
         await outbound_queue.put(self._build_runtime_status_event())
         ready_task: asyncio.Task[None] | None = None
         if not self.runtime_ready.is_set():
@@ -469,8 +469,18 @@ class ReachyMiniApp:
         send_task = asyncio.create_task(
             self._runtime_websocket_send_loop(websocket, outbound_queue)
         )
+        front_output_task = asyncio.create_task(
+            self._runtime_websocket_front_output_loop(
+                outbound_queue=outbound_queue,
+                tracked_thread_ids=tracked_thread_ids,
+            )
+        )
         try:
-            await self._runtime_websocket_recv_loop(websocket, outbound_queue)
+            await self._runtime_websocket_recv_loop(
+                websocket,
+                outbound_queue,
+                tracked_thread_ids=tracked_thread_ids,
+            )
         except WebSocketDisconnect:
             return
         finally:
@@ -480,6 +490,11 @@ class ReachyMiniApp:
                     await ready_task
                 except asyncio.CancelledError:
                     pass
+            front_output_task.cancel()
+            try:
+                await front_output_task
+            except asyncio.CancelledError:
+                pass
             send_task.cancel()
             try:
                 await send_task
@@ -574,8 +589,10 @@ class ReachyMiniApp:
         self,
         websocket: WebSocket,
         outbound_queue: asyncio.Queue[dict[str, Any]],
+        *,
+        tracked_thread_ids: set[str],
     ) -> None:
-        """Receive browser messages and execute resident-runtime turns."""
+        """Receive browser messages and dispatch resident-runtime turns."""
         while True:
             payload = await websocket.receive_json()
             event_type = str(payload.get("type", "") or "").strip()
@@ -604,14 +621,49 @@ class ReachyMiniApp:
                 )
                 continue
 
-            await self._stream_user_text_turn(event, outbound_queue)
+            tracked_thread_ids.add(str(event.thread_id or "app:main"))
+            asyncio.create_task(self._dispatch_user_text_turn(event, outbound_queue))
 
-    async def _stream_user_text_turn(
+    async def _runtime_websocket_front_output_loop(
+        self,
+        *,
+        outbound_queue: asyncio.Queue[dict[str, Any]],
+        tracked_thread_ids: set[str],
+    ) -> None:
+        """Forward runtime front-output packets for this websocket."""
+        runtime_queue: asyncio.Queue[Any] | None = None
+        runtime = None
+
+        try:
+            while runtime_queue is None:
+                runtime = self.runtime
+                if runtime is not None and self.runtime_ready.is_set():
+                    runtime_queue = runtime.subscribe_front_outputs()
+                    break
+                await asyncio.sleep(0.1)
+
+            while True:
+                packet = await runtime_queue.get()
+                try:
+                    packet_thread_id = str(getattr(packet, "thread_id", "") or "")
+                    if (
+                        not tracked_thread_ids
+                        or packet_thread_id not in tracked_thread_ids
+                    ):
+                        continue
+                    await outbound_queue.put(packet.as_event())
+                finally:
+                    runtime_queue.task_done()
+        finally:
+            if runtime is not None and runtime_queue is not None:
+                runtime.unsubscribe_front_outputs(runtime_queue)
+
+    async def _dispatch_user_text_turn(
         self,
         event: UserTextEvent,
         outbound_queue: asyncio.Queue[dict[str, Any]],
     ) -> None:
-        """Execute one resident-runtime turn and forward its events live."""
+        """Dispatch one resident-runtime turn without waiting for kernel completion."""
         runtime = self.runtime
         thread_id = str(event.thread_id or "app:main")
         runtime_loop = self.runtime_loop
@@ -626,7 +678,7 @@ class ReachyMiniApp:
 
         try:
             future = asyncio.run_coroutine_threadsafe(
-                self._stream_user_text_turn_on_runtime_loop(
+                self._dispatch_user_text_turn_on_runtime_loop(
                     thread_id=thread_id,
                     session_id=str(event.session_id or thread_id),
                     user_id=str(event.user_id or "user"),
@@ -645,7 +697,7 @@ class ReachyMiniApp:
                 )
             )
 
-    async def _stream_user_text_turn_on_runtime_loop(
+    async def _dispatch_user_text_turn_on_runtime_loop(
         self,
         *,
         thread_id: str,
@@ -655,13 +707,10 @@ class ReachyMiniApp:
         outbound_queue: asyncio.Queue[dict[str, Any]],
         outbound_loop: asyncio.AbstractEventLoop,
     ) -> None:
-        """Run one turn on the resident runtime loop and mirror events to the WS loop."""
+        """Dispatch one turn on the runtime loop and return after front delivery."""
         runtime = self.runtime
         if runtime is None:
             raise RuntimeError("Runtime is not ready yet.")
-
-        runtime_queue = runtime.subscribe_front_outputs()
-        turn_finished = asyncio.Event()
 
         async def publish_event(event: dict[str, Any]) -> None:
             put_future = asyncio.run_coroutine_threadsafe(
@@ -669,15 +718,6 @@ class ReachyMiniApp:
                 outbound_loop,
             )
             await asyncio.wrap_future(put_future)
-
-        forward_task = asyncio.create_task(
-            self._forward_runtime_packets(
-                runtime_queue=runtime_queue,
-                publish_event=publish_event,
-                thread_id=thread_id,
-                turn_finished=turn_finished,
-            )
-        )
 
         async def surface_state_handler(state: dict[str, Any]) -> None:
             await publish_event(
@@ -688,48 +728,13 @@ class ReachyMiniApp:
                 }
             )
 
-        try:
-            await runtime.handle_user_text(
-                thread_id=thread_id,
-                session_id=session_id,
-                user_id=user_id,
-                user_text=user_text,
-                surface_state_handler=surface_state_handler,
-            )
-            await runtime.wait_for_thread_idle(thread_id)
-        except Exception:
-            raise
-        finally:
-            turn_finished.set()
-            try:
-                await forward_task
-            finally:
-                runtime.unsubscribe_front_outputs(runtime_queue)
-
-    async def _forward_runtime_packets(
-        self,
-        *,
-        runtime_queue: asyncio.Queue[Any],
-        publish_event: Callable[[dict[str, Any]], Awaitable[None]],
-        thread_id: str,
-        turn_finished: asyncio.Event,
-    ) -> None:
-        """Forward runtime packets to the browser as WebSocket events."""
-        while True:
-            if turn_finished.is_set() and runtime_queue.empty():
-                return
-
-            try:
-                packet = await asyncio.wait_for(runtime_queue.get(), timeout=0.1)
-            except asyncio.TimeoutError:
-                continue
-
-            try:
-                if getattr(packet, "thread_id", "") != thread_id:
-                    continue
-                await publish_event(packet.as_event())
-            finally:
-                runtime_queue.task_done()
+        await runtime.handle_user_text(
+            thread_id=thread_id,
+            session_id=session_id,
+            user_id=user_id,
+            user_text=user_text,
+            surface_state_handler=surface_state_handler,
+        )
 
     def _build_runtime_status_event(self) -> dict[str, Any]:
         """Build one small runtime readiness event."""

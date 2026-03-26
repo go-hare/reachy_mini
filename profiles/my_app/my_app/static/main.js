@@ -10,7 +10,6 @@ document.addEventListener("DOMContentLoaded", () => {
     let socket = null;
     let socketReady = false;
     let runtimeReady = false;
-    let turnInFlight = false;
     let reconnectTimer = null;
 
     function setStatus(text, ready) {
@@ -42,7 +41,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     function syncComposerState() {
-        setComposerEnabled(socketReady && runtimeReady && !turnInFlight);
+        setComposerEnabled(socketReady && runtimeReady);
     }
 
     function buildSocketUrl() {
@@ -93,7 +92,6 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     function finishTurn() {
-        turnInFlight = false;
         syncComposerState();
         messageInput.focus();
     }
@@ -137,19 +135,19 @@ document.addEventListener("DOMContentLoaded", () => {
 
         if (eventType === "front_hint_chunk") {
             updateStageBubble(payload.turn_id, "hint", payload.text, "append");
-            setStatus("Front 已先回应，继续等待内核结果...", false);
+            setStatus("Front 已先回应，内核继续处理中，你也可以继续发送。", true);
             return;
         }
 
         if (eventType === "front_hint_done") {
             updateStageBubble(payload.turn_id, "hint", payload.text, "replace");
-            setStatus("Front 已先回应，继续等待内核结果...", false);
+            setStatus("Front 已先回应，内核继续处理中，你也可以继续发送。", true);
             return;
         }
 
         if (eventType === "front_final_chunk") {
             updateStageBubble(payload.turn_id, "final", payload.text, "append");
-            setStatus("Front 正在输出最终回复...", false);
+            setStatus("Front 正在输出最终回复，你也可以继续发送。", true);
             return;
         }
 
@@ -202,7 +200,6 @@ document.addEventListener("DOMContentLoaded", () => {
             socket = null;
             socketReady = false;
             runtimeReady = false;
-            turnInFlight = false;
             syncComposerState();
             setStatus("WebSocket disconnected, retrying...", false);
             if (reconnectTimer !== null) {
@@ -233,9 +230,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
         appendMessage("user", message);
         messageInput.value = "";
-        turnInFlight = true;
         syncComposerState();
-        setStatus("消息已投递，等待 Front 首轮回复...", false);
+        setStatus("消息已投递，等待 Front 首轮回复；你也可以继续发送。", true);
 
         socket.send(
             JSON.stringify({
