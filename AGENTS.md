@@ -28,19 +28,17 @@ Unless the user explicitly requests otherwise:
 - Guide non-technical users through each step
 - Don't assume prior knowledge
 
-### Always Create Python Apps
+### Always Create App Projects
 
 When creating apps:
-- **Always use Python** - Python apps are the standard packaged app format in this repository
-- **NEVER create app folders manually** - always use the app assistant (handles metadata, entry points, structure)
+- **User-created `profiles/<name>/` is the app** - this repository itself is the host/runtime, not the user app
+- **Always use `reachy-mini-agent create`** - it creates the Python app project, entry point, static UI, and inner `profiles/` files together
+- **NEVER create app folders manually** - always use the generator so the structure stays aligned
 - **If the command fails** - ask the user to run it in their terminal; don't attempt complex workarounds
-- **Web UIs go in `static/`** - Python apps can have web frontends
+- **Web UIs go in `<app_name>/static/`** - the generated app project already wires it to `ReachyMiniApp`
 
 ```bash
-# Python app package:
-reachy-mini-app-assistant create <app_name> <path>
-
-# Shared-runtime app project:
+# App project under profiles/<name>/:
 reachy-mini-agent create <app_name>
 ```
 
@@ -190,7 +188,7 @@ Read these files in `skills/` when you need detailed knowledge:
 | Skill | When to use |
 |-------|-------------|
 | **setup-environment.md** | First session, no `agents.local.md` exists |
-| **create-app.md** | Creating a new app with `reachy-mini-app-assistant` |
+| **create-app.md** | Creating a user app project with `reachy-mini-agent create` |
 | **control-loops.md** | Building real-time reactive apps (tracking, games) |
 | **motion-philosophy.md** | Choosing between `goto_target` and `set_target` |
 | **safe-torque.md** | Enabling/disabling motors without jerky motion |

@@ -1,7 +1,6 @@
 """Reachy Mini application base classes and helpers."""
 
 import asyncio
-import argparse
 import importlib
 import logging
 import threading
@@ -584,46 +583,3 @@ class ReachyMiniApp:
             "thread_id": thread_id,
             "error": str(error or "").strip(),
         }
-
-
-def parse_args() -> argparse.Namespace:
-    """Parse command-line arguments."""
-    parser = argparse.ArgumentParser(
-        description="App creation assistant for Reachy Mini."
-    )
-    subparsers = parser.add_subparsers(
-        dest="command", help="Available commands", required=True
-    )
-
-    create_parser = subparsers.add_parser("create", help="Create a new app project")
-    create_parser.add_argument(
-        "app_name",
-        type=str,
-        nargs="?",
-        default=None,
-        help="Name of the app to create.",
-    )
-    create_parser.add_argument(
-        "path",
-        type=Path,
-        nargs="?",
-        default=None,
-        help="Path where the app project will be created.",
-    )
-
-    return parser.parse_args()
-
-
-def main() -> None:
-    """Entry point for the app assistant."""
-    from rich.console import Console
-
-    from . import assistant
-
-    args = parse_args()
-    if args.command == "create":
-        assistant.create(Console(), app_name=args.app_name, app_path=args.path)
-
-
-if __name__ == "__main__":
-    main()

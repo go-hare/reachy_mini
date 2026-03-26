@@ -26,7 +26,7 @@
 
 ## 📱 Apps & Ecosystem
 
-Reachy Mini still supports an app ecosystem powered by Hugging Face Spaces. This is optional. For the main local AI workflow in this repository, see the shared resident runtime guide in AI Integrations.
+Reachy Mini still supports an app ecosystem powered by Hugging Face Spaces. This is optional. For the main local AI workflow in this repository, see the resident runtime guide in AI Integrations.
 
 * **🗣️ [Conversation App](https://huggingface.co/spaces/pollen-robotics/reachy_mini_conversation_app):** Talk naturally with Reachy Mini (powered by LLMs).
 * **📻 [Radio](https://huggingface.co/spaces/pollen-robotics/reachy_mini_radio):** Listen to the radio with Reachy Mini!
@@ -42,7 +42,7 @@ Reachy Mini still supports an app ecosystem powered by Hugging Face Spaces. This
 * **[Installation](https://huggingface.co/docs/reachy_mini/SDK/installation)**: 5 minutes to set up your computer
 * **[Quickstart Guide](https://huggingface.co/docs/reachy_mini/SDK/quickstart)**: Run your first behavior on Reachy Mini
 * **[Python SDK](https://huggingface.co/docs/reachy_mini/SDK/python-sdk)**: Learn to move, see, speak, and hear.
-* **[AI Integrations](https://huggingface.co/docs/reachy_mini/SDK/integration)**: Connect LLMs, create app projects, and run the shared resident runtime.
+* **[AI Integrations](https://huggingface.co/docs/reachy_mini/SDK/integration)**: Connect LLMs, create app projects, and run the resident runtime.
 * **[Core Concepts](https://huggingface.co/docs/reachy_mini/SDK/core-concept)**: Architecture, coordinate systems, and safety limits.
 * 🤗[**Share your app with the community**](https://huggingface.co/blog/pollen-robotics/make-and-publish-your-reachy-mini-apps)
 * 📂 [**Browse the Examples Folder**](examples)
@@ -50,9 +50,9 @@ Reachy Mini still supports an app ecosystem powered by Hugging Face Spaces. This
 
 ### 🤖 AI-Assisted Development
 
-Using an AI coding agent (Claude Code, Codex, Copilot, etc.)? You can start building app projects or Python apps right away. Paste this prompt to your agent:
+Using an AI coding agent (Claude Code, Codex, Copilot, etc.)? You can start building app projects right away. Paste this prompt to your agent:
 
-> *I'd like to create a Reachy Mini app. It can be a regular Python app or a shared-runtime app project. Start by reading https://github.com/pollen-robotics/reachy_mini/blob/develop/AGENTS.md*
+> *I'd like to create a Reachy Mini app project under `profiles/<name>/`. Start by reading https://github.com/pollen-robotics/reachy_mini/blob/develop/AGENTS.md*
 
 This [**AGENTS.md**](AGENTS.md) guide gives AI agents everything they need: SDK patterns, best practices, example apps, and step-by-step skills.
 
@@ -99,6 +99,7 @@ Encountering an issue? 👉 **[Check the Troubleshooting & FAQ Guide](https://hu
 
 This project is licensed under the Apache 2.0 License. See the [LICENSE](LICENSE) file for details.
 Hardware design files are licensed under Creative Commons BY-SA-NC.
+
 
 
 

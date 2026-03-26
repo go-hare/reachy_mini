@@ -132,6 +132,7 @@ This guide gives your AI agent everything it needs to know about the SDK, best p
 ## Next Steps
 * **[Python SDK](python-sdk.md)**: Learn to move, see, speak, and hear.
 * **[Browse the Examples Folder](https://github.com/pollen-robotics/reachy_mini/tree/main/examples)**
-* **[AI Integrations](integration.md)**: Connect LLMs, create app projects, and run the shared resident runtime.
+* **[AI Integrations](integration.md)**: Connect LLMs, create app projects, and run the resident runtime.
 * **[Core Concepts](core-concept.md)**: Architecture, coordinate systems, and safety limits.
+
 

@@ -520,9 +520,9 @@ with ReachyMini() as mini:
 
 Current paths:
 
-1.  For a Python app package, use: `reachy-mini-app-assistant create my_app_name`
-2.  For a shared-runtime app project, use: `reachy-mini-agent create my_app`
-3.  Run the shared resident runtime with: `reachy-mini-agent agent my_app`
+1.  Create the app project with: `reachy-mini-agent create my_app`
+2.  Run the resident runtime with: `reachy-mini-agent agent my_app`
+3.  Install the generated app project into the daemon when you want it managed as the current background app
 
 The older Hugging Face tutorial remains useful for optional app publishing, but it is no longer the main local AI workflow in this repository.
 

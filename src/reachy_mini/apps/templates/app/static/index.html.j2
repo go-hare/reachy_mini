@@ -1,4 +1,3 @@
-{% if include_profile_bundle %}
 <!DOCTYPE html>
 <html lang="en">
 
@@ -13,9 +12,9 @@
     <div class="shell">
         <section class="hero card">
             <div>
-                <p class="eyebrow">Reachy Mini profile</p>
+                <p class="eyebrow">Reachy Mini app</p>
                 <h1>{{ class_name_display }}</h1>
-                <p class="subtitle">这个页面直接挂在当前用户 app 的入口上，可以把消息送进当前 profile 对应的 runtime。</p>
+                <p class="subtitle">这个页面直接挂在当前用户 app 的入口上，可以把消息送进这个 app 对应的常驻 runtime。</p>
             </div>
             <div class="status-wrap">
                 <span class="status-dot" id="status-dot"></span>
@@ -27,7 +26,7 @@
             <div class="card chat-card">
                 <div class="chat-header">
                     <h2>Chat</h2>
-                    <p>消息会发到当前 app 内部的 <code>profiles/</code> 配置上。</p>
+                    <p>消息会按当前 app 内部的 <code>profiles/</code> 文件来驱动前台和内核。</p>
                 </div>
 
                 <div class="chat-log" id="chat-log">
@@ -77,32 +76,3 @@
 </body>
 
 </html>
-{% else %}
-<!DOCTYPE html>
-<html lang="en">
-
-<head>
-    <meta charset="UTF-8">
-    <title>Reachy Mini example app template</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <link rel="stylesheet" href="/static/style.css">
-</head>
-
-<body>
-    <h1>Reachy Mini – Control Panel</h1>
-
-    <div id="controls">
-        <label style="display:flex; align-items:center; gap:8px;">
-            <input type="checkbox" id="antenna-checkbox" checked>
-            Antennas
-        </label>
-
-        <button id="sound-btn">Play Sound</button>
-    </div>
-
-    <div id="status">Antennas status: running</div>
-    <script src="/static/main.js"></script>
-</body>
-
-</html>
-{% endif %}

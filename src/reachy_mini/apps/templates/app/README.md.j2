@@ -1,4 +1,3 @@
-{% if include_profile_bundle %}
 ---
 title: {{ class_name_display }}
 emoji: 🤖
@@ -6,7 +5,7 @@ colorFrom: red
 colorTo: blue
 sdk: static
 pinned: false
-short_description: Reachy Mini app with profile bundle
+short_description: Reachy Mini app project
 tags:
  - reachy_mini
  - reachy_mini_python_app
@@ -14,7 +13,7 @@ tags:
 
 This app includes a startup shell in `{{ module_name }}/main.py`.
 
-The editable profile bundle lives in `profiles/`:
+The editable app profile files live in `profiles/`:
 
 - `AGENTS.md`
 - `USER.md`
@@ -40,17 +39,3 @@ The dialogue flow is streamed over WebSocket:
 - runtime keeps pushing `surface_state`
 - runtime emits `front_final_*`
 - errors are emitted as `turn_error`
-{% else %}
----
-title: {{ class_name_display }}
-emoji: 👋
-colorFrom: red
-colorTo: blue
-sdk: static
-pinned: false
-short_description: Write your description here
-tags:
- - reachy_mini
- - reachy_mini_python_app
----
-{% endif %}

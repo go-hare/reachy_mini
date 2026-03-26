@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "{{ entrypoint_name }}"
 version = "0.1.0"
-description = "{% if include_profile_bundle %}Reachy Mini app with profile bundle{% else %}Add your description here{% endif %}"
+description = "Reachy Mini app project"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -23,12 +23,8 @@ include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["."]
-{% if include_profile_bundle %}
 include = ["{{ module_name }}", "profiles"]
-{% endif %}
 
 [tool.setuptools.package-data]
 {{ module_name }} = ["**/*"] # Also include all non-.py files
-{% if include_profile_bundle %}
 profiles = ["**/*"]
-{% endif %}

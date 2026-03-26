@@ -1,10 +1,10 @@
 # Integrations & Apps
 
-Reachy Mini supports both direct SDK integrations and a shared resident runtime for app projects.
+Reachy Mini supports both direct SDK integrations and a resident runtime hosted by generated app projects.
 
 ## App Projects and Resident Runtime
 
-The main local AI workflow in this repository is now based on user-created app projects under `profiles/<name>/` plus the shared `reachy-mini-agent` runtime.
+The main local AI workflow in this repository is based on user-created app projects under `profiles/<name>/` plus the `reachy-mini-agent` runtime.
 
 Create a new app project:
 
@@ -12,15 +12,15 @@ Create a new app project:
 reachy-mini-agent create my_app
 ```
 
-Run the shared resident runtime:
+Run the resident runtime:
 
 ```bash
 reachy-mini-agent agent my_app
 ```
 
-Each user-created app project lives under `profiles/<name>/`. The shared runtime loads the inner `profiles/` bundle from that project and uses it as content, config, prompts, tools, memory, and session state. The app project does not ship a custom runtime.
+Each user-created app project lives under `profiles/<name>/`. The runtime loads the inner `profiles/` directory from that project and uses it as content, config, prompts, tools, memory, and session state. The app project does not ship its own separate runtime host.
 
-A shared-runtime app project contains:
+Each app project contains:
 
 ```text
 profiles/my_app/
@@ -78,7 +78,7 @@ Where this happens in code:
 - Runtime assembly: `RuntimeScheduler.from_profile(...)`
 - Resident kernel bridge: `RuntimeScheduler.start()` and `RuntimeScheduler.stop()`
 
-Important: this is a shared process-resident runtime, not a separate OS service yet. The kernel stays alive for as long as the `reachy-mini-agent` process stays alive.
+From the CLI, this runtime stays alive for as long as the `reachy-mini-agent` process stays alive. When the generated app is installed and launched by the daemon, `AppManager` keeps that app process resident in the background.
 
 For one-shot runs from the terminal:
 
@@ -86,9 +86,9 @@ For one-shot runs from the terminal:
 reachy-mini-agent agent my_app --message "Hello"
 ```
 
-## Building Python Apps
+## Creating App Projects
 
-If you want a traditional Python app package for Reachy Mini, generate one with `reachy-mini-app-assistant create`. For a shared-runtime app project, use `reachy-mini-agent create`.
+Use `reachy-mini-agent create` for the local AI workflow in this repository. It is the single supported generator for user app projects under `profiles/<name>/`.
 
 ## JavaScript Web Apps
 Want a zero-install, cross-platform app that runs in the browser? Check out the [JavaScript SDK & Web Apps](javascript-sdk) guide — build static Hugging Face Spaces that control your robot over WebRTC from any device, including your phone.
@@ -102,6 +102,6 @@ Building a dashboard or a non-Python controller? The Daemon exposes full control
 
 ## AI Experimentation Tips
 
-* **Resident app runtime:** Use `reachy-mini-agent` when you want a shared companion runtime driven by one app project's files, profile bundle, memory, and prompts.
+* **Resident app runtime:** Use `reachy-mini-agent` when you want one app project's files, profile data, memory, and prompts to drive the current runtime.
 * **Conversation Demo:** Check out our earlier reference implementation combining VAD (Voice Activity Detection), LLMs, and TTS: [reachy_mini_conversation_demo](https://github.com/pollen-robotics/reachy_mini_conversation_demo).
 * **Custom vision/audio pipelines:** If your AI pipeline needs direct camera or microphone access (e.g. a custom OpenCV detector, Whisper with sounddevice), you can deactivate the built-in media manager with `media_backend="no_media"`. See [Disabling Media](media-architecture.md#disabling-media--direct-hardware-access) for details.

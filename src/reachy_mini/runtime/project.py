@@ -81,7 +81,6 @@ def create_app_project(app_root: Path, app_name: str) -> Path:
         "class_name_display": " ".join(
             part.capitalize() for part in normalized_app_name.split("_") if part
         ),
-        "include_profile_bundle": True,
     }
 
     package_root = target / normalized_app_name
