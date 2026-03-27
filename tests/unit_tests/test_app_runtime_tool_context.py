@@ -1,5 +1,6 @@
 """Tests for passing runtime tool context into resident runtimes."""
 
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -284,6 +285,143 @@ def test_runtime_embodiment_helpers_delegate_to_coordinator(tmp_path: Path) -> N
     assert coordinator.surface_states == [{"thread_id": "app:test", "phase": "replying"}]
     assert coordinator.audio_deltas == ["demo-audio"]
     assert coordinator.reset_calls == 1
+
+
+def test_runtime_reply_audio_helper_delegates_to_reply_audio_service(tmp_path: Path) -> None:
+    """ReachyMiniApp should expose a small public hook for final reply audio playback."""
+    profile_root = tmp_path / "profiles"
+    profile_root.mkdir()
+    _write_profile(profile_root)
+
+    app = ToolContextApp(profile_root)
+
+    class FakeReplyAudioService:
+        def __init__(self) -> None:
+            self.texts: list[str] = []
+
+        async def speak_text(self, text: str) -> bool:
+            self.texts.append(text)
+            return True
+
+    service = FakeReplyAudioService()
+    app.runtime_tool_context = ReachyToolContext(
+        reachy_mini=object(),
+        reply_audio_service=service,
+    )
+
+    result = asyncio.run(
+        app.play_runtime_reply_audio({"thread_id": "app:test", "turn_id": "turn-1", "text": "final reply"})
+    )
+
+    assert result is True
+    assert service.texts == ["final reply"]
+
+
+def test_runtime_reply_audio_helper_passes_lifecycle_callbacks_when_supported(
+    tmp_path: Path,
+) -> None:
+    """ReachyMiniApp should forward audio lifecycle callbacks to callback-aware services."""
+
+    profile_root = tmp_path / "profiles"
+    profile_root.mkdir()
+    _write_profile(profile_root)
+
+    app = ToolContextApp(profile_root)
+    callback_events: list[str] = []
+
+    class FakeReplyAudioService:
+        async def speak_text(
+            self,
+            text: str,
+            *,
+            on_started=None,
+            on_audio_delta=None,
+            on_finished=None,
+        ) -> bool:
+            callback_events.append(text)
+            if on_started is not None:
+                await on_started()
+            if on_audio_delta is not None:
+                await on_audio_delta("demo-delta")
+            if on_finished is not None:
+                await on_finished(True)
+            return True
+
+    async def _on_started() -> None:
+        callback_events.append("started")
+
+    async def _on_audio_delta(delta_b64: str) -> None:
+        callback_events.append(delta_b64)
+
+    async def _on_finished(played_any: bool) -> None:
+        callback_events.append(f"finished:{played_any}")
+
+    app.runtime_tool_context = ReachyToolContext(
+        reachy_mini=object(),
+        reply_audio_service=FakeReplyAudioService(),
+    )
+
+    result = asyncio.run(
+        app.play_runtime_reply_audio(
+            {
+                "thread_id": "app:test",
+                "turn_id": "turn-1",
+                "text": "final reply",
+                "on_started": _on_started,
+                "on_audio_delta": _on_audio_delta,
+                "on_finished": _on_finished,
+            }
+        )
+    )
+
+    assert result is True
+    assert callback_events == [
+        "final reply",
+        "started",
+        "demo-delta",
+        "finished:True",
+    ]
+
+
+def test_build_runtime_tool_context_builds_reply_audio_service_when_enabled(
+    tmp_path: Path,
+) -> None:
+    """Resident apps should prepare optional reply audio service from speech config."""
+    profile_root = tmp_path / "profiles"
+    profile_root.mkdir()
+    _write_profile(
+        profile_root,
+        config_jsonl=(
+            '{"kind":"front","mode":"text","style":"friendly_concise","history_limit":4}\n'
+            '{"kind":"vision","no_camera":false,"head_tracker":"","local_vision":false}\n'
+            '{"kind":"front_model","provider":"mock","model":"reachy_mini_front_mock","temperature":0.4,"api_key":"front-secret"}\n'
+            '{"kind":"kernel_model","provider":"mock","model":"reachy_mini_kernel_mock","temperature":0.2}\n'
+            '{"kind":"speech","enabled":true,"provider":"openai","model":"gpt-4o-mini-tts","voice":"alloy"}\n'
+        ),
+    )
+
+    app = ToolContextApp(profile_root)
+    fake_robot = _make_fake_robot()
+    fake_robot.media = SimpleNamespace(
+        start_playing=lambda: None,
+        push_audio_sample=lambda data: None,
+        stop_playing=lambda: None,
+        get_output_audio_samplerate=lambda: 24_000,
+    )
+    sentinel_service = object()
+
+    with patch("reachy_mini.runtime.moves.MovementManager", FakeMovementManager), patch(
+        "reachy_mini.runtime.audio.HeadWobbler",
+        FakeHeadWobbler,
+    ), patch(
+        "reachy_mini.runtime.reply_audio.build_runtime_reply_audio_service",
+        return_value=sentinel_service,
+    ) as builder:
+        context = app.build_runtime_tool_context(fake_robot)
+
+    assert context is not None
+    assert context.reply_audio_service is sentinel_service
+    assert builder.call_args.kwargs["fallback_api_key"] == "front-secret"
 
 
 def test_build_runtime_tool_context_builds_yolo_tracker_and_local_vision(

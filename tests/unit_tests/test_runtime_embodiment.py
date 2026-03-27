@@ -40,6 +40,7 @@ class FakeMovementManager:
         self.queued_moves: list[object] = []
         self.moving_durations: list[float] = []
         self.clear_count = 0
+        self.surface_offsets: list[tuple[float, float, float, float, float, float]] = []
 
     def set_listening(self, listening: bool) -> None:
         self.listening_calls.append(bool(listening))
@@ -55,6 +56,12 @@ class FakeMovementManager:
 
     def clear_move_queue(self) -> None:
         self.clear_count += 1
+
+    def set_surface_offsets(
+        self,
+        offsets: tuple[float, float, float, float, float, float],
+    ) -> None:
+        self.surface_offsets.append(offsets)
 
 
 class FakeReachyMini:
@@ -155,6 +162,77 @@ def test_embodiment_coordinator_resets_speech_when_leaving_replying() -> None:
     assert coordinator.apply_surface_state({"thread_id": "app:test", "phase": "settling"}) == "settling"
     assert speech_driver.speech_active is False
     assert speech_driver.head_wobbler.reset_calls == 1
+
+
+def test_embodiment_coordinator_exposes_current_surface_state_and_settling_hold() -> None:
+    """Coordinator should surface the aggregate embodied state, not only the phase string."""
+    fake_time = {"value": 10.0}
+    coordinator = EmbodimentCoordinator(
+        surface_driver=SurfaceDriver(now_fn=lambda: fake_time["value"]),
+        now_fn=lambda: fake_time["value"],
+    )
+
+    assert (
+        coordinator.apply_surface_state(
+            {
+                "thread_id": "app:test",
+                "phase": "replying",
+                "presence": "near",
+                "body_state": "leaning_in",
+            }
+        )
+        == "replying"
+    )
+    assert coordinator.current_surface_state["presence"] == "near"
+    assert coordinator.current_surface_state["body_state"] == "leaning_in"
+
+    assert (
+        coordinator.apply_surface_state(
+            {
+                "thread_id": "app:test",
+                "phase": "settling",
+                "presence": "steady",
+                "recommended_hold_ms": 900,
+            }
+        )
+        == "settling"
+    )
+    assert coordinator.apply_surface_state({"thread_id": "app:test", "phase": "idle"}) == "settling"
+    assert coordinator.current_phase == "settling"
+    assert coordinator.current_surface_state["presence"] == "steady"
+
+    fake_time["value"] = 10.95
+
+    assert coordinator.current_phase == "idle"
+    assert coordinator.current_surface_state == {"phase": "idle"}
+
+
+def test_embodiment_coordinator_translates_surface_semantics_into_offsets() -> None:
+    """Coordinator should translate richer surface hints into subtle body baseline offsets."""
+    movement_manager = FakeMovementManager()
+    coordinator = EmbodimentCoordinator(
+        movement_manager=movement_manager,
+        surface_driver=SurfaceDriver(movement_manager=movement_manager),
+    )
+
+    assert (
+        coordinator.apply_surface_state(
+            {
+                "thread_id": "app:test",
+                "phase": "listening",
+                "presence": "beside",
+                "body_state": "listening_beside",
+                "motion_hint": "small_nod",
+            }
+        )
+        == "listening"
+    )
+
+    assert movement_manager.surface_offsets
+    latest = movement_manager.surface_offsets[-1]
+    assert latest != (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    assert latest[3] > 0.0
+    assert latest[4] < 0.0
 
 
 def test_embodiment_coordinator_handles_explicit_motion_actions() -> None:

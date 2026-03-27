@@ -86,3 +86,27 @@ def test_load_profile_runtime_config_reads_vision_settings(tmp_path: Path) -> No
     assert config.vision.local_vision is True
     assert config.vision.local_vision_model == "demo-model"
     assert config.vision.hf_home == "./hf-cache"
+
+
+def test_load_profile_runtime_config_reads_speech_settings(tmp_path: Path) -> None:
+    """Parse optional reply-audio settings from config.jsonl."""
+    profile_root = tmp_path / "demo"
+    profile_root.mkdir()
+    _write_profile(
+        profile_root,
+        config_jsonl=(
+            '{"kind":"speech","enabled":true,"provider":"openai","model":"gpt-4o-mini-tts","voice":"alloy","api_key":"speech-secret","instructions":"Speak warmly.","speed":1.1,"chunk_ms":120}\n'
+        ),
+    )
+
+    profile = load_profile_bundle(profile_root)
+    config = load_profile_runtime_config(profile)
+
+    assert config.speech.enabled is True
+    assert config.speech.provider == "openai"
+    assert config.speech.model == "gpt-4o-mini-tts"
+    assert config.speech.voice == "alloy"
+    assert config.speech.api_key == "speech-secret"
+    assert config.speech.instructions == "Speak warmly."
+    assert config.speech.speed == 1.1
+    assert config.speech.chunk_ms == 120

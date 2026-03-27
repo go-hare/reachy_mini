@@ -41,6 +41,21 @@ class VisionRuntimeConfig:
 
 
 @dataclass(slots=True)
+class SpeechRuntimeConfig:
+    """How optional reply-audio synthesis and playback should start."""
+
+    enabled: bool = False
+    provider: str = ""
+    model: str = "gpt-4o-mini-tts"
+    base_url: str = ""
+    api_key: str = ""
+    voice: str = "alloy"
+    instructions: str = ""
+    speed: float = 1.0
+    chunk_ms: int = 80
+
+
+@dataclass(slots=True)
 class ProfileRuntimeConfig:
     """Structured runtime settings parsed from ``config.jsonl``."""
 
@@ -50,6 +65,7 @@ class ProfileRuntimeConfig:
     front_model: FrontModelConfig = field(default_factory=FrontModelConfig)
     kernel_model: KernelModelConfig = field(default_factory=KernelModelConfig)
     vision: VisionRuntimeConfig = field(default_factory=VisionRuntimeConfig)
+    speech: SpeechRuntimeConfig = field(default_factory=SpeechRuntimeConfig)
 
 
 def load_profile_runtime_config(profile: ProfileBundle) -> ProfileRuntimeConfig:
@@ -83,6 +99,27 @@ def load_profile_runtime_config(profile: ProfileBundle) -> ProfileRuntimeConfig:
                     or config.vision.local_vision_model
                 ),
                 hf_home=str(record.get("hf_home", config.vision.hf_home) or ""),
+            )
+            continue
+
+        if kind == "speech":
+            chunk_ms = record.get("chunk_ms", config.speech.chunk_ms)
+            config.speech = SpeechRuntimeConfig(
+                enabled=bool(record.get("enabled", config.speech.enabled)),
+                provider=str(
+                    record.get("provider", config.speech.provider)
+                    or config.speech.provider
+                ),
+                model=str(record.get("model", config.speech.model) or config.speech.model),
+                base_url=str(record.get("base_url", config.speech.base_url) or ""),
+                api_key=str(record.get("api_key", config.speech.api_key) or ""),
+                voice=str(record.get("voice", config.speech.voice) or config.speech.voice),
+                instructions=str(
+                    record.get("instructions", config.speech.instructions)
+                    or config.speech.instructions
+                ),
+                speed=float(record.get("speed", config.speech.speed)),
+                chunk_ms=max(20, int(chunk_ms)) if chunk_ms is not None else config.speech.chunk_ms,
             )
             continue
 
@@ -181,4 +218,5 @@ def apply_runtime_overrides(
         front_model=front_model,
         kernel_model=resolved_kernel_model,
         vision=config.vision,
+        speech=config.speech,
     )

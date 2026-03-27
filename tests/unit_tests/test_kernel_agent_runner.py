@@ -10,6 +10,7 @@ from reachy_mini.runtime.config import load_profile_runtime_config
 from reachy_mini.runtime.profile_loader import load_profile_bundle
 from reachy_mini.runtime.scheduler import RuntimeScheduler
 from reachy_mini.runtime.tool_loader import build_runtime_tool_bundle
+from reachy_mini.runtime.tools import ReachyToolContext
 
 
 def _write_profile(profile_root: Path) -> None:
@@ -423,5 +424,266 @@ def test_runtime_scheduler_publishes_front_tool_result_packets(tmp_path: Path) -
         assert payloads[-1]["tool_name"] == "do_nothing"
         assert payloads[-1]["success"] is True
         assert payloads[-1]["result"] == "front tool executed"
+
+    asyncio.run(_exercise())
+
+
+def test_runtime_scheduler_emits_assistant_audio_lifecycle_signals(tmp_path: Path) -> None:
+    """Reply-audio playback should surface started/delta/finished lifecycle signals."""
+
+    async def _exercise() -> None:
+        profile_root = tmp_path / "demo"
+        profile_root.mkdir()
+        _write_profile(profile_root)
+
+        profile = load_profile_bundle(profile_root)
+        config = load_profile_runtime_config(profile)
+        front = FakeFront()
+        kernel = FakeKernel()
+        runtime = RuntimeScheduler(
+            profile_root=profile.root,
+            front=front,
+            kernel=kernel,
+            affect_runtime=None,
+            front_style=config.front_style,
+        )
+
+        async def final_reply_handler(payload: dict[str, object]) -> bool:
+            on_started = payload.get("on_started")
+            on_audio_delta = payload.get("on_audio_delta")
+            on_finished = payload.get("on_finished")
+            if callable(on_started):
+                await on_started()
+            if callable(on_audio_delta):
+                await on_audio_delta("demo-delta")
+            if callable(on_finished):
+                await on_finished(True)
+            return True
+
+        await runtime.start()
+        try:
+            await runtime.handle_user_text(
+                thread_id="cli:main",
+                session_id="cli:main",
+                user_id="user",
+                user_text="帮我看看日志",
+                final_reply_handler=final_reply_handler,
+            )
+            await runtime.wait_for_thread_idle("cli:main")
+        finally:
+            await runtime.stop()
+
+        signal_names = [getattr(signal, "name", "") for signal in front.signal_calls]
+        assert "assistant_audio_started" in signal_names
+        assert "assistant_audio_delta" in signal_names
+        assert "assistant_audio_finished" in signal_names
+        assert signal_names.index("assistant_audio_started") < signal_names.index("assistant_audio_finished")
+        assert signal_names.index("assistant_audio_finished") < signal_names.index("settling_entered")
+
+    asyncio.run(_exercise())
+
+
+def test_runtime_scheduler_emits_idle_tick_signals_while_thread_stays_idle(
+    tmp_path: Path,
+) -> None:
+    """Idle threads should keep producing idle_tick signals on a cooldown."""
+
+    async def _exercise() -> None:
+        profile_root = tmp_path / "demo"
+        profile_root.mkdir()
+        _write_profile(profile_root)
+
+        profile = load_profile_bundle(profile_root)
+        config = load_profile_runtime_config(profile)
+        front = FakeFront()
+        kernel = FakeKernel()
+        runtime = RuntimeScheduler(
+            profile_root=profile.root,
+            front=front,
+            kernel=kernel,
+            affect_runtime=None,
+            front_style=config.front_style,
+            idle_tick_interval_s=0.02,
+        )
+
+        await runtime.start()
+        try:
+            await runtime.handle_user_text(
+                thread_id="cli:main",
+                session_id="cli:main",
+                user_id="user",
+                user_text="帮我看看日志",
+            )
+            await runtime.wait_for_thread_idle("cli:main")
+            await asyncio.sleep(0.05)
+        finally:
+            await runtime.stop()
+
+        signal_names = [getattr(signal, "name", "") for signal in front.signal_calls]
+        assert signal_names.count("idle_tick") >= 1
+
+    asyncio.run(_exercise())
+
+
+def test_runtime_scheduler_accepts_user_speech_lifecycle_signals(tmp_path: Path) -> None:
+    """User speech lifecycle hooks should reach front and surface state before text commit."""
+
+    async def _exercise() -> None:
+        profile_root = tmp_path / "demo"
+        profile_root.mkdir()
+        _write_profile(profile_root)
+
+        profile = load_profile_bundle(profile_root)
+        config = load_profile_runtime_config(profile)
+        front = FakeFront()
+        kernel = FakeKernel()
+        runtime = RuntimeScheduler(
+            profile_root=profile.root,
+            front=front,
+            kernel=kernel,
+            affect_runtime=None,
+            front_style=config.front_style,
+            idle_tick_interval_s=0.02,
+        )
+
+        surface_states: list[dict[str, object]] = []
+        latest_surface_state = None
+
+        async def _surface_state_handler(state: dict[str, object]) -> None:
+            surface_states.append(dict(state))
+
+        await runtime.start()
+        try:
+            await runtime.handle_user_speech_started(
+                thread_id="cli:main",
+                session_id="cli:main",
+                user_id="user",
+                user_text="我先说一下",
+                surface_state_handler=_surface_state_handler,
+            )
+            await runtime.handle_user_speech_stopped(
+                thread_id="cli:main",
+                session_id="cli:main",
+                user_id="user",
+                user_text="我先说一下",
+                surface_state_handler=_surface_state_handler,
+            )
+            await asyncio.sleep(0.05)
+            latest_surface_state = runtime.get_thread_surface_state("cli:main")
+        finally:
+            await runtime.stop()
+
+        signal_names = [getattr(signal, "name", "") for signal in front.signal_calls]
+        assert "user_speech_started" in signal_names
+        assert "user_speech_stopped" in signal_names
+        assert signal_names.count("idle_tick") >= 1
+        assert surface_states[0]["phase"] == "listening"
+        assert surface_states[1]["phase"] == "listening_wait"
+        assert latest_surface_state is not None
+        assert latest_surface_state["phase"] == "listening_wait"
+
+    asyncio.run(_exercise())
+
+
+def test_runtime_scheduler_interrupts_reply_audio_when_user_speech_starts(
+    tmp_path: Path,
+) -> None:
+    """User speech should interrupt reply audio and prevent the old turn from re-entering settling."""
+
+    class FakeInterruptibleReplyAudioService:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.interrupted = asyncio.Event()
+            self.interrupt_calls = 0
+
+        async def speak_text(
+            self,
+            text: str,
+            *,
+            on_started=None,
+            on_audio_delta=None,
+            on_finished=None,
+        ) -> bool:
+            _ = text
+            if on_started is not None:
+                await on_started()
+            self.started.set()
+            if on_audio_delta is not None:
+                await on_audio_delta("demo-delta")
+            await self.interrupted.wait()
+            if on_finished is not None:
+                await on_finished(False)
+            return True
+
+        async def interrupt_playback(self) -> bool:
+            if self.interrupted.is_set():
+                return False
+            self.interrupt_calls += 1
+            self.interrupted.set()
+            await asyncio.sleep(0)
+            return True
+
+    async def _exercise() -> None:
+        profile_root = tmp_path / "demo"
+        profile_root.mkdir()
+        _write_profile(profile_root)
+
+        profile = load_profile_bundle(profile_root)
+        config = load_profile_runtime_config(profile)
+        front = FakeFront()
+        kernel = FakeKernel()
+        reply_audio_service = FakeInterruptibleReplyAudioService()
+        runtime = RuntimeScheduler(
+            profile_root=profile.root,
+            front=front,
+            kernel=kernel,
+            affect_runtime=None,
+            front_style=config.front_style,
+            idle_tick_interval_s=0.0,
+            runtime_tool_context=ReachyToolContext(
+                reachy_mini=object(),
+                reply_audio_service=reply_audio_service,
+            ),
+        )
+
+        async def final_reply_handler(payload: dict[str, object]) -> bool:
+            return await reply_audio_service.speak_text(
+                str(payload.get("text", "") or ""),
+                on_started=payload.get("on_started"),
+                on_audio_delta=payload.get("on_audio_delta"),
+                on_finished=payload.get("on_finished"),
+            )
+
+        await runtime.start()
+        try:
+            turn_task = asyncio.create_task(
+                runtime.handle_user_text(
+                    thread_id="cli:main",
+                    session_id="cli:main",
+                    user_id="user",
+                    user_text="帮我看看日志",
+                    final_reply_handler=final_reply_handler,
+                )
+            )
+            await reply_audio_service.started.wait()
+            await runtime.handle_user_speech_started(
+                thread_id="cli:main",
+                session_id="cli:main",
+                user_id="user",
+                user_text="先别说了",
+            )
+            await turn_task
+            await runtime.wait_for_thread_idle("cli:main")
+            latest_surface_state = runtime.get_thread_surface_state("cli:main")
+        finally:
+            await runtime.stop()
+
+        signal_names = [getattr(signal, "name", "") for signal in front.signal_calls]
+        assert reply_audio_service.interrupt_calls == 1
+        assert "assistant_audio_started" in signal_names
+        assert "assistant_audio_finished" not in signal_names
+        assert "settling_entered" not in signal_names
+        assert latest_surface_state is not None
+        assert latest_surface_state["phase"] == "listening"
 
     asyncio.run(_exercise())

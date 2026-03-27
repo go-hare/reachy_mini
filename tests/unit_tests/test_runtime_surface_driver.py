@@ -30,10 +30,17 @@ def test_surface_driver_maps_phases_to_listening_and_activity() -> None:
     assert movement_manager.listening_calls[-1] is False
     assert movement_manager.activity_marks == 2
 
+    assert (
+        driver.apply_state({"thread_id": "app:test", "phase": "listening_wait"})
+        == "listening_wait"
+    )
+    assert movement_manager.listening_calls[-1] is False
+    assert movement_manager.activity_marks == 3
+
     assert driver.apply_state({"thread_id": "app:test", "phase": "idle"}) == "idle"
     assert driver.current_phase == "idle"
     assert movement_manager.listening_calls[-1] is False
-    assert movement_manager.activity_marks == 2
+    assert movement_manager.activity_marks == 3
 
 
 def test_surface_driver_aggregates_concurrent_thread_phases() -> None:
@@ -49,4 +56,62 @@ def test_surface_driver_aggregates_concurrent_thread_phases() -> None:
 
     assert driver.apply_state({"thread_id": "thread-a", "phase": "idle"}) == "idle"
     assert driver.current_phase == "idle"
+
+
+def test_surface_driver_exposes_richer_aggregate_state() -> None:
+    """The aggregate driver state should preserve richer surface semantics, not just phase."""
+    driver = SurfaceDriver()
+
+    driver.apply_state(
+        {
+            "thread_id": "thread-a",
+            "phase": "replying",
+            "presence": "near",
+            "body_state": "leaning_in",
+        }
+    )
+    driver.apply_state(
+        {
+            "thread_id": "thread-b",
+            "phase": "listening",
+            "presence": "beside",
+            "body_state": "listening_beside",
+        }
+    )
+
+    assert driver.current_state["phase"] == "listening"
+    assert driver.current_state["presence"] == "beside"
+    assert driver.current_state["body_state"] == "listening_beside"
+
+    driver.apply_state({"thread_id": "thread-b", "phase": "idle"})
+
+    assert driver.current_state["phase"] == "replying"
+    assert driver.current_state["presence"] == "near"
+    assert driver.current_state["body_state"] == "leaning_in"
+
+
+def test_surface_driver_holds_settling_until_recommended_hold_expires() -> None:
+    """A short settling hold should survive an immediate idle handoff."""
+    fake_time = {"value": 10.0}
+    driver = SurfaceDriver(now_fn=lambda: fake_time["value"])
+
+    assert (
+        driver.apply_state(
+            {
+                "thread_id": "thread-a",
+                "phase": "settling",
+                "presence": "steady",
+                "recommended_hold_ms": 900,
+            }
+        )
+        == "settling"
+    )
+    assert driver.apply_state({"thread_id": "thread-a", "phase": "idle"}) == "settling"
+    assert driver.current_state["phase"] == "settling"
+    assert driver.current_state["presence"] == "steady"
+
+    fake_time["value"] = 10.95
+
+    assert driver.current_phase == "idle"
+    assert driver.current_state == {"phase": "idle"}
 

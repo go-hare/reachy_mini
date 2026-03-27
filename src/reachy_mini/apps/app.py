@@ -17,6 +17,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
 
+from .runtime_host import AppRuntimeHostAdapter
+
 if TYPE_CHECKING:
     from reachy_mini.reachy_mini import ReachyMini
     from reachy_mini.runtime.scheduler import RuntimeScheduler
@@ -60,6 +62,26 @@ class UserTextEvent(BaseModel):
     user_id: str = "user"
 
 
+class UserSpeechStartedEvent(BaseModel):
+    """One browser speech-start lifecycle event over WebSocket."""
+
+    type: Literal["user_speech_started"]
+    thread_id: str = "app:main"
+    session_id: str | None = None
+    user_id: str = "user"
+    text: str = ""
+
+
+class UserSpeechStoppedEvent(BaseModel):
+    """One browser speech-stop lifecycle event over WebSocket."""
+
+    type: Literal["user_speech_stopped"]
+    thread_id: str = "app:main"
+    session_id: str | None = None
+    user_id: str = "user"
+    text: str = ""
+
+
 class ReachyMiniApp:
     """Base class for Reachy Mini applications."""
 
@@ -87,6 +109,10 @@ class ReachyMiniApp:
             else "default"
         )
         self.profile_root = self.resolve_profile_root()
+        self.runtime_host_adapter = AppRuntimeHostAdapter(
+            profile_root=self.profile_root,
+            logger=self.logger,
+        )
         self.runtime: RuntimeScheduler | None = None
         self.runtime_loop: asyncio.AbstractEventLoop | None = None
         self.runtime_ready = threading.Event()
@@ -213,206 +239,36 @@ class ReachyMiniApp:
         reachy_mini: ReachyMini | Any,
     ) -> "ReachyToolContext | None":
         """Build optional runtime tool dependencies from the running app instance."""
-        from reachy_mini.runtime.embodiment import EmbodimentCoordinator
-        from reachy_mini.runtime.moves import MovementManager
-        from reachy_mini.runtime.speech_driver import SpeechDriver
-        from reachy_mini.runtime.surface_driver import SurfaceDriver
-        from reachy_mini.runtime.tools import ReachyToolContext
-        from reachy_mini.runtime.config import (
-            VisionRuntimeConfig,
-            load_profile_runtime_config,
-        )
-        from reachy_mini.runtime.profile_loader import load_profile_bundle
-
-        if reachy_mini is None or not hasattr(reachy_mini, "goto_target"):
-            return None
-
-        vision_config = VisionRuntimeConfig()
-        if self.profile_root is not None:
-            profile = load_profile_bundle(self.profile_root)
-            runtime_config = load_profile_runtime_config(profile)
-            vision_config = runtime_config.vision
-
-        camera_worker = None
-        vision_processor = None
-        movement_manager = None
-        head_wobbler = None
-        speech_driver = None
-        surface_driver = None
-        embodiment_coordinator = None
-
-        if not vision_config.no_camera:
-            media = getattr(reachy_mini, "media", None)
-            if media is not None and hasattr(media, "get_frame"):
-                head_tracker = self._build_head_tracker(vision_config)
-                try:
-                    from reachy_mini.runtime.camera_worker import CameraWorker
-
-                    camera_worker = CameraWorker(reachy_mini, head_tracker)
-                    camera_worker.start()
-                except Exception as exc:
-                    self.logger.warning("Failed to start camera worker: %s", exc)
-
-            if vision_config.local_vision:
-                vision_processor = self._build_vision_processor(vision_config)
-
-        if all(
-            hasattr(reachy_mini, attribute)
-            for attribute in (
-                "set_target",
-                "get_current_head_pose",
-                "get_current_joint_positions",
-            )
-        ):
-            try:
-                movement_manager = MovementManager(
-                    reachy_mini,
-                    camera_worker=camera_worker,
-                )
-                movement_manager.start()
-            except Exception as exc:
-                self.logger.warning("Failed to start movement manager: %s", exc)
-
-        if movement_manager is not None:
-            surface_driver = SurfaceDriver(movement_manager=movement_manager)
-            try:
-                from reachy_mini.runtime.audio import HeadWobbler
-
-                head_wobbler = HeadWobbler(movement_manager.set_speech_offsets)
-                speech_driver = SpeechDriver(head_wobbler=head_wobbler)
-                speech_driver.start()
-            except Exception as exc:
-                self.logger.warning("Failed to start head wobbler: %s", exc)
-            embodiment_coordinator = EmbodimentCoordinator(
-                reachy_mini=reachy_mini,
-                movement_manager=movement_manager,
-                camera_worker=camera_worker,
-                motion_duration_s=1.0,
-                surface_driver=surface_driver,
-                speech_driver=speech_driver,
-            )
-
-        return ReachyToolContext(
-            reachy_mini=reachy_mini,
-            camera_worker=camera_worker,
-            vision_processor=vision_processor,
-            movement_manager=movement_manager,
-            head_wobbler=head_wobbler,
-            speech_driver=speech_driver,
-            surface_driver=surface_driver,
-            embodiment_coordinator=embodiment_coordinator,
-        )
-
-    def _build_head_tracker(self, vision_config: Any) -> Any | None:
-        """Build the configured head tracker using legacy conversation-app semantics."""
-        tracker_kind = str(getattr(vision_config, "head_tracker", "") or "").strip()
-        if not tracker_kind:
-            return None
-        if tracker_kind == "yolo":
-            from reachy_mini.runtime.vision.yolo_head_tracker import HeadTracker
-
-            return HeadTracker()
-        if tracker_kind == "mediapipe":
-            try:
-                from reachy_mini_toolbox.vision import HeadTracker
-            except ImportError as exc:
-                raise ImportError(
-                    "MediaPipe head tracking requires reachy_mini_toolbox vision support."
-                ) from exc
-            return HeadTracker()
-        raise ValueError(f"Unsupported head_tracker setting: {tracker_kind}")
-
-    def _build_vision_processor(self, vision_config: Any) -> Any:
-        """Build the configured local vision processor."""
-        from reachy_mini.runtime.vision.processors import (
-            VisionConfig,
-            initialize_vision_processor,
-        )
-
-        return initialize_vision_processor(
-            VisionConfig(
-                model_path=(
-                    str(getattr(vision_config, "local_vision_model", "") or "").strip()
-                    or VisionConfig().model_path
-                ),
-                hf_home=(
-                    str(getattr(vision_config, "hf_home", "") or "").strip()
-                    or VisionConfig().hf_home
-                ),
-            )
-        )
+        return self.runtime_host_adapter.build_runtime_tool_context(reachy_mini)
 
     def cleanup_runtime_tool_context(self, context: Any | None) -> None:
         """Stop runtime-managed helper resources."""
-        if context is None:
-            return
-        speech_driver = getattr(context, "speech_driver", None)
-        if speech_driver is not None and hasattr(speech_driver, "stop"):
-            try:
-                speech_driver.stop()
-            except Exception as exc:
-                self.logger.warning("Failed to stop speech driver: %s", exc)
-        head_wobbler = getattr(context, "head_wobbler", None)
-        if (
-            head_wobbler is not None
-            and hasattr(head_wobbler, "stop")
-            and speech_driver is None
-        ):
-            try:
-                head_wobbler.stop()
-            except Exception as exc:
-                self.logger.warning("Failed to stop head wobbler: %s", exc)
-        movement_manager = getattr(context, "movement_manager", None)
-        if movement_manager is not None and hasattr(movement_manager, "stop"):
-            try:
-                movement_manager.stop()
-            except Exception as exc:
-                self.logger.warning("Failed to stop movement manager: %s", exc)
-        camera_worker = getattr(context, "camera_worker", None)
-        if camera_worker is not None and hasattr(camera_worker, "stop"):
-            try:
-                camera_worker.stop()
-            except Exception as exc:
-                self.logger.warning("Failed to stop camera worker: %s", exc)
+        self.runtime_host_adapter.cleanup_runtime_tool_context(context)
 
     def feed_runtime_audio_delta(self, delta_b64: str) -> bool:
         """Feed one assistant audio delta into the runtime head wobbler."""
-        coordinator = getattr(self.runtime_tool_context, "embodiment_coordinator", None)
-        if coordinator is not None and hasattr(coordinator, "feed_audio_delta"):
-            return bool(coordinator.feed_audio_delta(delta_b64))
-        head_wobbler = getattr(self.runtime_tool_context, "head_wobbler", None)
-        if head_wobbler is None or not hasattr(head_wobbler, "feed"):
-            return False
-        head_wobbler.feed(delta_b64)
-        return True
+        return self.runtime_host_adapter.feed_runtime_audio_delta(
+            self.runtime_tool_context,
+            delta_b64,
+        )
 
     def reset_runtime_audio_motion(self) -> bool:
         """Reset queued speech-motion audio state for the resident runtime."""
-        coordinator = getattr(self.runtime_tool_context, "embodiment_coordinator", None)
-        if coordinator is not None and hasattr(coordinator, "reset_speech_motion"):
-            return bool(coordinator.reset_speech_motion())
-        head_wobbler = getattr(self.runtime_tool_context, "head_wobbler", None)
-        if head_wobbler is None or not hasattr(head_wobbler, "reset"):
-            return False
-        head_wobbler.reset()
-        return True
+        return self.runtime_host_adapter.reset_runtime_audio_motion(self.runtime_tool_context)
+
+    async def play_runtime_reply_audio(self, payload: dict[str, Any]) -> bool:
+        """Synthesize and play one final runtime reply when speech output is configured."""
+        return await self.runtime_host_adapter.play_runtime_reply_audio(
+            self.runtime_tool_context,
+            payload,
+        )
 
     def apply_runtime_surface_state(self, state: dict[str, Any]) -> None:
         """Apply one runtime surface-state snapshot onto the embodiment driver."""
-        coordinator = getattr(self.runtime_tool_context, "embodiment_coordinator", None)
-        if coordinator is not None and hasattr(coordinator, "apply_surface_state"):
-            try:
-                coordinator.apply_surface_state(dict(state))
-            except Exception as exc:
-                self.logger.warning("Failed to apply runtime surface state: %s", exc)
-            return
-        surface_driver = getattr(self.runtime_tool_context, "surface_driver", None)
-        if surface_driver is None or not hasattr(surface_driver, "apply_state"):
-            return
-        try:
-            surface_driver.apply_state(dict(state))
-        except Exception as exc:
-            self.logger.warning("Failed to apply runtime surface state: %s", exc)
+        self.runtime_host_adapter.apply_runtime_surface_state(
+            self.runtime_tool_context,
+            state,
+        )
 
     def stop(self) -> None:
         """Stop the app gracefully."""
@@ -598,6 +454,7 @@ class ReachyMiniApp:
                 user_id=user_id,
                 user_text=str(payload.message),
                 surface_state_handler=surface_state_handler,
+                final_reply_handler=self.play_runtime_reply_audio,
             )
             await runtime.wait_for_thread_idle(thread_id)
             await asyncio.sleep(0)
@@ -669,7 +526,44 @@ class ReachyMiniApp:
                 await outbound_queue.put({"type": "pong"})
                 continue
 
-            if event_type != "user_text":
+            if event_type == "user_text":
+                try:
+                    event = UserTextEvent.model_validate(payload)
+                except ValidationError as exc:
+                    await outbound_queue.put(
+                        self._build_turn_error_event(
+                            thread_id=str(payload.get("thread_id", "app:main") or "app:main"),
+                            error=str(exc),
+                        )
+                    )
+                    continue
+
+                tracked_thread_ids.add(str(event.thread_id or "app:main"))
+                asyncio.create_task(self._dispatch_user_text_turn(event, outbound_queue))
+                continue
+
+            if event_type in {"user_speech_started", "user_speech_stopped"}:
+                try:
+                    if event_type == "user_speech_started":
+                        speech_event = UserSpeechStartedEvent.model_validate(payload)
+                    else:
+                        speech_event = UserSpeechStoppedEvent.model_validate(payload)
+                except ValidationError as exc:
+                    await outbound_queue.put(
+                        self._build_turn_error_event(
+                            thread_id=str(payload.get("thread_id", "app:main") or "app:main"),
+                            error=str(exc),
+                        )
+                    )
+                    continue
+
+                tracked_thread_ids.add(str(speech_event.thread_id or "app:main"))
+                asyncio.create_task(
+                    self._dispatch_user_speech_event(speech_event, outbound_queue)
+                )
+                continue
+
+            else:
                 await outbound_queue.put(
                     self._build_turn_error_event(
                         thread_id=str(payload.get("thread_id", "app:main") or "app:main"),
@@ -677,20 +571,6 @@ class ReachyMiniApp:
                     )
                 )
                 continue
-
-            try:
-                event = UserTextEvent.model_validate(payload)
-            except ValidationError as exc:
-                await outbound_queue.put(
-                    self._build_turn_error_event(
-                        thread_id=str(payload.get("thread_id", "app:main") or "app:main"),
-                        error=str(exc),
-                    )
-                )
-                continue
-
-            tracked_thread_ids.add(str(event.thread_id or "app:main"))
-            asyncio.create_task(self._dispatch_user_text_turn(event, outbound_queue))
 
     async def _runtime_websocket_front_output_loop(
         self,
@@ -765,6 +645,47 @@ class ReachyMiniApp:
                 )
             )
 
+    async def _dispatch_user_speech_event(
+        self,
+        event: UserSpeechStartedEvent | UserSpeechStoppedEvent,
+        outbound_queue: asyncio.Queue[dict[str, Any]],
+    ) -> None:
+        """Dispatch one speech lifecycle event onto the resident runtime."""
+
+        runtime = self.runtime
+        thread_id = str(event.thread_id or "app:main")
+        runtime_loop = self.runtime_loop
+        if runtime is None or runtime_loop is None or not self.runtime_ready.is_set():
+            await outbound_queue.put(
+                self._build_turn_error_event(
+                    thread_id=thread_id,
+                    error="Runtime is not ready yet.",
+                )
+            )
+            return
+
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                self._dispatch_user_speech_event_on_runtime_loop(
+                    event_type=str(event.type),
+                    thread_id=thread_id,
+                    session_id=str(event.session_id or thread_id),
+                    user_id=str(event.user_id or "user"),
+                    user_text=str(event.text or ""),
+                    outbound_queue=outbound_queue,
+                    outbound_loop=asyncio.get_running_loop(),
+                ),
+                runtime_loop,
+            )
+            await asyncio.wrap_future(future)
+        except Exception as exc:
+            await outbound_queue.put(
+                self._build_turn_error_event(
+                    thread_id=thread_id,
+                    error=str(exc),
+                )
+            )
+
     async def _dispatch_user_text_turn_on_runtime_loop(
         self,
         *,
@@ -803,7 +724,64 @@ class ReachyMiniApp:
             user_id=user_id,
             user_text=user_text,
             surface_state_handler=surface_state_handler,
+            final_reply_handler=self.play_runtime_reply_audio,
         )
+
+    async def _dispatch_user_speech_event_on_runtime_loop(
+        self,
+        *,
+        event_type: str,
+        thread_id: str,
+        session_id: str,
+        user_id: str,
+        user_text: str,
+        outbound_queue: asyncio.Queue[dict[str, Any]],
+        outbound_loop: asyncio.AbstractEventLoop,
+    ) -> None:
+        """Dispatch one speech lifecycle event on the runtime loop."""
+
+        runtime = self.runtime
+        if runtime is None:
+            raise RuntimeError("Runtime is not ready yet.")
+
+        async def publish_event(event: dict[str, Any]) -> None:
+            put_future = asyncio.run_coroutine_threadsafe(
+                outbound_queue.put(event),
+                outbound_loop,
+            )
+            await asyncio.wrap_future(put_future)
+
+        async def surface_state_handler(state: dict[str, Any]) -> None:
+            self.apply_runtime_surface_state(state)
+            await publish_event(
+                {
+                    "type": "surface_state",
+                    "thread_id": thread_id,
+                    "state": dict(state),
+                }
+            )
+
+        if event_type == "user_speech_started":
+            await runtime.handle_user_speech_started(
+                thread_id=thread_id,
+                session_id=session_id,
+                user_id=user_id,
+                user_text=user_text,
+                surface_state_handler=surface_state_handler,
+            )
+            return
+
+        if event_type == "user_speech_stopped":
+            await runtime.handle_user_speech_stopped(
+                thread_id=thread_id,
+                session_id=session_id,
+                user_id=user_id,
+                user_text=user_text,
+                surface_state_handler=surface_state_handler,
+            )
+            return
+
+        raise RuntimeError(f"Unsupported speech event type: {event_type or '<empty>'}")
 
     def _build_runtime_status_event(self) -> dict[str, Any]:
         """Build one small runtime readiness event."""

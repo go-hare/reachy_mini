@@ -1,0 +1,1117 @@
+import { useState, useEffect, useCallback, useRef } from "react"
+import { Settings as SettingsIcon, AlertCircle, Loader2, Monitor, Bot, MessageCircle, ExternalLink, Code2, MessageSquare, BookOpen, Palette } from "lucide-react"
+import { invoke } from "@tauri-apps/api/core"
+import { ErrorBoundary } from "@/components/ErrorBoundary"
+import { ScrollArea } from "@/components/ui/scroll-area"
+import {
+  AppearanceSettings,
+  ChatSettings,
+  GeneralSettings,
+  AgentSettings,
+  LLMSettings,
+  CodeSettings,
+  SubAgentsSettings,
+  PromptsUISettings
+} from "@/components/settings"
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
+import { Button } from "@/components/ui/button"
+import { DocsSettings } from "@/components/settings/DocsSettings"
+import { useLLMSettings } from "@/hooks/use-llm-settings"
+import { useSettings as useAppSettingsContext } from "@/contexts/settings-context"
+import type { SettingsModalProps, SettingsTab } from "@/types/settings"
+import {
+  defaultCustomAgentDefinition,
+  defaultEnabledAgentsMap,
+  type CustomAgentDefinition,
+} from "@/components/settings/agent-registry"
+
+const DEFAULT_CLI_AGENT_CHOICES = ['autohand', 'claude', 'codex', 'gemini', 'ollama'] as const
+type DefaultCliAgentChoice = typeof DEFAULT_CLI_AGENT_CHOICES[number]
+
+const normalizeDefaultCliAgent = (value?: string | null): DefaultCliAgentChoice => {
+  if (!value) return 'autohand'
+  const normalized = value.toLowerCase() as DefaultCliAgentChoice
+  return DEFAULT_CLI_AGENT_CHOICES.includes(normalized) ? normalized : 'autohand'
+}
+
+const createDefaultAgentSettings = () => ({
+  model: '',
+  output_format: 'markdown',
+  session_timeout_minutes: 30,
+  max_tokens: null,
+  temperature: null,
+  sandbox_mode: false,
+  auto_approval: false,
+  debug_mode: false,
+})
+
+const createDefaultAllAgentSettings = () => ({
+  max_concurrent_sessions: 10,
+  autohand: createDefaultAgentSettings(),
+  claude: createDefaultAgentSettings(),
+  codex: createDefaultAgentSettings(),
+  gemini: createDefaultAgentSettings(),
+  ollama: createDefaultAgentSettings(),
+  custom_agents: [] as CustomAgentDefinition[],
+})
+
+if (typeof window !== 'undefined' && typeof Element !== 'undefined' && typeof Element.prototype.scrollIntoView !== 'function') {
+  Element.prototype.scrollIntoView = function (_arg?: boolean | ScrollIntoViewOptions) {
+    return undefined
+  }
+}
+
+export function SettingsModal({ isOpen, onClose, initialTab, workingDir }: SettingsModalProps) {
+  const [activeTab, setActiveTab] = useState<SettingsTab>('general')
+  const [isOpenInteractionGuardVisible, setIsOpenInteractionGuardVisible] = useState(false)
+  
+  const {
+    settings,
+    providerStatuses,
+    loading,
+    saving,
+    error,
+    updateProvider,
+    setActiveProvider,
+    fetchProviderModels,
+    refreshProviderStatuses,
+    openOllamaWebsite,
+    updateSelectedModel,
+    updateSystemPrompt,
+  } = useLLMSettings()
+  
+  const [fetchingModels, setFetchingModels] = useState<Record<string, boolean>>({})
+  const [tempApiKeys, setTempApiKeys] = useState<Record<string, string>>({})
+  const [defaultProjectsFolder, setDefaultProjectsFolder] = useState('')
+  const [tempDefaultProjectsFolder, setTempDefaultProjectsFolder] = useState('')
+  const [showConsoleOutput, setShowConsoleOutput] = useState(true)
+  const [tempShowConsoleOutput, setTempShowConsoleOutput] = useState(true)
+  const [fileMentionsEnabled, setFileMentionsEnabled] = useState(true)
+  const [tempFileMentionsEnabled, setTempFileMentionsEnabled] = useState(true)
+  const [chatSendShortcut, setChatSendShortcut] = useState<'enter' | 'mod+enter'>('mod+enter')
+  const [tempChatSendShortcut, setTempChatSendShortcut] = useState<'enter' | 'mod+enter'>('mod+enter')
+  const [maxChatHistory, setMaxChatHistory] = useState<number>(15)
+  const [tempMaxChatHistory, setTempMaxChatHistory] = useState<number>(15)
+  const [defaultCliAgent, setDefaultCliAgent] = useState<DefaultCliAgentChoice>('claude')
+  const [tempDefaultCliAgent, setTempDefaultCliAgent] = useState<DefaultCliAgentChoice>('claude')
+  // UI Theme state
+  const [uiTheme, setUiTheme] = useState<string>('auto')
+  const [tempUiTheme, setTempUiTheme] = useState<string>('auto')
+  // Welcome screen recent projects toggle
+  const [showWelcomeRecentProjects, setShowWelcomeRecentProjects] = useState<boolean>(true)
+  const [tempShowWelcomeRecentProjects, setTempShowWelcomeRecentProjects] = useState<boolean>(true)
+  const [suggestCreateAgentsMd, setSuggestCreateAgentsMd] = useState<boolean>(true)
+  const [tempSuggestCreateAgentsMd, setTempSuggestCreateAgentsMd] = useState<boolean>(true)
+  const [dashboardColorPalette, setDashboardColorPalette] = useState<string>('default')
+  const [tempDashboardColorPalette, setTempDashboardColorPalette] = useState<string>('default')
+  const [showDashboardActivity, setShowDashboardActivity] = useState<boolean>(true)
+  const [tempShowDashboardActivity, setTempShowDashboardActivity] = useState<boolean>(true)
+  const [dashboardChartType, setDashboardChartType] = useState<'scatter' | 'knowledge-base'>('scatter')
+  const [tempDashboardChartType, setTempDashboardChartType] = useState<'scatter' | 'knowledge-base'>('scatter')
+  const [showOnboardingOnStart, setShowOnboardingOnStart] = useState<boolean>(false)
+  const [tempShowOnboardingOnStart, setTempShowOnboardingOnStart] = useState<boolean>(false)
+  const [tempDocsAutoSync, setTempDocsAutoSync] = useState<boolean>(false)
+  const [chatHistoryStyle, setChatHistoryStyle] = useState<'palette' | 'sidebar' | 'strip'>('palette')
+  const [tempChatHistoryStyle, setTempChatHistoryStyle] = useState<'palette' | 'sidebar' | 'strip'>('palette')
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
+  const [showUnsavedChangesDialog, setShowUnsavedChangesDialog] = useState(false)
+  const [agentSettings, setAgentSettings] = useState<Record<string, boolean>>({})
+  const [tempAgentSettings, setTempAgentSettings] = useState<Record<string, boolean>>({})
+  const [allAgentSettings, setAllAgentSettings] = useState<any>(null)
+  const [tempAllAgentSettings, setTempAllAgentSettings] = useState<any>(null)
+  const [agentModels, setAgentModels] = useState<Record<string, string[]>>({})
+  const [fetchingAgentModels, setFetchingAgentModels] = useState<Record<string, boolean>>({})
+  const autoLoadedClaudeModelsRef = useRef(false)
+  const [agentSettingsLoading, setAgentSettingsLoading] = useState(true)
+  const [agentSettingsError, setAgentSettingsError] = useState<string | null>(null)
+  const [settingsHydrated, setSettingsHydrated] = useState(false)
+  const { updateSettings: updateAppSettings, settings: appSettingsContext, isLoading: appSettingsLoading } = useAppSettingsContext()
+
+  // Code settings
+  const [codeTheme, setCodeTheme] = useState<string>('github')
+  const [tempCodeTheme, setTempCodeTheme] = useState<string>('github')
+  const [codeFontSize, setCodeFontSize] = useState<number>(14)
+  const [tempCodeFontSize, setTempCodeFontSize] = useState<number>(14)
+
+  // Debounced system prompt editing state
+  const [tempSystemPromptText, setTempSystemPromptText] = useState<string>('')
+  
+  // Load app settings and projects folder on mount
+  useEffect(() => {
+    const loadAppSettings = async () => {
+      try {
+        // Load app settings
+        
+        // Load app settings with error handling
+        try {
+          const appSettings = await invoke<{ show_console_output: boolean, projects_folder: string, file_mentions_enabled: boolean, ui_theme?: string, code_settings?: { theme: string, font_size: number, auto_collapse_sidebar?: boolean }, chat_send_shortcut?: 'enter' | 'mod+enter', show_welcome_recent_projects?: boolean, max_chat_history?: number, default_cli_agent?: string }>('load_app_settings')
+          if (appSettings) {
+            setShowConsoleOutput(appSettings.show_console_output)
+            setTempShowConsoleOutput(appSettings.show_console_output)
+            setFileMentionsEnabled(appSettings.file_mentions_enabled)
+            setTempFileMentionsEnabled(appSettings.file_mentions_enabled)
+            const sendShortcut = (appSettings as any).chat_send_shortcut || 'mod+enter'
+            setChatSendShortcut(sendShortcut)
+            setTempChatSendShortcut(sendShortcut)
+            const historyCap = typeof (appSettings as any).max_chat_history === 'number'
+              ? Math.max(5, Math.floor((appSettings as any).max_chat_history))
+              : 50
+            setMaxChatHistory(historyCap)
+            setTempMaxChatHistory(historyCap)
+            const showWelcome = (appSettings as any).show_welcome_recent_projects ?? true
+            setShowWelcomeRecentProjects(showWelcome)
+            setTempShowWelcomeRecentProjects(showWelcome)
+            const defaultAgent = normalizeDefaultCliAgent((appSettings as any).default_cli_agent)
+            setDefaultCliAgent(defaultAgent)
+            setTempDefaultCliAgent(defaultAgent)
+
+            if (appSettings.projects_folder) {
+              setDefaultProjectsFolder(appSettings.projects_folder)
+              setTempDefaultProjectsFolder(appSettings.projects_folder)
+            }
+            const code = appSettings.code_settings || { theme: 'github', font_size: 14, auto_collapse_sidebar: false }
+            setCodeTheme(code.theme)
+            setTempCodeTheme(code.theme)
+            setCodeFontSize(code.font_size)
+            setTempCodeFontSize(code.font_size)
+            const themePref = appSettings.ui_theme || 'auto'
+            setUiTheme(themePref)
+            setTempUiTheme(themePref)
+            const suggest = (appSettings as any).suggest_create_agents_md ?? true
+            setSuggestCreateAgentsMd(Boolean(suggest))
+            setTempSuggestCreateAgentsMd(Boolean(suggest))
+            const palette = (appSettings as any).dashboard_color_palette || 'default'
+            setDashboardColorPalette(palette)
+            setTempDashboardColorPalette(palette)
+            const dashActivity = (appSettings as any).show_dashboard_activity ?? true
+            setShowDashboardActivity(Boolean(dashActivity))
+            setTempShowDashboardActivity(Boolean(dashActivity))
+            const chartType = (appSettings as any).dashboard_chart_type || 'scatter'
+            setDashboardChartType(chartType)
+            setTempDashboardChartType(chartType)
+            const onboardingOnStart = (appSettings as any).show_onboarding_on_start ?? false
+            setShowOnboardingOnStart(Boolean(onboardingOnStart))
+            setTempShowOnboardingOnStart(Boolean(onboardingOnStart))
+            const docsAutoSync = (appSettings as any).docs_auto_sync ?? false
+            setTempDocsAutoSync(Boolean(docsAutoSync))
+            const histStyle = (appSettings as any).chat_history_style || 'palette'
+            setChatHistoryStyle(histStyle)
+            setTempChatHistoryStyle(histStyle)
+          }
+        } catch (appError) {
+          console.warn('⚠️ Failed to load app settings (using defaults):', appError)
+          // Keep using default values
+        }
+        
+        // Load default projects folder if not set in app settings
+        if (!defaultProjectsFolder) {
+          try {
+            const folder = await invoke<string>('get_default_projects_folder')
+            // Set default projects folder if available
+            if (folder) {
+              setDefaultProjectsFolder(folder)
+              setTempDefaultProjectsFolder(folder)
+            }
+          } catch (folderError) {
+            console.warn('⚠️ Failed to load default projects folder:', folderError)
+          }
+        }
+        
+        // Load agent settings
+        try {
+            const agents = await invoke<Record<string, boolean> | null>('load_agent_settings')
+          // Load agent enablement flags if present
+          if (agents) {
+            setAgentSettings(agents)
+            setTempAgentSettings({...agents})
+          } else {
+            const defaultAgents = defaultEnabledAgentsMap()
+            setAgentSettings(defaultAgents)
+            setTempAgentSettings(defaultAgents)
+          }
+        } catch (agentError) {
+          console.warn('⚠️ Failed to load basic agent settings:', agentError)
+          const defaultAgents = defaultEnabledAgentsMap()
+          setAgentSettings(defaultAgents)
+          setTempAgentSettings(defaultAgents)
+        }
+
+        // Load full agent configuration (for advanced settings)
+        loadAllAgentSettings()
+        // Mark hydration complete to enable autosave effects safely
+        setSettingsHydrated(true)
+        
+        } catch (error) {
+          console.error('❌ Error loading settings:', error)
+        }
+      }
+
+    const loadAllAgentSettings = async () => {
+      try {
+        setAgentSettingsLoading(true)
+        setAgentSettingsError(null)
+        // Load all agent settings
+        
+        const allSettings = await invoke<any>('load_all_agent_settings')
+        
+        if (allSettings && typeof allSettings === 'object') {
+          setAllAgentSettings(allSettings)
+          setTempAllAgentSettings({ ...allSettings })
+        } else {
+          // No agent settings found; use defaults
+          // Set sensible defaults
+          const defaultAllSettings = createDefaultAllAgentSettings()
+          setAllAgentSettings(defaultAllSettings)
+          setTempAllAgentSettings({ ...defaultAllSettings })
+        }
+      } catch (error) {
+        console.error('❌ Error loading all agent settings:', error)
+        setAgentSettingsError(error instanceof Error ? error.message : String(error))
+      } finally {
+        setAgentSettingsLoading(false)
+      }
+    }
+
+    if (isOpen) {
+      loadAppSettings()
+    }
+  }, [isOpen])
+
+  // Switch to an externally requested tab when opening
+  useEffect(() => {
+    if (isOpen && initialTab && initialTab !== activeTab) {
+      setActiveTab(initialTab === 'autohand' ? 'agents' : initialTab)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, initialTab])
+
+  useEffect(() => {
+    if (!isOpen) {
+      setIsOpenInteractionGuardVisible(false)
+      return
+    }
+
+    setIsOpenInteractionGuardVisible(true)
+    const timeout = window.setTimeout(() => {
+      setIsOpenInteractionGuardVisible(false)
+    }, 150)
+
+    return () => {
+      window.clearTimeout(timeout)
+    }
+  }, [isOpen])
+
+  // Check for unsaved changes
+  useEffect(() => {
+    const hasChanges = 
+      tempDefaultProjectsFolder !== defaultProjectsFolder ||
+      tempShowConsoleOutput !== showConsoleOutput ||
+      tempFileMentionsEnabled !== fileMentionsEnabled ||
+      tempChatSendShortcut !== chatSendShortcut ||
+      tempMaxChatHistory !== maxChatHistory ||
+      tempDefaultCliAgent !== defaultCliAgent ||
+      tempUiTheme !== uiTheme ||
+      tempShowWelcomeRecentProjects !== showWelcomeRecentProjects ||
+      tempCodeTheme !== codeTheme ||
+      tempCodeFontSize !== codeFontSize ||
+      tempSuggestCreateAgentsMd !== suggestCreateAgentsMd ||
+      tempDashboardColorPalette !== dashboardColorPalette ||
+      tempShowDashboardActivity !== showDashboardActivity ||
+      tempDashboardChartType !== dashboardChartType ||
+      tempShowOnboardingOnStart !== showOnboardingOnStart ||
+      tempChatHistoryStyle !== chatHistoryStyle ||
+      JSON.stringify(tempAgentSettings) !== JSON.stringify(agentSettings) ||
+      (tempAllAgentSettings && allAgentSettings && JSON.stringify(tempAllAgentSettings) !== JSON.stringify(allAgentSettings))
+    
+    setHasUnsavedChanges(hasChanges)
+  }, [
+    tempDefaultProjectsFolder,
+    defaultProjectsFolder,
+    tempShowConsoleOutput,
+    showConsoleOutput,
+    tempFileMentionsEnabled,
+    fileMentionsEnabled,
+    tempChatSendShortcut,
+    chatSendShortcut,
+    tempMaxChatHistory,
+    maxChatHistory,
+    tempDefaultCliAgent,
+    defaultCliAgent,
+    tempUiTheme,
+    uiTheme,
+    tempShowWelcomeRecentProjects,
+    showWelcomeRecentProjects,
+    tempCodeTheme,
+    codeTheme,
+    tempCodeFontSize,
+    codeFontSize,
+    tempSuggestCreateAgentsMd,
+    suggestCreateAgentsMd,
+    tempDashboardColorPalette,
+    dashboardColorPalette,
+    tempShowDashboardActivity,
+    showDashboardActivity,
+    tempDashboardChartType,
+    dashboardChartType,
+    tempShowOnboardingOnStart,
+    showOnboardingOnStart,
+    tempChatHistoryStyle,
+    chatHistoryStyle,
+    tempAgentSettings,
+    agentSettings,
+    tempAllAgentSettings,
+    allAgentSettings,
+  ])
+
+  // Live-apply UI theme while editing, and auto-save the preference
+  useEffect(() => {
+    const root = document.documentElement
+    const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)')
+    const isDark = tempUiTheme === 'dark' || (tempUiTheme === 'auto' && prefersDark.matches)
+    // Manage dark and force-light classes to cooperate with OS media query
+    if (tempUiTheme === 'light') {
+      root.classList.remove('dark')
+      root.classList.add('force-light')
+    } else if (isDark) {
+      root.classList.add('dark')
+      root.classList.remove('force-light')
+    } else {
+      root.classList.remove('dark')
+      root.classList.remove('force-light')
+    }
+
+    // Persist theme selection immediately without affecting other unsaved changes
+    const saveTheme = async () => {
+      // Avoid autosaving before hydration or when unchanged
+      if (!settingsHydrated) return
+      if (tempUiTheme === uiTheme) return
+      try {
+        await updateAppSettings({ ui_theme: tempUiTheme })
+        // Also update native window theme
+        await invoke('set_window_theme', { theme: tempUiTheme })
+        setUiTheme(tempUiTheme)
+      } catch (e) {
+        console.error('Failed to auto-save ui_theme:', e)
+      }
+    }
+    saveTheme()
+  }, [tempUiTheme, settingsHydrated, uiTheme])
+
+  // Auto-save chat send shortcut when changed
+  useEffect(() => {
+    const saveShortcut = async () => {
+      if (!settingsHydrated) return
+      if (tempChatSendShortcut === chatSendShortcut) return
+      try {
+        await updateAppSettings({ chat_send_shortcut: tempChatSendShortcut })
+        setChatSendShortcut(tempChatSendShortcut)
+      } catch (e) {
+        console.error('Failed to auto-save chat_send_shortcut:', e)
+      }
+    }
+    saveShortcut()
+  }, [tempChatSendShortcut, settingsHydrated, chatSendShortcut])
+
+  useEffect(() => {
+    const saveHistoryLimit = async () => {
+      if (!settingsHydrated) return
+      if (tempMaxChatHistory === maxChatHistory) return
+      try {
+        await updateAppSettings({ max_chat_history: tempMaxChatHistory })
+        setMaxChatHistory(tempMaxChatHistory)
+      } catch (e) {
+        console.error('Failed to auto-save max_chat_history:', e)
+      }
+    }
+    saveHistoryLimit()
+  }, [tempMaxChatHistory, settingsHydrated, maxChatHistory])
+
+  // Auto-save Welcome Screen recents toggle for immediate reflection on Welcome screen
+  useEffect(() => {
+    const saveWelcomeToggle = async () => {
+      if (!settingsHydrated) return
+      if (tempShowWelcomeRecentProjects === showWelcomeRecentProjects) return
+      try {
+        await updateAppSettings({ show_welcome_recent_projects: tempShowWelcomeRecentProjects })
+        setShowWelcomeRecentProjects(tempShowWelcomeRecentProjects)
+      } catch (e) {
+        console.error('Failed to auto-save show_welcome_recent_projects:', e)
+      }
+    }
+    saveWelcomeToggle()
+  }, [tempShowWelcomeRecentProjects, settingsHydrated, showWelcomeRecentProjects])
+
+  // Auto-save suggest create AGENTS.md toggle
+  useEffect(() => {
+    const saveSuggest = async () => {
+      if (!settingsHydrated) return
+      if (tempSuggestCreateAgentsMd === suggestCreateAgentsMd) return
+      try {
+        await updateAppSettings({ suggest_create_agents_md: tempSuggestCreateAgentsMd })
+        setSuggestCreateAgentsMd(tempSuggestCreateAgentsMd)
+      } catch (e) {
+        console.error('Failed to auto-save suggest_create_agents_md:', e)
+      }
+    }
+    saveSuggest()
+  }, [tempSuggestCreateAgentsMd, settingsHydrated, suggestCreateAgentsMd])
+
+  // Auto-save dashboard color palette for immediate reflection on dashboard
+  useEffect(() => {
+    const savePalette = async () => {
+      if (!settingsHydrated) return
+      if (tempDashboardColorPalette === dashboardColorPalette) return
+      try {
+        await updateAppSettings({ dashboard_color_palette: tempDashboardColorPalette })
+        setDashboardColorPalette(tempDashboardColorPalette)
+      } catch (e) {
+        console.error('Failed to auto-save dashboard_color_palette:', e)
+      }
+    }
+    savePalette()
+  }, [tempDashboardColorPalette, settingsHydrated, dashboardColorPalette])
+
+  // Auto-save show dashboard activity toggle
+  useEffect(() => {
+    const saveActivity = async () => {
+      if (!settingsHydrated) return
+      if (tempShowDashboardActivity === showDashboardActivity) return
+      try {
+        await updateAppSettings({ show_dashboard_activity: tempShowDashboardActivity })
+        setShowDashboardActivity(tempShowDashboardActivity)
+      } catch (e) {
+        console.error('Failed to auto-save show_dashboard_activity:', e)
+      }
+    }
+    saveActivity()
+  }, [tempShowDashboardActivity, settingsHydrated, showDashboardActivity])
+
+  // Auto-save dashboard chart type
+  useEffect(() => {
+    const saveChartType = async () => {
+      if (!settingsHydrated) return
+      if (tempDashboardChartType === dashboardChartType) return
+      try {
+        await updateAppSettings({ dashboard_chart_type: tempDashboardChartType })
+        setDashboardChartType(tempDashboardChartType)
+      } catch (e) {
+        console.error('Failed to auto-save dashboard_chart_type:', e)
+      }
+    }
+    saveChartType()
+  }, [tempDashboardChartType, settingsHydrated, dashboardChartType])
+
+  // Auto-save show onboarding on start toggle
+  useEffect(() => {
+    const saveOnboarding = async () => {
+      if (!settingsHydrated) return
+      if (tempShowOnboardingOnStart === showOnboardingOnStart) return
+      try {
+        await updateAppSettings({ show_onboarding_on_start: tempShowOnboardingOnStart })
+        setShowOnboardingOnStart(tempShowOnboardingOnStart)
+      } catch (e) {
+        console.error('Failed to auto-save show_onboarding_on_start:', e)
+      }
+    }
+    saveOnboarding()
+  }, [tempShowOnboardingOnStart, settingsHydrated, showOnboardingOnStart])
+
+  // Default CLI agent changes are persisted via explicit Save action to respect unsaved-changes workflow.
+
+  const handleSelectProjectsFolder = async () => {
+    try {
+      const selectedPath = await invoke<string | null>('select_projects_folder')
+      if (selectedPath) {
+        setTempDefaultProjectsFolder(selectedPath)
+      }
+    } catch (error) {
+      console.error('Error selecting projects folder:', error)
+    }
+  }
+
+  // Keep local system prompt text in sync when settings load/change
+  useEffect(() => {
+    if (isOpen) {
+      setTempSystemPromptText(settings?.system_prompt || '')
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, settings?.system_prompt])
+
+  const handleSystemPromptChange = (prompt: string) => {
+    setTempSystemPromptText(prompt)
+  }
+
+  // Debounce persist of system prompt to avoid losing focus on each keystroke
+  useEffect(() => {
+    if (!isOpen) return
+    const id = setTimeout(() => {
+      if (tempSystemPromptText !== (settings?.system_prompt || '')) {
+        updateSystemPrompt(tempSystemPromptText).catch(() => {})
+      }
+    }, 500)
+    return () => clearTimeout(id)
+  }, [tempSystemPromptText, isOpen])
+
+  const handleClearRecentProjects = async () => {
+    try {
+      await invoke('clear_recent_projects')
+      // Recent projects cleared
+    } catch (error) {
+      console.error('❌ Error clearing recent projects:', error)
+    }
+  }
+
+  const handleToggleAgent = (agentId: string, enabled: boolean) => {
+    setTempAgentSettings(prev => ({ ...prev, [agentId]: enabled }))
+  }
+
+  const handleUpdateAgentSetting = (agentId: string, key: string, value: any) => {
+    setTempAllAgentSettings((prev: any) => {
+      // Handle global settings (like max_concurrent_sessions)
+      if (agentId === 'global') {
+        return {
+          ...prev,
+          [key]: value
+        }
+      }
+      
+      // Ensure prev exists and is an object
+      const safePrev = prev || {}
+      
+      // Create default agent config if it doesn't exist
+      const defaultAgentConfig = createDefaultAgentSettings()
+      
+      // Safely get existing agent config or use defaults
+      const existingAgentConfig = safePrev[agentId] || defaultAgentConfig
+      
+      return {
+        ...safePrev,
+        [agentId]: {
+          ...existingAgentConfig,
+          [key]: value
+        }
+      }
+    })
+  }
+
+  const handleCreateCustomAgent = (agent: CustomAgentDefinition) => {
+    setTempAllAgentSettings((prev: any) => {
+      const safePrev = prev || createDefaultAllAgentSettings()
+      const existing = Array.isArray(safePrev.custom_agents) ? safePrev.custom_agents : []
+      return {
+        ...safePrev,
+        custom_agents: [...existing, agent],
+      }
+    })
+    setTempAgentSettings((prev) => ({ ...prev, [agent.id]: true }))
+  }
+
+  const handleUpdateCustomAgent = (
+    agentId: string,
+    updater: Partial<CustomAgentDefinition> | ((agent: CustomAgentDefinition) => CustomAgentDefinition)
+  ) => {
+    setTempAllAgentSettings((prev: any) => {
+      const safePrev = prev || createDefaultAllAgentSettings()
+      const existing = Array.isArray(safePrev.custom_agents) ? safePrev.custom_agents : []
+      return {
+        ...safePrev,
+        custom_agents: existing.map((agent: CustomAgentDefinition) => {
+          if (agent.id !== agentId) return agent
+          return typeof updater === 'function' ? updater(agent) : { ...agent, ...updater }
+        }),
+      }
+    })
+  }
+
+  const handleDeleteCustomAgent = (agentId: string) => {
+    setTempAllAgentSettings((prev: any) => {
+      const safePrev = prev || createDefaultAllAgentSettings()
+      const existing = Array.isArray(safePrev.custom_agents) ? safePrev.custom_agents : []
+      return {
+        ...safePrev,
+        custom_agents: existing.filter((agent: CustomAgentDefinition) => agent.id !== agentId),
+      }
+    })
+    setTempAgentSettings((prev) => {
+      const next = { ...prev }
+      delete next[agentId]
+      return next
+    })
+  }
+
+  const fetchAgentModels = async (agentId: string) => {
+    if (fetchingAgentModels[agentId]) return
+    
+    setFetchingAgentModels(prev => ({ ...prev, [agentId]: true }))
+    
+    try {
+      // Fetching models for agent
+      const models = await invoke<string[]>('fetch_agent_models', { agent: agentId })
+      // Models loaded for agent
+      setAgentModels(prev => ({ ...prev, [agentId]: models }))
+    } catch (error) {
+      console.error(`❌ Error fetching models for ${agentId}:`, error)
+    } finally {
+      setFetchingAgentModels(prev => ({ ...prev, [agentId]: false }))
+    }
+  }
+
+  useEffect(() => {
+    if (!isOpen) {
+      autoLoadedClaudeModelsRef.current = false
+      return
+    }
+    if (autoLoadedClaudeModelsRef.current) return
+    if (fetchingAgentModels.claude) return
+    if ((agentModels.claude || []).length > 0) {
+      autoLoadedClaudeModelsRef.current = true
+      return
+    }
+
+    autoLoadedClaudeModelsRef.current = true
+    void fetchAgentModels('claude')
+  }, [agentModels, fetchingAgentModels, fetchAgentModels, isOpen])
+
+  const fetchModels = async (providerId: string) => {
+    setFetchingModels(prev => ({ ...prev, [providerId]: true }))
+    try {
+      await fetchProviderModels(providerId)
+    } finally {
+      setFetchingModels(prev => ({ ...prev, [providerId]: false }))
+    }
+  }
+
+  const refreshStatuses = async () => {
+    await refreshProviderStatuses()
+  }
+
+  const handleOpenOllamaWebsite = () => {
+    openOllamaWebsite()
+  }
+
+  const handleUpdateSelectedModel = (providerId: string, modelId: string) => {
+    updateSelectedModel(providerId, modelId)
+  }
+
+  const handleSaveApiKey = async (providerId: string) => {
+    const tempKey = tempApiKeys[providerId]
+    if (!tempKey) return
+    
+    try {
+      await updateProvider(providerId, { api_key: tempKey })
+      setTempApiKeys(prev => ({ ...prev, [providerId]: '' }))
+    } catch (error) {
+      console.error('Failed to save API key:', error)
+    }
+  }
+
+  const handleTempApiKeyChange = (providerId: string, key: string) => {
+    setTempApiKeys(prev => ({ ...prev, [providerId]: key }))
+  }
+
+  const applyUiTheme = (theme: string) => {
+    const root = document.documentElement
+    const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
+    const isDark = theme === 'dark' || (theme === 'auto' && prefersDark)
+    if (isDark) {
+      root.classList.add('dark')
+    } else {
+      root.classList.remove('dark')
+    }
+  }
+
+  const handleSaveChanges = async () => {
+    try {
+      // Saving settings changes
+
+      // Save app settings
+      const appSettings = {
+        show_console_output: tempShowConsoleOutput,
+        projects_folder: tempDefaultProjectsFolder,
+        file_mentions_enabled: tempFileMentionsEnabled,
+        ui_theme: tempUiTheme,
+        max_chat_history: tempMaxChatHistory,
+        chat_send_shortcut: tempChatSendShortcut,
+        show_welcome_recent_projects: tempShowWelcomeRecentProjects,
+        default_cli_agent: tempDefaultCliAgent,
+        code_settings: { theme: tempCodeTheme, font_size: tempCodeFontSize, auto_collapse_sidebar: appSettingsContext.code_settings.auto_collapse_sidebar },
+        dashboard_color_palette: tempDashboardColorPalette,
+        show_dashboard_activity: tempShowDashboardActivity,
+        dashboard_chart_type: tempDashboardChartType,
+        show_onboarding_on_start: tempShowOnboardingOnStart,
+        chat_history_style: tempChatHistoryStyle,
+      }
+      await updateAppSettings(appSettings)
+      
+      // Save agent settings if they changed
+      if (JSON.stringify(tempAgentSettings) !== JSON.stringify(agentSettings)) {
+        await invoke('save_agent_settings', { settings: tempAgentSettings })
+      }
+
+      // Save all agent settings if they changed
+      if (tempAllAgentSettings && allAgentSettings && JSON.stringify(tempAllAgentSettings) !== JSON.stringify(allAgentSettings)) {
+        await invoke('save_all_agent_settings', { settings: tempAllAgentSettings })
+      }
+
+      // Update state to reflect saved values
+      setShowConsoleOutput(tempShowConsoleOutput)
+      setFileMentionsEnabled(tempFileMentionsEnabled)
+      setChatSendShortcut(tempChatSendShortcut)
+      setMaxChatHistory(tempMaxChatHistory)
+      setDefaultCliAgent(tempDefaultCliAgent)
+      setDefaultProjectsFolder(tempDefaultProjectsFolder)
+      setUiTheme(tempUiTheme)
+      setShowWelcomeRecentProjects(tempShowWelcomeRecentProjects)
+      setCodeTheme(tempCodeTheme)
+      setCodeFontSize(tempCodeFontSize)
+      setAgentSettings(tempAgentSettings)
+      setAllAgentSettings(tempAllAgentSettings)
+      setDashboardColorPalette(tempDashboardColorPalette)
+      setShowDashboardActivity(tempShowDashboardActivity)
+      setDashboardChartType(tempDashboardChartType)
+      setShowOnboardingOnStart(tempShowOnboardingOnStart)
+      setChatHistoryStyle(tempChatHistoryStyle)
+      // Apply theme immediately
+      applyUiTheme(tempUiTheme)
+
+      // Settings saved successfully
+    } catch (error) {
+      console.error('❌ Error saving settings:', error)
+    }
+  }
+
+  const handleCloseModal = () => {
+    if (hasUnsavedChanges) {
+      setShowUnsavedChangesDialog(true)
+    } else {
+      onClose()
+    }
+  }
+
+  const handleDiscardChanges = () => {
+    // Reset temp values
+    setTempDefaultProjectsFolder(defaultProjectsFolder)
+    setTempShowConsoleOutput(showConsoleOutput)
+    setTempFileMentionsEnabled(fileMentionsEnabled)
+    setTempChatSendShortcut(chatSendShortcut)
+    setTempMaxChatHistory(maxChatHistory)
+    setTempDefaultCliAgent(defaultCliAgent)
+    setTempUiTheme(uiTheme)
+    setTempShowWelcomeRecentProjects(showWelcomeRecentProjects)
+    setTempCodeTheme(codeTheme)
+    setTempCodeFontSize(codeFontSize)
+    setTempDashboardColorPalette(dashboardColorPalette)
+    setTempShowDashboardActivity(showDashboardActivity)
+    setTempShowOnboardingOnStart(showOnboardingOnStart)
+    setTempChatHistoryStyle(chatHistoryStyle)
+    setTempAgentSettings({ ...agentSettings })
+    if (allAgentSettings) {
+      setTempAllAgentSettings({ ...allAgentSettings })
+    }
+    setShowUnsavedChangesDialog(false)
+    onClose()
+  }
+
+  const menuItems = [
+    {
+      id: 'general' as const,
+      label: 'General',
+      icon: Monitor,
+    },
+    {
+      id: 'appearance' as const,
+      label: 'Appearance',
+      icon: Palette,
+    },
+    {
+      id: 'code' as const,
+      label: 'Code',
+      icon: Code2,
+    },
+    {
+      id: 'subagents' as const,
+      label: 'Sub Agents',
+      icon: Bot,
+    },
+    {
+      id: 'chat' as const,
+      label: 'Chat',
+      icon: MessageCircle,
+    },
+    {
+      id: 'prompts' as const,
+      label: 'Prompts',
+      icon: MessageSquare,
+    },
+    {
+      id: 'agents' as const,
+      label: 'Coding Agents',
+      icon: Bot,
+    },
+    {
+      id: 'llms' as const,
+      label: 'LLMs',
+      icon: ExternalLink,
+    },
+    {
+      id: 'docs' as const,
+      label: 'Docs',
+      icon: BookOpen,
+    },
+  ]
+
+  return (
+    <ErrorBoundary
+      fallback={
+        <Dialog open={isOpen} onOpenChange={onClose}>
+          <DialogContent className="w-[85vw] !max-w-[1400px] h-[90vh] p-0 flex flex-col overflow-hidden">
+            <DialogHeader className="px-6 py-4 border-b flex-shrink-0">
+              <DialogTitle className="flex items-center gap-2">
+                <SettingsIcon className="h-5 w-5" />
+                Settings - Error
+              </DialogTitle>
+            </DialogHeader>
+
+            <div className="flex flex-col items-center justify-center py-8 space-y-4">
+              <AlertCircle className="h-8 w-8 text-destructive" />
+              <div className="text-center">
+                <p className="text-destructive font-medium">Settings Modal Error</p>
+                <p className="text-sm text-muted-foreground mt-1">
+                  An unexpected error occurred in the settings modal.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex justify-end px-6 py-4 border-t flex-shrink-0 bg-background">
+              <Button onClick={onClose}>
+                Close
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+      }
+    >
+      <>
+      <Dialog open={isOpen} onOpenChange={handleCloseModal}>
+      <DialogContent
+        className="w-[85vw] !max-w-[1400px] h-[90vh] p-0 flex flex-col overflow-hidden"
+        onOpenAutoFocus={(event) => event.preventDefault()}
+      >
+        {isOpenInteractionGuardVisible ? (
+          <div
+            data-testid="settings-open-guard"
+            aria-hidden="true"
+            className="absolute inset-0 z-10 bg-transparent"
+          />
+        ) : null}
+        <DialogHeader className="px-6 py-4 border-b flex-shrink-0">
+          <DialogTitle className="flex items-center gap-2">
+            <SettingsIcon className="h-5 w-5" />
+            Settings
+          </DialogTitle>
+        </DialogHeader>
+        
+        <div className="flex flex-1 min-h-0 overflow-hidden">
+          {/* Left Menu Panel */}
+          <ScrollArea className="w-64 border-r bg-muted/20 p-4 flex-shrink-0">
+            <nav className="space-y-2">
+              {menuItems.map((item) => {
+                const Icon = item.icon
+                return (
+                  <Button
+                    key={item.id}
+                    variant={activeTab === item.id ? "secondary" : "ghost"}
+                    className="w-full !justify-start"
+                    onClick={() => setActiveTab(item.id)}
+                  >
+                    <Icon className="mr-2 h-4 w-4" />
+                    {item.label}
+                  </Button>
+                )
+              })}
+            </nav>
+          </ScrollArea>
+
+          {/* Right Content Panel */}
+          <ScrollArea className="flex-1 p-6 min-w-0">
+            <div className="max-w-4xl">
+              {activeTab === 'general' && (
+                <GeneralSettings
+                  tempDefaultProjectsFolder={tempDefaultProjectsFolder}
+                  tempShowConsoleOutput={tempShowConsoleOutput}
+                  systemPrompt={tempSystemPromptText}
+                  saving={saving}
+                  tempShowWelcomeRecentProjects={tempShowWelcomeRecentProjects}
+                  tempSuggestCreateAgentsMd={tempSuggestCreateAgentsMd}
+                  onFolderChange={setTempDefaultProjectsFolder}
+                  onSelectFolder={handleSelectProjectsFolder}
+                  onConsoleOutputChange={setTempShowConsoleOutput}
+                  onSystemPromptChange={handleSystemPromptChange}
+                  onClearRecentProjects={handleClearRecentProjects}
+                  onShowWelcomeRecentProjectsChange={setTempShowWelcomeRecentProjects}
+                  onSuggestCreateAgentsMdChange={setTempSuggestCreateAgentsMd}
+                  tempShowOnboardingOnStart={tempShowOnboardingOnStart}
+                  onShowOnboardingOnStartChange={setTempShowOnboardingOnStart}
+                  maxConcurrentSessions={tempAllAgentSettings?.max_concurrent_sessions || 10}
+                  onMaxConcurrentSessionsChange={(value) => handleUpdateAgentSetting('global', 'max_concurrent_sessions', value)}
+                />
+              )}
+              {activeTab === 'appearance' && (
+                <AppearanceSettings
+                  tempUiTheme={tempUiTheme}
+                  onUiThemeChange={setTempUiTheme}
+                  tempDashboardColorPalette={tempDashboardColorPalette}
+                  onDashboardColorPaletteChange={setTempDashboardColorPalette}
+                  tempShowDashboardActivity={tempShowDashboardActivity}
+                  onShowDashboardActivityChange={setTempShowDashboardActivity}
+                  tempDashboardChartType={tempDashboardChartType}
+                  onDashboardChartTypeChange={setTempDashboardChartType}
+                  tempCodeTheme={tempCodeTheme}
+                  onCodeThemeChange={setTempCodeTheme}
+                  tempCodeFontSize={tempCodeFontSize}
+                  onCodeFontSizeChange={setTempCodeFontSize}
+                  tempChatHistoryStyle={tempChatHistoryStyle}
+                  onChatHistoryStyleChange={setTempChatHistoryStyle}
+                />
+              )}
+              {activeTab === 'subagents' && (
+                <SubAgentsSettings />
+              )}
+              {activeTab === 'code' && (
+                <CodeSettings />
+              )}
+              {activeTab === 'chat' && (
+                <ChatSettings
+                  tempFileMentionsEnabled={tempFileMentionsEnabled}
+                  onFileMentionsChange={setTempFileMentionsEnabled}
+                  tempChatSendShortcut={tempChatSendShortcut}
+                  onChatSendShortcutChange={setTempChatSendShortcut}
+                  tempMaxChatHistory={tempMaxChatHistory}
+                  onMaxChatHistoryChange={setTempMaxChatHistory}
+                  tempDefaultCliAgent={tempDefaultCliAgent}
+                  onDefaultCliAgentChange={(value) => setTempDefaultCliAgent(normalizeDefaultCliAgent(value))}
+                />
+              )}
+              {activeTab === 'prompts' && <PromptsUISettings />}
+              {activeTab === 'agents' && (
+                <AgentSettings
+                  agentSettings={agentSettings}
+                  tempAgentSettings={tempAgentSettings}
+                  allAgentSettings={allAgentSettings}
+                  tempAllAgentSettings={tempAllAgentSettings}
+                  agentModels={agentModels}
+                  fetchingAgentModels={fetchingAgentModels}
+                  agentSettingsLoading={agentSettingsLoading}
+                  agentSettingsError={agentSettingsError}
+                  onToggleAgent={handleToggleAgent}
+                  onUpdateAgentSetting={handleUpdateAgentSetting}
+                  onFetchAgentModels={fetchAgentModels}
+                  onCreateCustomAgent={handleCreateCustomAgent}
+                  onUpdateCustomAgent={handleUpdateCustomAgent}
+                  onDeleteCustomAgent={handleDeleteCustomAgent}
+                  workingDir={workingDir ?? null}
+                />
+              )}
+              {activeTab === 'llms' && (
+                <LLMSettings
+                  settings={settings}
+                  providerStatuses={providerStatuses}
+                  loading={loading}
+                  saving={saving}
+                  error={error}
+                  tempApiKeys={tempApiKeys}
+                  fetchingModels={fetchingModels}
+                  onUpdateProvider={updateProvider}
+                  onSetActiveProvider={setActiveProvider}
+                  onFetchModels={fetchModels}
+                  onRefreshStatuses={refreshStatuses}
+                  onOpenOllamaWebsite={handleOpenOllamaWebsite}
+                  onUpdateSelectedModel={handleUpdateSelectedModel}
+                  onSaveApiKey={handleSaveApiKey}
+                  onTempApiKeyChange={handleTempApiKeyChange}
+                  onUpdateSystemPrompt={updateSystemPrompt}
+                />
+              )}
+              {activeTab === 'docs' && (
+                <DocsSettings
+                  autoSync={tempDocsAutoSync}
+                  onAutoSyncChange={(enabled) => {
+                    setTempDocsAutoSync(enabled)
+                    // Auto-save immediately (like theme)
+                    void invoke('save_app_settings', {
+                      settings: { docs_auto_sync: enabled }
+                    }).catch(() => {})
+                  }}
+                />
+              )}
+            </div>
+          </ScrollArea>
+        </div>
+
+        {/* Footer */}
+        <div className="flex justify-between px-6 py-4 border-t flex-shrink-0 bg-background">
+          <div className="flex items-center">
+            {hasUnsavedChanges && (
+              <span className="text-sm text-muted-foreground flex items-center gap-2">
+                <AlertCircle className="h-4 w-4" />
+                You have unsaved changes
+              </span>
+            )}
+          </div>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={handleCloseModal} disabled={saving}>
+              Cancel
+            </Button>
+            {hasUnsavedChanges && (
+              <Button onClick={handleSaveChanges} disabled={saving}>
+                {saving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                {saving ? 'Saving...' : 'Save Changes'}
+              </Button>
+            )}
+            {!hasUnsavedChanges && (
+              <Button onClick={onClose} disabled={saving}>
+                Close
+              </Button>
+            )}
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+
+    <AlertDialog open={showUnsavedChangesDialog} onOpenChange={setShowUnsavedChangesDialog}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Unsaved Changes</AlertDialogTitle>
+          <AlertDialogDescription>
+            You have unsaved changes that will be lost if you continue. Do you want to save your changes or discard them?
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel onClick={handleDiscardChanges}>
+            Discard Changes
+          </AlertDialogCancel>
+          <AlertDialogAction onClick={handleSaveChanges}>
+            Save Changes
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    </>
+    </ErrorBoundary>
+  )
+}

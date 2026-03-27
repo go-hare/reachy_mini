@@ -19,6 +19,7 @@ class FakeRuntime:
         self.started = False
         self.stopped = False
         self.queues: set[asyncio.Queue[FrontOutputPacket]] = set()
+        self.speech_events: list[dict[str, str]] = []
 
     async def start(self) -> None:
         self.started = True
@@ -42,6 +43,7 @@ class FakeRuntime:
         user_id: str,
         user_text: str,
         surface_state_handler=None,
+        final_reply_handler=None,
     ) -> None:
         _ = session_id
         _ = user_id
@@ -49,6 +51,14 @@ class FakeRuntime:
 
         if surface_state_handler is not None:
             await surface_state_handler({"thread_id": thread_id, "phase": "replying"})
+        if final_reply_handler is not None:
+            await final_reply_handler(
+                {
+                    "thread_id": thread_id,
+                    "turn_id": "turn-1",
+                    "text": "final reply",
+                }
+            )
 
         packets = [
             FrontOutputPacket(
@@ -101,6 +111,50 @@ class FakeRuntime:
         _ = thread_id
         _ = timeout
 
+    async def handle_user_speech_started(
+        self,
+        *,
+        thread_id: str,
+        session_id: str,
+        user_id: str,
+        user_text: str = "",
+        surface_state_handler=None,
+    ) -> None:
+        _ = session_id
+        _ = user_id
+        self.speech_events.append(
+            {
+                "type": "user_speech_started",
+                "thread_id": thread_id,
+                "text": user_text,
+            }
+        )
+        if surface_state_handler is not None:
+            await surface_state_handler({"thread_id": thread_id, "phase": "listening"})
+
+    async def handle_user_speech_stopped(
+        self,
+        *,
+        thread_id: str,
+        session_id: str,
+        user_id: str,
+        user_text: str = "",
+        surface_state_handler=None,
+    ) -> None:
+        _ = session_id
+        _ = user_id
+        self.speech_events.append(
+            {
+                "type": "user_speech_stopped",
+                "thread_id": thread_id,
+                "text": user_text,
+            }
+        )
+        if surface_state_handler is not None:
+            await surface_state_handler(
+                {"thread_id": thread_id, "phase": "listening_wait"}
+            )
+
     def get_thread_surface_state(self, thread_id: str) -> dict[str, str]:
         return {"thread_id": thread_id, "phase": "idle"}
 
@@ -146,6 +200,7 @@ class ConcurrentFakeRuntime(FakeRuntime):
         user_id: str,
         user_text: str,
         surface_state_handler=None,
+        final_reply_handler=None,
     ) -> None:
         _ = session_id
         _ = user_id
@@ -203,6 +258,7 @@ class ConcurrentFakeRuntime(FakeRuntime):
             user_id=user_id,
             user_text=user_text,
             surface_state_handler=surface_state_handler,
+            final_reply_handler=final_reply_handler,
         )
 
 
@@ -333,6 +389,120 @@ def test_reachy_mini_app_chat_returns_front_decision_and_tool_results(
         worker.join(timeout=5.0)
 
     assert runtime.stopped
+
+
+def test_reachy_mini_app_chat_invokes_runtime_reply_audio_handler(tmp_path: Path) -> None:
+    """Synchronous app.chat should pass final replies through the runtime audio hook."""
+
+    runtime = FakeRuntime()
+    app = RuntimeHostedApp(tmp_path / "profiles", runtime)
+    stop_event = threading.Event()
+    worker = threading.Thread(
+        target=app.run,
+        args=(SimpleNamespace(), stop_event),
+        daemon=True,
+    )
+    worker.start()
+
+    class FakeReplyAudioService:
+        def __init__(self) -> None:
+            self.texts: list[str] = []
+
+        async def speak_text(self, text: str) -> bool:
+            self.texts.append(text)
+            return True
+
+    try:
+        assert app.wait_until_runtime_ready(timeout=2.0)
+        surface_driver = FakeSurfaceDriver()
+        reply_audio_service = FakeReplyAudioService()
+        app.runtime_tool_context = SimpleNamespace(
+            surface_driver=surface_driver,
+            reply_audio_service=reply_audio_service,
+        )
+
+        response = app.chat(
+            ChatRequest(
+                message="帮我把回复也播出来",
+                thread_id="app:test",
+            )
+        )
+
+        assert response.reply == "final reply"
+        assert reply_audio_service.texts == ["final reply"]
+    finally:
+        stop_event.set()
+        worker.join(timeout=5.0)
+
+
+def test_reachy_mini_app_websocket_accepts_user_speech_lifecycle_events(
+    tmp_path: Path,
+) -> None:
+    """Websocket host should forward user speech lifecycle events into the runtime."""
+
+    runtime = FakeRuntime()
+    app = RuntimeHostedApp(tmp_path / "profiles", runtime)
+    stop_event = threading.Event()
+    worker = threading.Thread(
+        target=app.run,
+        args=(SimpleNamespace(), stop_event),
+        daemon=True,
+    )
+    worker.start()
+
+    try:
+        assert app.wait_until_runtime_ready(timeout=2.0)
+        assert app.settings_app is not None
+        surface_driver = FakeSurfaceDriver()
+        app.runtime_tool_context = SimpleNamespace(surface_driver=surface_driver)
+
+        with TestClient(app.settings_app) as client:
+            with client.websocket_connect("/ws/agent") as websocket:
+                status_event = websocket.receive_json()
+                assert status_event["type"] == "runtime_status"
+                assert status_event["ready"] is True
+
+                websocket.send_json(
+                    {
+                        "type": "user_speech_started",
+                        "thread_id": "app:test",
+                        "text": "我先说一下",
+                    }
+                )
+                websocket.send_json(
+                    {
+                        "type": "user_speech_stopped",
+                        "thread_id": "app:test",
+                        "text": "我先说一下",
+                    }
+                )
+
+                events = [websocket.receive_json() for _ in range(2)]
+                assert [event["type"] for event in events] == [
+                    "surface_state",
+                    "surface_state",
+                ]
+                assert events[0]["state"]["phase"] == "listening"
+                assert events[1]["state"]["phase"] == "listening_wait"
+                assert runtime.speech_events == [
+                    {
+                        "type": "user_speech_started",
+                        "thread_id": "app:test",
+                        "text": "我先说一下",
+                    },
+                    {
+                        "type": "user_speech_stopped",
+                        "thread_id": "app:test",
+                        "text": "我先说一下",
+                    },
+                ]
+                assert surface_driver.states == [
+                    {"thread_id": "app:test", "phase": "listening"},
+                    {"thread_id": "app:test", "phase": "listening_wait"},
+                ]
+    finally:
+        stop_event.set()
+        worker.join(timeout=5.0)
 
 
 def test_reachy_mini_app_websocket_dispatches_new_turns_while_previous_kernel_work_runs(

@@ -42,6 +42,10 @@
      - 执行协调层
      - 身体输出层
      - App/Profile 配置面
+   - 补充固定口径：
+     - `robot runtime` 作为产品层保持不变
+     - 但其内部职责明确拆成“宿主编排职责 + 执行协调职责”
+     - 这是职责拆分，不等于当前必须物理拆目录
 2. `reachy_mini` 继续承担身体输出层的底座职责：
    - SDK
    - daemon
@@ -65,8 +69,12 @@
 8. 工具归属已经明确：
    - 外显类工具归 `front`
    - 任务类工具归 `kernel`
-9. `profiles/<name>/` 不再只是旧 conversation 的提示词目录，而是用户创建的 app 项目目录。
-10. 当前 app 项目的标准目录形态为：
+9. `robot runtime` 内部边界已经固定：
+   - 宿主编排职责负责串联 `front` / `kernel` / turn 生命周期 / 输出分发
+   - 执行协调职责负责身体仲裁与执行翻译
+   - 后续实现以“`scheduler` 不长成第二个协调层，`coordinator` 不长成第二个宿主层”为硬约束
+10. `profiles/<name>/` 不再只是旧 conversation 的提示词目录，而是用户创建的 app 项目目录。
+11. 当前 app 项目的标准目录形态为：
    - `profiles/<name>/README.md`
    - `profiles/<name>/pyproject.toml`
    - `profiles/<name>/.gitignore`
@@ -291,31 +299,41 @@
 
 截至 2026-03-27，当前代码里与 Stage 3 最相关的现实是：
 
-1. `front` 当前仍主要是文本层
+1. `front` 已经不再只是文本层，但外显决策还偏薄
    - `src/reachy_mini/front/service.py`
-   - 目前核心能力仍集中在：
-     - `reply(...)`
-     - `present(...)`
-     - `run(...)`
-   - 也就是说，它现在更像“文本前台”，还不是“外显导演层”
+   - 现在已经有正式的 `handle_signal(...)` 入口
+   - 也已经能把 `user_speech_started / user_speech_stopped / assistant_audio_* / idle_tick / vision_attention_updated` 映射到生命周期状态
+   - 但当前真正落地成外显动作的，主要还是 `idle_tick -> move_head/do_nothing` 和部分 attention 跟随
+   - 所以它已经开始进入“外显导演层”，但还远没到原版那种完整表现力
 
-2. `kernel` 当前仍默认持有全部系统工具
-   - `src/reachy_mini/runtime/scheduler.py`
-   - 通过 `build_runtime_tool_bundle(...)` 把工具装进 `BrainKernel`
-   - 当前 Reachy 机器人工具仍混在 `build_system_tools(...)` 里
+2. `kernel` 已经不再默认持有全部系统工具
+   - `src/reachy_mini/runtime/tool_loader.py`
+   - 当前已经拆成 `kernel_system_tools`、`front_tools`、`profile_tools`
+   - `RuntimeScheduler` 会把 `front_tools` 交给 `FrontService`，把 `kernel_tools` 交给 `BrainKernel`
+   - 但兼容层里的 `build_system_tools(...)` 仍然存在，因此文档口径要理解成“已启动拆分，不是所有历史接口都删除了”
 
-3. 外显类工具与任务类工具还没有完成拆分
+3. 外显类工具与任务类工具已经完成第一阶段拆分，但治理边界还不算最终稳定
    - `src/reachy_mini/runtime/tools/__init__.py`
-   - 当前文件工具与 Reachy 外显工具仍在同一个系统工具集合中
+   - `move_head / play_emotion / dance / head_tracking / do_nothing` 这类外显工具已经能走 `front` 平面
+   - 但工具本体仍共享同一套 runtime context / coordinator 落地层
+   - 所以下一阶段更重要的是继续稳固“谁来决定调用它们”，而不是再把工具文件机械拆更多份
 
-4. `front` 还没有显式事件入口
-   - 当前还没有“用户说话开始/结束、助手音频开始/结束、idle tick、视觉关注变化”这类统一的 `front` 事件消费面
+4. `front` 已经有显式事件入口，但事件生产面还没有完全补齐
+   - 当前 runtime / app 已正式支持：
+     - 用户说话开始/结束
+     - 助手音频开始/增量/结束
+     - `idle_tick`
+     - `turn_started`
+   - 其中 `user_speech_stopped` 已经落到 `listening_wait` 中间相位
+   - `user_speech_started` 现在也已经会打断当前 reply audio，并阻止旧 turn 回写 `settling / idle`
+   - 浏览器模板和示例前端也已补入第一版麦克风输入：`SpeechRecognition -> user_speech_started / user_speech_stopped -> 最终 user_text`
+   - 但 raw PCM / input audio buffer / server VAD 输入链路，以及更完整的视觉关注事件生产仍未完成
 
-所以，Stage 3 的真正任务不是“继续给 front 加提示词”，而是：
+所以，Stage 3 的真正任务已经不是“从 0 给 front 增加接口”，而是：
 
-- 给 `front` 增加外显决策接口
-- 把外显类工具从 `kernel` 的默认工具平面中拆出来
-- 让 `front` 开始消费实时外显事件
+- 继续增强 `front` 的外显决策深度
+- 继续稳固外显工具平面与 `kernel` 的决策边界
+- 把浏览器麦克风之外的 raw PCM / VAD 输入事件生产链路和更强的中断语义补齐
 
 ### 7.8 Stage 3 具体实现清单
 
@@ -374,6 +392,13 @@
   - `turn_started`
   - `turn_settling`
 - `front` 不一定要直接消费原始底层对象，建议先统一成轻量 dataclass / dict 事件
+
+当前进度补记：
+
+- 截至 2026-03-27，`user_speech_started / user_speech_stopped / assistant_audio_started / assistant_audio_delta / assistant_audio_finished / idle_tick / turn_started` 已经具备 runtime -> app -> front 的正式通路
+- `user_speech_stopped` 已经不再直接掉回 `idle`，而是会先进入 `listening_wait`
+- `user_speech_started` 已经会主动中断当前 reply audio，并保护被打断的旧 turn 不再进入 `settling / idle`
+- `vision_attention_updated` 与 `turn_settling` 目前更多还是消费面预留，还不是完整的稳定生产事件
 
 完成信号：
 
@@ -680,6 +705,7 @@ Stage 3 的策略已经可以收口成一句话：
 - `src/reachy_mini/runtime/embodiment/coordinator.py`
 - `src/reachy_mini/runtime/surface_driver.py`
 - `src/reachy_mini/runtime/speech_driver.py`
+- `src/reachy_mini/runtime/reply_audio.py`
 - `src/reachy_mini/runtime/moves.py`
 - `src/reachy_mini/apps/app.py`
 - `src/reachy_mini/runtime/scheduler.py`
@@ -708,15 +734,18 @@ Stage 3 的策略已经可以收口成一句话：
 - `surface_driver.py` 当前已包含一层极薄的 `thread_id` 状态收束，用于避免多会话下最后写入直接覆盖身体状态
 - `speech_driver.py` 第一版已建立，并已把 assistant audio delta / reset 语义正式收口到 `HeadWobbler`
 - `speech_driver.py` 现在已开始正式管理 `HeadWobbler` 生命周期，并在 `replying` 阶段按音频新鲜度自动回收残留 speech motion
+- `reply_audio.py` 第一版已建立，可通过可选 `speech` 配置启用 OpenAI TTS，把 `final reply` 以 24 kHz PCM16 流式合成并按 chunk 推送到 Reachy media
 - `EmbodimentCoordinator` 第一版已建立，开始统一承接 `surface_driver + speech_driver`
 - `front` 外显工具已开始优先通过 `EmbodimentCoordinator` 执行，不再全部直接下沉到 `movement_manager / camera_worker`
 - coordinator 已具备第一条仲裁规则：显式动作窗口内暂停 head tracking，并清掉残留 speech motion，结束后再恢复期望 tracking 状态
 - coordinator 已补入第二条仲裁规则：显式动作优先级暂定为 `move_head > emotion > dance`，高优先级可清队列抢占低优先级，低优先级在强动作窗口内会被延后
+- resident runtime 已补入第一版 `reply -> 语音播放` 闭环：`RuntimeScheduler` 会在 `front_final_done` 之后、`settling_entered` 之前触发 reply audio，因此整段语音播放仍处于 `replying` 相位，并同步驱动 speech motion
 - `ReachyMiniApp` 的 WebSocket 与 `app.chat()` 已统一走同一条 `surface_state` 身体入口
+- `ReachyMiniApp` 中原先逐渐变厚的 runtime tool context 构建/清理、surface/audio 宿主适配，现已先收口到 `src/reachy_mini/apps/runtime_host.py`
 
 当前缺的是：
 
-- 更完整的 `speech_driver` 执行策略
+- 更完整的 `speech_driver` 执行策略，以及 user speech 事件与更低延迟的 reply-audio 策略
 - `front` 外显工具到身体执行层的更完整桥接
 - 更细的 coordinator 仲裁策略与动作编排
 

@@ -109,7 +109,7 @@
 - 旧的 `fork_conversation` 入口和模板目录已经从仓库中删除
 - `reachy-mini-agent create` 现在直接生成新的 app 项目目录
 - `reachy-mini-agent agent` 与 `reachy-mini-agent web` 已作为新的 resident runtime 入口存在
-- `apps/app.py` 当前除了 app 生命周期外，也已经承担 resident runtime、WebSocket 和运行时工具上下文接线
+- `apps/app.py` 当前除了 app 生命周期外，也已经承担 resident runtime 与 WebSocket 宿主接线；运行时工具上下文和身体/语音 hook 适配已开始收口到 `apps/runtime_host.py`
 
 也就是说，当前仓库已经不只是“删掉旧入口”，而是已经有了一版新的 Agent 运行主路径。旧脑子主要仍存在于外部 conversation app 仓库中，但当前仓库已具备替换主脑所需的基本骨架。
 
@@ -460,6 +460,19 @@
    - 负责执行协调、真机驱动和模拟驱动
    - 负责把高层决策翻译为稳定的机器人执行动作
 
+这里需要再额外固定一个口径：
+
+- `robot runtime` 仍然是一个产品层，不建议当前再拆成新的对外层级
+- 但在工程职责上，`robot runtime` 内部必须明确分成两段：
+  - 宿主编排职责
+    - 负责承接输入事件、turn 生命周期、`front` / `kernel` 串联、输出分发与收束
+    - 当前主要落在 `runtime/scheduler.py`、`apps/app.py` 与 `apps/runtime_host.py`
+  - 执行协调职责
+    - 负责动作仲裁、身体状态翻译、speech motion、tracking 压制与恢复
+    - 当前主要落在 `EmbodimentCoordinator`、`surface_driver.py`、`speech_driver.py`
+- 这是一种职责拆分，不等于当前必须物理拆目录
+- 先把职责边界写死，再决定未来是否需要物理拆文件或目录
+
 再看运行时细化视角。
 
 建议的 `5` 个运行时层如下：
@@ -498,7 +511,57 @@
   - 当前主要落在 `profiles/<name>/profiles/`
   - 它不是运行时主链路中的一层，而是贯穿 `front`、`kernel`、协调层的配置输入面
 
-### 6.2 `front` / `kernel` 双脑分工
+补充说明：
+
+- 这里仍维持 `5` 层的细化模型，不额外升格出第 `6` 层
+- `robot runtime` 内部的“宿主编排职责”当前视为 runtime 内部语义，不单独升格为新的顶层运行时层
+- 也就是说，当前真正需要固定的是职责边界，而不是继续增加层级数量
+
+### 6.2 `robot runtime` 内部边界禁令清单
+
+为了避免 `robot runtime` 再次长成一个混合大层，当前需要把“宿主编排职责”和“执行协调职责”的边界直接写死。
+
+1. 宿主编排职责允许做的事
+   - 承接输入事件和 turn 生命周期
+   - 串联 `front`、`kernel`、memory、front output、WebSocket 输出
+   - 分发 `surface_state`、reply audio hook、front tool result、turn error
+   - 管理线程、队列、订阅、收束与对外事件发布
+
+2. 宿主编排职责禁止继续长的方向
+   - 不直接操作 `MovementManager`、`CameraWorker`、`HeadWobbler`、Reachy SDK
+   - 不直接决定动作优先级、tracking 压制、speech motion 清理与恢复
+   - 不继续堆积新的身体执行规则
+   - 不把自己长成第二个 `front` 或半个 `EmbodimentCoordinator`
+
+3. 执行协调职责允许做的事
+   - 消费 `surface_state`
+   - 仲裁显式动作、speech motion、tracking、listening / replying / settling / idle 的身体阶段
+   - 把高层意图翻译为 `MovementManager`、`surface_driver.py`、`speech_driver.py` 可执行的动作
+   - 管理动作冲突、抢占、恢复和低层执行状态
+
+4. 执行协调职责禁止继续长的方向
+   - 不接触 `user_text`、`kernel_output`、memory、run 生命周期、任务状态推进
+   - 不生成前台文本
+   - 不负责 profile prompt、persona、tool policy
+   - 不把自己长成第二个 `scheduler` 或半个 `kernel`
+
+5. `apps/app.py` 的约束
+   - 允许保留宿主接线、runtime 启停、WebSocket 桥接、hook 适配
+   - 不继续沉淀新的外显策略和执行仲裁
+   - 未来新增 runtime 规则时，优先进入 `scheduler` 或 `coordinator`；新增宿主胶水时，优先进入薄的 host adapter，而不是继续堆进 `app.py`
+
+6. 当前需要特别警惕的漂移点
+   - `scheduler` 当前已经承担了一部分 `companion / surface` 的一阶外显策略拼装
+   - 这部分短期可以保留，但后续新增“怎么表现”的规则时，不应继续无节制堆进 `scheduler`
+   - 新增外显策略优先收口到 `front` / `companion` 语义域；新增执行规则优先收口到协调层
+
+一句话约束：
+
+- `scheduler` 负责把系统串起来
+- `coordinator` 负责把身体稳下来
+- 谁开始同时做这两件事，谁就在越界
+
+### 6.3 `front` / `kernel` 双脑分工
 
 为了避免再次回到“一个大脑同时管所有事情”的旧混合状态，需要把这两层明确成两种不同的复杂性中心：
 
@@ -527,7 +590,7 @@
 
 - 再造一个更大的 `kernel`
 
-### 6.3 数据流
+### 6.4 数据流
 
 目标数据流如下：
 
@@ -1006,12 +1069,19 @@ profile 不再是旧 conversation 的提示词目录，而是新 Agent 的完整
 - `surface_driver.py` 第一版已经建立，并已将 `surface_state` 映射到 `MovementManager` 的 `set_listening()` / `mark_activity()`
 - `surface_driver.py` 当前带有一层极薄的 `thread_id` 状态收束，避免多会话时单个 `idle` 直接覆盖仍在进行中的身体状态
 - `ReachyMiniApp` 的 WebSocket 与 `app.chat()` 已统一走同一条身体状态入口
+- `ReachyMiniApp` 里原先持续变厚的 runtime tool context 构建/清理、surface/audio 转接，现已收口到 `src/reachy_mini/apps/runtime_host.py`
 - `speech_driver.py` 与 `EmbodimentCoordinator` 第一版已经建立，开始把 `HeadWobbler` 从 app 细节提升为执行协调层能力
 - `speech_driver.py` 现在已开始正式接管 `HeadWobbler` 生命周期，并在 `replying` 阶段按音频新鲜度自动回收残留 speech motion
+- `reply_audio.py` 第一版已经建立，支持通过可选 `speech` 配置启用 OpenAI TTS，把 `final reply` 以 24 kHz PCM16 流式合成并按 chunk 推送到 Reachy media
 - `move_head / play_emotion / dance / head_tracking / stop_*` 等外显工具现在已开始优先通过 `EmbodimentCoordinator` 落到身体执行层
 - coordinator 已具备第一条仲裁规则：显式动作开始时暂时压住 head tracking，并清理残留 speech motion，动作窗口结束后恢复期望 tracking
 - coordinator 已补入第二条仲裁规则：显式动作优先级暂定为 `move_head > play_emotion > dance`，高优先级可清队列抢占低优先级，低优先级在强动作窗口内会被延后
-- 但更完整的 coordinator 仲裁、音频主链路接入与动作编排仍未完成
+- resident runtime 已补入第一版 `reply -> 语音播放` 闭环：`RuntimeScheduler` 会在 `front_final_done` 之后、`settling_entered` 之前触发 reply audio，因此整段语音播放仍处于 `replying` 相位，并同步驱动 speech motion
+- resident runtime 现已开始真实发出 `assistant_audio_started / assistant_audio_delta / assistant_audio_finished`，并在空闲阶段周期性发出 `idle_tick`，`front` 也会基于 `idle_tick` 触发轻量 look-around
+- resident runtime / app websocket 也已正式支持 `user_speech_started / user_speech_stopped`，并补入 `listening_wait` 中间相位
+- `user_speech_started` 现在也会主动打断当前 reply audio，并阻止被打断的旧 turn 再回写 `settling / idle`
+- 浏览器模板和示例 app 现已补入第一版麦克风输入链路：`SpeechRecognition -> user_speech_started / user_speech_stopped -> 最终 user_text`
+- 当前真正还没完成的，是“raw PCM / input audio buffer / server VAD -> runtime”的输入链路、reply-audio 更低延迟/错误外显策略，以及更深的 coordinator 动作编排
 
 补充建议：
 
@@ -1043,8 +1113,13 @@ profile 不再是旧 conversation 的提示词目录，而是新 Agent 的完整
 
 - 运行时已经有 `HeadWobbler`、`speech_tapper` 等音频动作辅助能力
 - `ReachyMiniApp` 也已经暴露了音频 delta 喂给 wobble 的 helper
-- 但“最终 reply 文本 -> TTS/音频播放”这条正式输出链路仍未完成
-- 因此当前音频相关实现更接近“动作联动辅助层”，还不是完整的语音输出层
+- `RuntimeScheduler -> runtime_host -> reply_audio.py` 这条“最终 reply 文本 -> TTS/音频播放”正式输出链路已经接通
+- 播放期间会同步发出 `assistant_audio_started / delta / finished` 语义，并继续驱动 speech reactive wobble
+- `/ws/agent` 也已能接收 `user_speech_started / user_speech_stopped` 并下发到 runtime，对应 surface phase 会进入 `listening / listening_wait`
+- `user_speech_started` 到来时，当前 reply audio 也会立刻中断，旧 turn 不会再把身体状态拉回 `settling / idle`
+- 浏览器侧也已补入第一版真实麦克风输入：支持的浏览器会通过 `SpeechRecognition` 发出 `user_speech_started / user_speech_stopped` 并自动提交最终 transcript
+- 所以当前缺口已经不是“没有 speech lifecycle 语义”或“不会插话打断”，而是“没有 raw PCM / input audio buffer / server VAD 级输入链路”，以及更接近原版 realtime 的低延迟持续会话能力
+- 因此当前音频相关实现已经进入“正式语音输出层 + 动作联动层”阶段，但离原版 realtime 那种更低延迟的持续会话壳还有距离
 
 ### 10.3 不建议保留的旧部分
 
@@ -1234,6 +1309,7 @@ profile 不再是旧 conversation 的提示词目录，而是新 Agent 的完整
 - 外显类工具已开始优先通过 coordinator 落到身体执行层
 - coordinator 已开始处理动作 / tracking / speech 的冲突关系
 - coordinator 已补入显式动作优先级与抢占规则，当前优先级暂定为 `move_head > play_emotion > dance`
+- `reply_audio.py` 第一版已经建立，resident runtime 已具备 `final reply -> OpenAI TTS 流式合成 -> Reachy media 分块播放 -> speech motion 同步` 的闭环
 - 但统一 coordinator 的完整仲裁策略和动作编排链仍未完成
 - 因此这一阶段仍然只算“已完成部分底座和接线”，还没有完全收口
 
@@ -1294,6 +1370,7 @@ profile 不再是旧 conversation 的提示词目录，而是新 Agent 的完整
 
 - `src/reachy_mini/runtime/surface_driver.py`
 - `src/reachy_mini/runtime/speech_driver.py`
+- `src/reachy_mini/runtime/reply_audio.py`
 - `src/reachy_mini/runtime/embodiment/coordinator.py`
 
 ### 14.3 当前仓库中已新增与仍待新增的目录
@@ -1385,18 +1462,24 @@ profile 不再是旧 conversation 的提示词目录，而是新 Agent 的完整
 截至当前仓库，已经存在的相关测试主要包括：
 
 - `tests/unit_tests/test_profile_loader.py`
+- `tests/unit_tests/test_agent_profile_config.py`
 - `tests/unit_tests/test_runtime_tool_loader.py`
+- `tests/unit_tests/test_runtime_surface_driver.py`
+- `tests/unit_tests/test_runtime_embodiment.py`
 - `tests/unit_tests/test_runtime_reachy_tools.py`
+- `tests/unit_tests/test_runtime_reply_audio.py`
 - `tests/unit_tests/test_app_runtime_tool_context.py`
 - `tests/unit_tests/test_front_agent_runner.py`
+- `tests/unit_tests/test_front_service_runtime.py`
 - `tests/unit_tests/test_kernel_agent_runner.py`
+- `tests/unit_tests/test_kernel_tool_execution.py`
 - `tests/unit_tests/test_resident_runtime_host.py`
 - `tests/unit_tests/test_runtime_head_wobbler.py`
 
 当前仍然明显缺口较大的测试区域是：
 
 - `surface_driver.py` 对状态节流、去抖和映射逻辑的测试
-- `speech_driver.py` 对 reply 音频输出链路的测试
+- `speech_driver.py` / `reply_audio.py` 在更细粒度时序、异常回退、真实设备采样率差异上的测试
 - 真正面向动作执行层的端到端行为测试
 
 ### 16.2 集成测试

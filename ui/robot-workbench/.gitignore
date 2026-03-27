@@ -1,0 +1,41 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+bun-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+bun.lock
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+PRD/
+TDD/
+
+# Environment variables
+.env
+.env.local
+.env.development
+.env.production
+.env.test
+user_prompts/
+CLAUDE.md
+CHANGE_LOG.md
+.worktrees/
+
+# Bundled sidecar binaries (downloaded at build time)
+src-tauri/binaries/

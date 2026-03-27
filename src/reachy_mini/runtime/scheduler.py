@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from inspect import isawaitable
 from pathlib import Path
+import time
 from typing import TYPE_CHECKING, Any
 
 from reachy_mini.affect import (
@@ -28,7 +29,17 @@ from reachy_mini.core import (
 from reachy_mini.runtime.model_factory import build_front_model, build_kernel_model
 from reachy_mini.runtime.tool_loader import build_runtime_tool_bundle
 from reachy_mini.runtime.tools import ReachyToolContext
-from reachy_mini.companion import CompanionIntent, SurfaceExpression, build_companion_surface
+from reachy_mini.companion import (
+    CompanionIntent,
+    SurfaceExpression,
+    build_affect_payload,
+    build_companion_phase_surface_state,
+    build_emotion_payload,
+    build_idle_surface_state,
+    build_listening_surface_state,
+    build_listening_wait_surface_state,
+    build_turn_surface_bundle,
+)
 from reachy_mini.front.events import FrontSignal
 from reachy_mini.front.service import FrontService
 
@@ -90,6 +101,9 @@ def _build_kernel_system_prompt(
 def _default_affect_model_path() -> Path:
     """Resolve the bundled Chordia model directory."""
     return Path(__file__).resolve().parents[1] / "mode" / "Chordia"
+
+
+_DEFAULT_IDLE_TICK_INTERVAL_S = 15.0
 
 
 @dataclass(slots=True, frozen=True)
@@ -171,6 +185,7 @@ class RuntimeScheduler:
             kernel=kernel,
             affect_runtime=affect_runtime,
             front_style=config.front_style,
+            runtime_tool_context=runtime_tool_context,
         )
 
     def __init__(
@@ -180,12 +195,16 @@ class RuntimeScheduler:
         kernel: BrainKernel,
         affect_runtime: AffectRuntime | None = None,
         front_style: str | None = None,
+        idle_tick_interval_s: float = _DEFAULT_IDLE_TICK_INTERVAL_S,
+        runtime_tool_context: ReachyToolContext | None = None,
     ) -> None:
         self.profile_root = profile_root
         self.front = front
         self.kernel = kernel
         self.affect_runtime = affect_runtime
         self.front_style = front_style
+        self.runtime_tool_context = runtime_tool_context
+        self._idle_tick_interval_s = max(float(idle_tick_interval_s), 0.0)
         self._lifecycle_lock = asyncio.Lock()
         self._idle_condition = asyncio.Condition()
         self._listener_task: asyncio.Task[None] | None = None
@@ -193,9 +212,14 @@ class RuntimeScheduler:
         self._pending_outputs: dict[str, asyncio.Future[BrainOutput]] = {}
         self._pending_kernel_deliveries: dict[str, dict[str, Any]] = {}
         self._delivery_tasks: set[asyncio.Task[None]] = set()
+        self._idle_tick_tasks: dict[str, asyncio.Task[None]] = {}
         self._active_turns: dict[str, int] = {}
+        self._thread_last_activity_at: dict[str, float] = {}
+        self._thread_idle_context: dict[str, dict[str, str]] = {}
         self._thread_surface_state: dict[str, dict[str, Any]] = {}
         self._thread_front_decisions: dict[str, dict[str, Any]] = {}
+        self._thread_user_speaking: dict[str, bool] = {}
+        self._thread_reply_audio_interrupted: set[str] = set()
         self._front_output_subscribers: set[asyncio.Queue[FrontOutputPacket]] = set()
 
     async def start(self) -> None:
@@ -225,11 +249,16 @@ class RuntimeScheduler:
                 self._listener_task = None
 
             self._pending_kernel_deliveries.clear()
+            self._thread_last_activity_at.clear()
+            self._thread_idle_context.clear()
             self._thread_surface_state.clear()
             self._thread_front_decisions.clear()
+            self._thread_user_speaking.clear()
+            self._thread_reply_audio_interrupted.clear()
             self._front_output_subscribers.clear()
             self._fail_pending_outputs(RuntimeError("Runtime scheduler stopped."))
             await self._cancel_delivery_tasks()
+            await self._cancel_idle_tick_tasks()
 
     async def handle_user_text(
         self,
@@ -239,6 +268,8 @@ class RuntimeScheduler:
         user_id: str,
         user_text: str,
         surface_state_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
+        final_reply_handler: Callable[[dict[str, Any]], Awaitable[bool] | bool | None]
+        | None = None,
     ) -> str:
         _ = session_id
         self._ensure_running()
@@ -261,8 +292,8 @@ class RuntimeScheduler:
             )
             await self._push_surface_state(
                 thread_id,
-                self._build_listening_state(
-                    thread_id,
+                build_listening_surface_state(
+                    thread_id=thread_id,
                     affect_state=affect_state,
                     emotion_signal=emotion_signal,
                 ),
@@ -305,6 +336,7 @@ class RuntimeScheduler:
                 "affect_state": affect_state,
                 "emotion_signal": emotion_signal,
                 "surface_state_handler": surface_state_handler,
+                "final_reply_handler": final_reply_handler,
             }
             try:
                 await self.kernel.publish_user_input(
@@ -327,16 +359,150 @@ class RuntimeScheduler:
             return front_reply
         finally:
             if not delivery_registered:
-                await self._mark_thread_idle(thread_id)
+                await self._mark_thread_idle(
+                    thread_id,
+                    turn_id=turn_id,
+                    user_text=user_text,
+                )
 
     async def wait_for_thread_idle(self, thread_id: str, timeout: float = 600.0) -> None:
         await asyncio.wait_for(self._wait_for_thread_idle(thread_id), timeout=timeout)
         self._raise_if_listener_failed()
 
+    async def handle_user_speech_started(
+        self,
+        *,
+        thread_id: str,
+        session_id: str,
+        user_id: str,
+        user_text: str = "",
+        surface_state_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
+    ) -> None:
+        _ = session_id
+        _ = user_id
+        await self._handle_user_speech_signal(
+            signal_name="user_speech_started",
+            thread_id=thread_id,
+            user_text=user_text,
+            surface_state=build_listening_surface_state(thread_id=thread_id),
+            metadata={
+                "phase": "listening",
+                "motion_hint": "small_nod",
+            },
+            surface_state_handler=surface_state_handler,
+        )
+
+    async def handle_user_speech_stopped(
+        self,
+        *,
+        thread_id: str,
+        session_id: str,
+        user_id: str,
+        user_text: str = "",
+        surface_state_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
+    ) -> None:
+        _ = session_id
+        _ = user_id
+        await self._handle_user_speech_signal(
+            signal_name="user_speech_stopped",
+            thread_id=thread_id,
+            user_text=user_text,
+            surface_state=build_listening_wait_surface_state(thread_id=thread_id),
+            metadata={
+                "phase": "listening_wait",
+                "motion_hint": "stay_close",
+            },
+            surface_state_handler=surface_state_handler,
+        )
+
     async def _wait_for_thread_idle(self, thread_id: str) -> None:
         async with self._idle_condition:
             while self._active_turns.get(thread_id, 0) > 0:
                 await self._idle_condition.wait()
+
+    async def _handle_user_speech_signal(
+        self,
+        *,
+        signal_name: str,
+        thread_id: str,
+        user_text: str,
+        surface_state: dict[str, Any],
+        metadata: dict[str, Any],
+        surface_state_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None,
+    ) -> None:
+        self._ensure_running()
+        self._raise_if_listener_failed()
+        self._cancel_idle_tick_task(thread_id)
+        self._record_thread_activity(thread_id)
+        is_speech_start = signal_name == "user_speech_started"
+        self._thread_user_speaking[thread_id] = is_speech_start
+        if is_speech_start and self._active_turns.get(thread_id, 0) > 0:
+            self._thread_reply_audio_interrupted.add(thread_id)
+        if is_speech_start:
+            await self._interrupt_reply_audio_playback(thread_id)
+            self._reset_runtime_audio_motion()
+        self._thread_idle_context[thread_id] = {
+            "turn_id": "",
+            "user_text": str(user_text or ""),
+        }
+        await self._dispatch_front_signal(
+            FrontSignal(
+                name=signal_name,
+                thread_id=thread_id,
+                user_text=str(user_text or ""),
+                metadata=dict(metadata),
+            )
+        )
+        await self._push_surface_state(
+            thread_id,
+            dict(surface_state),
+            surface_state_handler=surface_state_handler,
+        )
+        if signal_name == "user_speech_stopped" and self._active_turns.get(thread_id, 0) <= 0:
+            self._schedule_idle_tick(thread_id)
+
+    async def _interrupt_reply_audio_playback(self, thread_id: str) -> bool:
+        context = self.runtime_tool_context
+        if context is None:
+            return False
+        reply_audio_service = getattr(context, "reply_audio_service", None)
+        interrupt_playback = getattr(reply_audio_service, "interrupt_playback", None)
+        if not callable(interrupt_playback):
+            return False
+        maybe_awaitable = interrupt_playback()
+        interrupted = (
+            bool(await maybe_awaitable)
+            if isawaitable(maybe_awaitable)
+            else bool(maybe_awaitable)
+        )
+        if interrupted:
+            self._thread_reply_audio_interrupted.add(thread_id)
+        return interrupted
+
+    def _reset_runtime_audio_motion(self) -> bool:
+        context = self.runtime_tool_context
+        if context is None:
+            return False
+        speech_driver = getattr(context, "speech_driver", None)
+        if speech_driver is not None and hasattr(speech_driver, "reset_speech_motion"):
+            try:
+                return bool(speech_driver.reset_speech_motion())
+            except Exception:
+                return False
+        head_wobbler = getattr(context, "head_wobbler", None)
+        if head_wobbler is None or not hasattr(head_wobbler, "reset"):
+            return False
+        try:
+            head_wobbler.reset()
+        except Exception:
+            return False
+        return True
+
+    def _consume_reply_audio_interrupted(self, thread_id: str) -> bool:
+        if thread_id not in self._thread_reply_audio_interrupted:
+            return False
+        self._thread_reply_audio_interrupted.discard(thread_id)
+        return True
 
     def get_thread_surface_state(self, thread_id: str) -> dict[str, Any] | None:
         state = self._thread_surface_state.get(thread_id)
@@ -444,6 +610,17 @@ class RuntimeScheduler:
                 pass
         self._delivery_tasks.clear()
 
+    async def _cancel_idle_tick_tasks(self) -> None:
+        tasks = list(self._idle_tick_tasks.values())
+        self._idle_tick_tasks.clear()
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
     def _schedule_kernel_delivery(self, *, output: BrainOutput, delivery: dict[str, Any]) -> None:
         task = asyncio.create_task(self._deliver_kernel_output(output=output, delivery=delivery))
         self._delivery_tasks.add(task)
@@ -461,17 +638,80 @@ class RuntimeScheduler:
         raise RuntimeError("Runtime scheduler is not running. Start it during app startup.")
 
     async def _mark_thread_active(self, thread_id: str) -> None:
+        self._cancel_idle_tick_task(thread_id)
+        self._record_thread_activity(thread_id)
         async with self._idle_condition:
             self._active_turns[thread_id] = self._active_turns.get(thread_id, 0) + 1
 
-    async def _mark_thread_idle(self, thread_id: str) -> None:
+    async def _mark_thread_idle(
+        self,
+        thread_id: str,
+        *,
+        turn_id: str = "",
+        user_text: str = "",
+    ) -> None:
+        became_idle = False
         async with self._idle_condition:
             count = self._active_turns.get(thread_id, 0)
             if count <= 1:
                 self._active_turns.pop(thread_id, None)
+                became_idle = True
             else:
                 self._active_turns[thread_id] = count - 1
             self._idle_condition.notify_all()
+        if not became_idle:
+            return
+        self._thread_reply_audio_interrupted.discard(thread_id)
+        self._thread_idle_context[thread_id] = {
+            "turn_id": str(turn_id or ""),
+            "user_text": str(user_text or ""),
+        }
+        self._record_thread_activity(thread_id)
+        self._schedule_idle_tick(thread_id)
+
+    def _record_thread_activity(self, thread_id: str) -> None:
+        self._thread_last_activity_at[thread_id] = time.monotonic()
+
+    def _cancel_idle_tick_task(self, thread_id: str) -> None:
+        task = self._idle_tick_tasks.pop(thread_id, None)
+        if task is not None:
+            task.cancel()
+
+    def _schedule_idle_tick(self, thread_id: str) -> None:
+        if self._idle_tick_interval_s <= 0.0:
+            return
+        self._cancel_idle_tick_task(thread_id)
+        task = asyncio.create_task(self._run_idle_tick_loop(thread_id))
+        self._idle_tick_tasks[thread_id] = task
+
+        def _cleanup(done_task: asyncio.Task[None], *, owned_thread_id: str = thread_id) -> None:
+            if self._idle_tick_tasks.get(owned_thread_id) is done_task:
+                self._idle_tick_tasks.pop(owned_thread_id, None)
+
+        task.add_done_callback(_cleanup)
+
+    async def _run_idle_tick_loop(self, thread_id: str) -> None:
+        try:
+            while True:
+                await asyncio.sleep(self._idle_tick_interval_s)
+                if self._active_turns.get(thread_id, 0) > 0:
+                    return
+                idle_context = dict(self._thread_idle_context.get(thread_id, {}))
+                idle_since = self._thread_last_activity_at.get(thread_id, time.monotonic())
+                await self._dispatch_front_signal(
+                    FrontSignal(
+                        name="idle_tick",
+                        thread_id=thread_id,
+                        turn_id=str(idle_context.get("turn_id", "") or ""),
+                        user_text=str(idle_context.get("user_text", "") or ""),
+                        metadata={
+                            "phase": "idle",
+                            "idle_seconds": round(max(time.monotonic() - idle_since, 0.0), 3),
+                        },
+                    )
+                )
+        except asyncio.CancelledError:
+            raise
 
     async def _push_surface_state(
         self,
@@ -486,129 +726,10 @@ class RuntimeScheduler:
             if isawaitable(maybe_awaitable):
                 await maybe_awaitable
 
-    def _build_listening_state(
-        self,
-        thread_id: str,
-        *,
-        affect_state: AffectState | None,
-        emotion_signal: EmotionSignal | None,
-    ) -> dict[str, Any]:
-        state = {
-            "thread_id": thread_id,
-            "phase": "listening",
-            "presence": "beside",
-            "motion_hint": "small_nod",
-            "body_state": "listening_beside",
-            "breathing_hint": "steady_even",
-            "linger_hint": "remain_available",
-            "speaking_phase": "listening",
-            "settling_phase": "listening",
-            "idle_phase": "idle_ready",
-            "recommended_hold_ms": 0,
-        }
-        state.update(self._build_affect_payload(affect_state))
-        state.update(self._build_emotion_payload(emotion_signal))
-        return state
-
-    def _build_idle_state(
-        self,
-        thread_id: str,
-        *,
-        affect_state: AffectState | None,
-        emotion_signal: EmotionSignal | None = None,
-    ) -> dict[str, Any]:
-        state = {
-            "thread_id": thread_id,
-            "phase": "idle",
-            "presence": "beside",
-            "motion_hint": "minimal",
-            "body_state": "resting_beside",
-            "breathing_hint": "soft_slow",
-            "linger_hint": "quiet_stay",
-            "speaking_phase": "replying",
-            "settling_phase": "resting",
-            "idle_phase": "idle_ready",
-            "recommended_hold_ms": 0,
-        }
-        state.update(self._build_affect_payload(affect_state))
-        state.update(self._build_emotion_payload(emotion_signal))
-        return state
-
-    def _build_surface_state(
-        self,
-        thread_id: str,
-        *,
-        phase: str,
-        affect_state: AffectState | None,
-        emotion_signal: EmotionSignal | None,
-        companion_intent: CompanionIntent,
-        surface_expression: SurfaceExpression,
-    ) -> dict[str, Any]:
-        recommended_hold_ms = 900 if phase == "settling" else 0
-        body_state = surface_expression.body_state
-        motion_hint = surface_expression.motion_hint
-        lifecycle_phase = surface_expression.speaking_phase
-
-        if phase == "settling":
-            lifecycle_phase = surface_expression.settling_phase
-            motion_hint = "stay_close"
-        elif phase == "idle":
-            lifecycle_phase = surface_expression.idle_phase
-            motion_hint = "minimal"
-
-        state = {
-            "thread_id": thread_id,
-            "phase": phase,
-            "mode": companion_intent.mode,
-            "warmth": companion_intent.warmth,
-            "initiative": companion_intent.initiative,
-            "intensity": companion_intent.intensity,
-            "text_style": surface_expression.text_style,
-            "presence": surface_expression.presence,
-            "expression": surface_expression.expression,
-            "motion_hint": motion_hint,
-            "body_state": body_state,
-            "breathing_hint": surface_expression.breathing_hint,
-            "linger_hint": surface_expression.linger_hint,
-            "speaking_phase": surface_expression.speaking_phase,
-            "settling_phase": surface_expression.settling_phase,
-            "idle_phase": surface_expression.idle_phase,
-            "lifecycle_phase": lifecycle_phase,
-            "recommended_hold_ms": recommended_hold_ms,
-        }
-        state.update(self._build_affect_payload(affect_state))
-        state.update(self._build_emotion_payload(emotion_signal))
-        return state
-
     def _evolve_affect_turn(self, user_text: str) -> AffectTurnResult | None:
         if self.affect_runtime is None:
             return None
         return self.affect_runtime.evolve(user_text=user_text)
-
-    def _build_affect_payload(self, affect_state: AffectState | None) -> dict[str, Any]:
-        if affect_state is None:
-            return {}
-        return {
-            "affect_pleasure": affect_state.current_pad.pleasure,
-            "affect_arousal": affect_state.current_pad.arousal,
-            "affect_dominance": affect_state.current_pad.dominance,
-            "affect_vitality": affect_state.vitality,
-            "affect_pressure": affect_state.pressure,
-            "affect_updated_at": affect_state.updated_at,
-        }
-
-    def _build_emotion_payload(self, emotion_signal: EmotionSignal | None) -> dict[str, Any]:
-        if emotion_signal is None:
-            return {}
-        payload = emotion_signal.to_dict()
-        return {
-            "emotion_primary": payload["primary_emotion"],
-            "emotion_intensity": payload["intensity"],
-            "emotion_confidence": payload["confidence"],
-            "emotion_support_need": payload["support_need"],
-            "emotion_wants_action": payload["wants_action"],
-            "emotion_trigger_text": payload["trigger_text"],
-        }
 
     async def _emit_front_reply(
         self,
@@ -866,7 +987,7 @@ class RuntimeScheduler:
         metadata = {
             "source": "runtime_front_hint",
         }
-        metadata.update(self._build_emotion_payload(emotion_signal))
+        metadata.update(build_emotion_payload(emotion_signal))
         try:
             await self.kernel.publish_front_event(
                 conversation_id=thread_id,
@@ -895,6 +1016,7 @@ class RuntimeScheduler:
         try:
             thread_id = str(delivery["thread_id"])
             turn_id = str(delivery["turn_id"])
+            user_text = str(delivery["user_text"])
             if (
                 output.type == BrainOutputType.response
                 and output.response is not None
@@ -905,14 +1027,14 @@ class RuntimeScheduler:
                         name="idle_entered",
                         thread_id=thread_id,
                         turn_id=turn_id,
-                        user_text=str(delivery["user_text"]),
+                        user_text=user_text,
                         metadata={"phase": "idle"},
                     )
                 )
                 await self._push_surface_state(
                     thread_id,
-                    self._build_idle_state(
-                        thread_id,
+                    build_idle_surface_state(
+                        thread_id=thread_id,
                         affect_state=delivery["affect_state"],
                         emotion_signal=delivery["emotion_signal"],
                     ),
@@ -933,14 +1055,14 @@ class RuntimeScheduler:
                         name="idle_entered",
                         thread_id=thread_id,
                         turn_id=turn_id,
-                        user_text=str(delivery["user_text"]),
+                        user_text=user_text,
                         metadata={"phase": "idle"},
                     )
                 )
                 await self._push_surface_state(
                     thread_id,
-                    self._build_idle_state(
-                        thread_id,
+                    build_idle_surface_state(
+                        thread_id=thread_id,
                         affect_state=delivery["affect_state"],
                         emotion_signal=delivery["emotion_signal"],
                     ),
@@ -954,13 +1076,15 @@ class RuntimeScheduler:
                 )
                 return
 
-            user_text = str(delivery["user_text"])
-            companion_intent, surface_expression = build_companion_surface(
+            surface_bundle = build_turn_surface_bundle(
+                thread_id=thread_id,
                 user_text=user_text,
                 kernel_output=kernel_output,
                 affect_state=delivery["affect_state"],
                 emotion_signal=delivery["emotion_signal"],
             )
+            companion_intent = surface_bundle.intent
+            surface_expression = surface_bundle.expression
             await self._dispatch_front_signal(
                 FrontSignal(
                     name="kernel_output_ready",
@@ -976,14 +1100,7 @@ class RuntimeScheduler:
             )
             await self._push_surface_state(
                 thread_id,
-                self._build_surface_state(
-                    thread_id=thread_id,
-                    phase="replying",
-                    affect_state=delivery["affect_state"],
-                    emotion_signal=delivery["emotion_signal"],
-                    companion_intent=companion_intent,
-                    surface_expression=surface_expression,
-                ),
+                dict(surface_bundle.state),
                 surface_state_handler=delivery["surface_state_handler"],
             )
 
@@ -1021,13 +1138,13 @@ class RuntimeScheduler:
                 )
                 await self._push_surface_state(
                     thread_id,
-                    self._build_surface_state(
+                    build_companion_phase_surface_state(
                         thread_id=thread_id,
                         phase="idle",
-                        affect_state=delivery["affect_state"],
-                        emotion_signal=delivery["emotion_signal"],
                         companion_intent=companion_intent,
                         surface_expression=surface_expression,
+                        affect_state=delivery["affect_state"],
+                        emotion_signal=delivery["emotion_signal"],
                     ),
                     surface_state_handler=delivery["surface_state_handler"],
                 )
@@ -1058,6 +1175,17 @@ class RuntimeScheduler:
                 turn_id=turn_id,
                 text=final_reply,
             )
+            await self._invoke_final_reply_handler(
+                handler=delivery.get("final_reply_handler"),
+                thread_id=thread_id,
+                turn_id=turn_id,
+                user_text=user_text,
+                text=final_reply,
+            )
+            if self._consume_reply_audio_interrupted(thread_id):
+                return
+            if self._thread_user_speaking.get(thread_id, False):
+                return
             await self._dispatch_front_signal(
                 FrontSignal(
                     name="settling_entered",
@@ -1072,13 +1200,13 @@ class RuntimeScheduler:
             )
             await self._push_surface_state(
                 thread_id,
-                self._build_surface_state(
+                build_companion_phase_surface_state(
                     thread_id=thread_id,
                     phase="settling",
-                    affect_state=delivery["affect_state"],
-                    emotion_signal=delivery["emotion_signal"],
                     companion_intent=companion_intent,
                     surface_expression=surface_expression,
+                    affect_state=delivery["affect_state"],
+                    emotion_signal=delivery["emotion_signal"],
                 ),
                 surface_state_handler=delivery["surface_state_handler"],
             )
@@ -1096,18 +1224,22 @@ class RuntimeScheduler:
             )
             await self._push_surface_state(
                 thread_id,
-                self._build_surface_state(
+                build_companion_phase_surface_state(
                     thread_id=thread_id,
                     phase="idle",
-                    affect_state=delivery["affect_state"],
-                    emotion_signal=delivery["emotion_signal"],
                     companion_intent=companion_intent,
                     surface_expression=surface_expression,
+                    affect_state=delivery["affect_state"],
+                    emotion_signal=delivery["emotion_signal"],
                 ),
                 surface_state_handler=delivery["surface_state_handler"],
             )
         finally:
-            await self._mark_thread_idle(str(delivery["thread_id"]))
+            await self._mark_thread_idle(
+                str(delivery["thread_id"]),
+                turn_id=str(delivery.get("turn_id", "") or ""),
+                user_text=str(delivery.get("user_text", "") or ""),
+            )
 
     async def _record_front_delivery(
         self,
@@ -1139,8 +1271,8 @@ class RuntimeScheduler:
             "expression": surface_expression.expression,
             "motion_hint": surface_expression.motion_hint,
         }
-        metadata.update(self._build_affect_payload(affect_state))
-        metadata.update(self._build_emotion_payload(emotion_signal))
+        metadata.update(build_affect_payload(affect_state))
+        metadata.update(build_emotion_payload(emotion_signal))
 
         try:
             event_id = make_id("brain_event")
@@ -1175,3 +1307,111 @@ class RuntimeScheduler:
         except Exception:
             self._pending_outputs.pop(event_id, None)
             return
+
+    async def _invoke_final_reply_handler(
+        self,
+        *,
+        handler: Callable[[dict[str, Any]], Awaitable[bool] | bool | None] | None,
+        thread_id: str,
+        turn_id: str,
+        user_text: str,
+        text: str,
+    ) -> bool:
+        """Optionally synthesize or play one final reply before settling."""
+
+        if handler is None:
+            return False
+        if self._thread_user_speaking.get(thread_id, False):
+            return False
+        if thread_id in self._thread_reply_audio_interrupted:
+            return False
+
+        started_emitted = False
+        finished_emitted = False
+        audio_interrupted = False
+
+        async def _emit_audio_started() -> None:
+            nonlocal started_emitted
+            if started_emitted:
+                return
+            started_emitted = True
+            self._record_thread_activity(thread_id)
+            await self._dispatch_front_signal(
+                FrontSignal(
+                    name="assistant_audio_started",
+                    thread_id=thread_id,
+                    turn_id=turn_id,
+                    user_text=user_text,
+                    metadata={"phase": "replying"},
+                )
+            )
+
+        async def _emit_audio_delta(delta_b64: str) -> None:
+            await _emit_audio_started()
+            self._record_thread_activity(thread_id)
+            await self._dispatch_front_signal(
+                FrontSignal(
+                    name="assistant_audio_delta",
+                    thread_id=thread_id,
+                    turn_id=turn_id,
+                    user_text=user_text,
+                    metadata={
+                        "phase": "replying",
+                        "chunk_bytes": len(str(delta_b64 or "")),
+                    },
+                )
+            )
+
+        async def _emit_audio_finished(played_any: bool) -> None:
+            nonlocal audio_interrupted, finished_emitted
+            if not played_any:
+                if started_emitted:
+                    audio_interrupted = True
+                return
+            if finished_emitted:
+                return
+            await _emit_audio_started()
+            finished_emitted = True
+            self._record_thread_activity(thread_id)
+            await self._dispatch_front_signal(
+                FrontSignal(
+                    name="assistant_audio_finished",
+                    thread_id=thread_id,
+                    turn_id=turn_id,
+                    user_text=user_text,
+                    metadata={"phase": "settling"},
+                )
+            )
+
+        try:
+            maybe_awaitable = handler(
+                {
+                    "thread_id": thread_id,
+                    "turn_id": turn_id,
+                    "user_text": user_text,
+                    "text": str(text or ""),
+                    "on_started": _emit_audio_started,
+                    "on_audio_delta": _emit_audio_delta,
+                    "on_finished": _emit_audio_finished,
+                }
+            )
+            if isawaitable(maybe_awaitable):
+                played_audio = bool(await maybe_awaitable)
+            else:
+                played_audio = bool(maybe_awaitable)
+        except Exception as exc:
+            await self._publish_turn_error(
+                thread_id=thread_id,
+                turn_id=turn_id,
+                error=f"Reply audio failed: {exc}",
+            )
+            return False
+
+        played_audio = played_audio or started_emitted or finished_emitted
+        if played_audio and not started_emitted:
+            await _emit_audio_started()
+        if audio_interrupted:
+            return played_audio
+        if played_audio and not finished_emitted:
+            await _emit_audio_finished(True)
+        return played_audio

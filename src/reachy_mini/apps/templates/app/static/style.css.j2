@@ -165,6 +165,15 @@ ul {
     border-top: 1px solid var(--line);
 }
 
+.speech-preview {
+    padding: 12px 14px;
+    border-radius: 16px;
+    border: 1px dashed rgba(212, 106, 58, 0.35);
+    background: rgba(212, 106, 58, 0.08);
+    color: var(--muted);
+    line-height: 1.5;
+}
+
 textarea {
     width: 100%;
     resize: vertical;
@@ -188,6 +197,59 @@ textarea:focus {
     justify-content: space-between;
     align-items: center;
     gap: 16px;
+    flex-wrap: wrap;
+}
+
+.composer-meta {
+    display: grid;
+    gap: 8px;
+}
+
+.composer-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.mic-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: rgba(255, 255, 255, 0.6);
+    color: var(--muted);
+    font-size: 13px;
+}
+
+.mic-status::before {
+    content: "";
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    background: #c58d76;
+    box-shadow: 0 0 0 4px rgba(212, 106, 58, 0.12);
+}
+
+.mic-status[data-state="listening"]::before {
+    background: #4a8e62;
+    box-shadow: 0 0 0 5px rgba(74, 142, 98, 0.16);
+}
+
+.mic-status[data-state="processing"]::before {
+    background: #c4912f;
+    box-shadow: 0 0 0 5px rgba(196, 145, 47, 0.16);
+}
+
+.mic-status[data-state="error"]::before {
+    background: #b44d43;
+    box-shadow: 0 0 0 5px rgba(180, 77, 67, 0.16);
+}
+
+.mic-status[data-state="unsupported"] {
+    opacity: 0.78;
 }
 
 button {
@@ -204,6 +266,18 @@ button {
 
 button:hover:not(:disabled) {
     transform: translateY(-1px);
+}
+
+button.secondary-button {
+    border: 1px solid rgba(76, 94, 85, 0.18);
+    background: rgba(255, 255, 255, 0.76);
+    color: var(--ink);
+}
+
+button.secondary-button[data-active="true"] {
+    border-color: rgba(74, 142, 98, 0.28);
+    background: linear-gradient(135deg, rgba(74, 142, 98, 0.2) 0%, rgba(47, 111, 71, 0.16) 100%);
+    color: #275338;
 }
 
 button:disabled {
@@ -248,6 +322,10 @@ ol {
     .composer-bar {
         flex-direction: column;
         align-items: flex-start;
+    }
+
+    .composer-actions {
+        width: 100%;
     }
 
     .chat-card {

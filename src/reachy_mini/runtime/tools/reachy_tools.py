@@ -26,6 +26,7 @@ DANCES_DATASET = "pollen-robotics/reachy-mini-dances-library"
 
 if TYPE_CHECKING:
     from reachy_mini.runtime.embodiment import EmbodimentCoordinator
+    from reachy_mini.runtime.reply_audio import RuntimeReplyAudioService
     from reachy_mini.runtime.speech_driver import SpeechDriver
     from reachy_mini.runtime.surface_driver import SurfaceDriver
 
@@ -51,6 +52,7 @@ class ReachyToolContext:
     speech_driver: SpeechDriver | None = None
     surface_driver: SurfaceDriver | None = None
     embodiment_coordinator: EmbodimentCoordinator | None = None
+    reply_audio_service: RuntimeReplyAudioService | Any | None = None
 
 
 class ReachyRuntimeTool(Tool):

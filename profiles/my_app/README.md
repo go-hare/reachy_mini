@@ -35,6 +35,8 @@ When this app is running, `ReachyMiniApp` hosts the resident runtime directly an
 The dialogue flow is streamed over WebSocket:
 
 - browser sends `user_text`
+- browser can also emit `user_speech_started` / `user_speech_stopped`
+- supported browsers can turn microphone speech into the final `user_text`
 - runtime emits `front_hint_*`
 - runtime keeps pushing `surface_state`
 - runtime emits `front_final_*`

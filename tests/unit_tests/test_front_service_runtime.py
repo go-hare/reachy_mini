@@ -111,6 +111,8 @@ def test_front_service_accepts_expressive_signals(tmp_path: Path) -> None:
         assert result.surface_patch["phase"] == "replying"
         assert result.surface_patch["source_signal"] == "kernel_output_ready"
         assert result.surface_patch["motion_hint"] == "nod"
+        assert result.surface_patch["presence"] == "near"
+        assert result.surface_patch["body_state"] == "leaning_in"
         assert result.surface_patch["has_kernel_output"] is True
         assert result.reply_text == ""
         assert result.tool_calls == []
@@ -184,5 +186,129 @@ def test_front_service_decides_move_head_from_vision_signal(tmp_path: Path) -> N
         assert result.tool_calls[0].tool_name == "move_head"
         assert result.tool_calls[0].arguments == {"direction": "left"}
         assert "move_head:left" in result.debug_reason
+
+    asyncio.run(_exercise())
+
+
+def test_front_service_yields_floor_when_user_speech_starts(tmp_path: Path) -> None:
+    """User speech should clear front-owned expressive loops before listening."""
+
+    class FakeTool:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+    async def _exercise() -> None:
+        profile_root = tmp_path / "demo"
+        profile_root.mkdir()
+        _write_profile(profile_root)
+
+        profile = load_profile_bundle(profile_root)
+        model = RecordingModel()
+        service = FrontService(
+            profile,
+            model,
+            tools=[FakeTool("stop_emotion"), FakeTool("stop_dance")],
+        )
+
+        result = await service.handle_signal(
+            FrontSignal(
+                name="user_speech_started",
+                thread_id="cli:main",
+                turn_id="turn-4",
+            )
+        )
+
+        assert result.lifecycle_state == "listening"
+        assert result.surface_patch["presence"] == "beside"
+        assert [call.tool_name for call in result.tool_calls] == ["stop_emotion", "stop_dance"]
+        assert "user speech" in result.debug_reason
+
+    asyncio.run(_exercise())
+
+
+def test_front_service_holds_listening_wait_and_settling_postures(tmp_path: Path) -> None:
+    """Listening-wait and settling should expose stable hold semantics to the runtime."""
+
+    class FakeTool:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+    async def _exercise() -> None:
+        profile_root = tmp_path / "demo"
+        profile_root.mkdir()
+        _write_profile(profile_root)
+
+        profile = load_profile_bundle(profile_root)
+        model = RecordingModel()
+        service = FrontService(profile, model, tools=[FakeTool("do_nothing")])
+
+        listening_wait = await service.handle_signal(
+            FrontSignal(
+                name="user_speech_stopped",
+                thread_id="cli:main",
+                turn_id="turn-5",
+            )
+        )
+        settling = await service.handle_signal(
+            FrontSignal(
+                name="settling_entered",
+                thread_id="cli:main",
+                turn_id="turn-5",
+            )
+        )
+
+        assert listening_wait.lifecycle_state == "listening_wait"
+        assert listening_wait.surface_patch["presence"] == "steady"
+        assert listening_wait.surface_patch["body_state"] == "steady_listening"
+        assert listening_wait.surface_patch["recommended_hold_ms"] == 600
+        assert listening_wait.tool_calls[0].tool_name == "do_nothing"
+
+        assert settling.lifecycle_state == "settling"
+        assert settling.surface_patch["motion_hint"] == "stay_close"
+        assert settling.surface_patch["body_state"] == "resting_close"
+        assert settling.surface_patch["recommended_hold_ms"] == 900
+        assert settling.tool_calls[0].tool_name == "do_nothing"
+
+    asyncio.run(_exercise())
+
+
+def test_front_service_decides_idle_tick_lookaround_when_move_head_is_available(
+    tmp_path: Path,
+) -> None:
+    """Idle ticks should trigger a lightweight look-around instead of a static hold."""
+
+    class FakeTool:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+    async def _exercise() -> None:
+        profile_root = tmp_path / "demo"
+        profile_root.mkdir()
+        _write_profile(profile_root)
+
+        profile = load_profile_bundle(profile_root)
+        model = RecordingModel()
+        service = FrontService(profile, model, tools=[FakeTool("move_head")])
+
+        first = await service.handle_signal(
+            FrontSignal(
+                name="idle_tick",
+                thread_id="cli:main",
+                turn_id="turn-4",
+            )
+        )
+        second = await service.handle_signal(
+            FrontSignal(
+                name="idle_tick",
+                thread_id="cli:main",
+                turn_id="turn-4",
+            )
+        )
+
+        assert first.lifecycle_state == "idle"
+        assert first.tool_calls[0].tool_name == "move_head"
+        assert first.tool_calls[0].arguments == {"direction": "left"}
+        assert second.tool_calls[0].arguments == {"direction": "right"}
+        assert "idle_tick" in second.debug_reason
 
     asyncio.run(_exercise())

@@ -9,7 +9,13 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from reachy_mini.affect import AffectState, EmotionSignal
 from reachy_mini.core.memory import MemoryView
-from reachy_mini.companion import CompanionIntent, SurfaceExpression
+from reachy_mini.companion import (
+    CompanionIntent,
+    SurfaceExpression,
+    build_idle_surface_state,
+    build_listening_surface_state,
+    build_listening_wait_surface_state,
+)
 from reachy_mini.front.events import FrontDecision, FrontSignal, FrontSignalResult, FrontToolCall
 from reachy_mini.front.prompt import FrontPromptBuilder
 from reachy_mini.utils.llm_utils import extract_message_text
@@ -154,6 +160,20 @@ _SUPPORT_NEED_HINTS = {
     "quiet_company": "安静陪着更重要，不必说太满。",
     "celebrate": "陪着高兴一下，让亮度出来，但别浮夸。",
 }
+_SURFACE_PATCH_METADATA_KEYS = (
+    "motion_hint",
+    "presence",
+    "body_state",
+    "breathing_hint",
+    "linger_hint",
+    "speaking_phase",
+    "settling_phase",
+    "idle_phase",
+    "lifecycle_phase",
+    "recommended_hold_ms",
+    "idle_seconds",
+    "chunk_bytes",
+)
 
 
 class FrontService:
@@ -340,15 +360,122 @@ class FrontService:
         signal: FrontSignal,
         lifecycle_state: str,
     ) -> dict[str, Any]:
-        patch: dict[str, Any] = {
-            "phase": lifecycle_state,
-            "source_signal": signal.name,
+        patch = FrontService._build_default_surface_patch(
+            thread_id=signal.thread_id,
+            lifecycle_state=lifecycle_state,
+        )
+        patch["phase"] = lifecycle_state
+        patch["source_signal"] = signal.name
+        return FrontService._merge_surface_metadata(
+            patch=patch,
+            metadata=dict(signal.metadata or {}),
+        )
+
+    @staticmethod
+    def _build_default_surface_patch(
+        *,
+        thread_id: str,
+        lifecycle_state: str,
+    ) -> dict[str, Any]:
+        if lifecycle_state == "listening":
+            return FrontService._surface_patch_from_state(
+                build_listening_surface_state(thread_id=thread_id)
+            )
+
+        if lifecycle_state == "listening_wait":
+            patch = FrontService._surface_patch_from_state(
+                build_listening_wait_surface_state(thread_id=thread_id)
+            )
+            patch["recommended_hold_ms"] = 600
+            return patch
+
+        if lifecycle_state == "idle":
+            return FrontService._surface_patch_from_state(
+                build_idle_surface_state(thread_id=thread_id)
+            )
+
+        if lifecycle_state == "replying":
+            return {
+                "phase": "replying",
+                "presence": "near",
+                "motion_hint": "small_nod",
+                "body_state": "leaning_in",
+                "breathing_hint": "steady_even",
+                "linger_hint": "remain_available",
+                "speaking_phase": "replying",
+                "settling_phase": "settling",
+                "idle_phase": "idle_ready",
+                "lifecycle_phase": "replying",
+                "recommended_hold_ms": 0,
+            }
+
+        if lifecycle_state == "settling":
+            return {
+                "phase": "settling",
+                "presence": "steady",
+                "motion_hint": "stay_close",
+                "body_state": "resting_close",
+                "breathing_hint": "soft_slow",
+                "linger_hint": "quiet_stay",
+                "speaking_phase": "replying",
+                "settling_phase": "settling",
+                "idle_phase": "idle_ready",
+                "lifecycle_phase": "settling",
+                "recommended_hold_ms": 900,
+            }
+
+        if lifecycle_state == "attending":
+            return {
+                "phase": "attending",
+                "presence": "forward",
+                "motion_hint": "small_tilt",
+                "body_state": "leaning_in",
+                "breathing_hint": "steady_even",
+                "linger_hint": "remain_available",
+                "speaking_phase": "listening",
+                "settling_phase": "listening",
+                "idle_phase": "idle_ready",
+                "lifecycle_phase": "listening",
+                "recommended_hold_ms": 0,
+            }
+
+        return {
+            "phase": "observing",
+            "presence": "steady",
+            "motion_hint": "minimal",
+            "body_state": "resting_beside",
+            "breathing_hint": "steady_even",
+            "linger_hint": "remain_available",
+            "speaking_phase": "listening",
+            "settling_phase": "resting",
+            "idle_phase": "idle_ready",
+            "lifecycle_phase": "listening",
+            "recommended_hold_ms": 0,
         }
-        if signal.metadata:
-            if "motion_hint" in signal.metadata:
-                patch["motion_hint"] = signal.metadata["motion_hint"]
-            if "kernel_output" in signal.metadata:
-                patch["has_kernel_output"] = bool(str(signal.metadata["kernel_output"]).strip())
+
+    @staticmethod
+    def _surface_patch_from_state(state: dict[str, Any]) -> dict[str, Any]:
+        patch = dict(state)
+        patch.pop("thread_id", None)
+        return patch
+
+    @staticmethod
+    def _merge_surface_metadata(
+        *,
+        patch: dict[str, Any],
+        metadata: dict[str, Any],
+    ) -> dict[str, Any]:
+        for key in _SURFACE_PATCH_METADATA_KEYS:
+            if key not in metadata:
+                continue
+            value = metadata[key]
+            if value is None:
+                continue
+            if isinstance(value, str) and not value.strip():
+                continue
+            patch[key] = value
+        if "kernel_output" in metadata:
+            patch["has_kernel_output"] = bool(str(metadata["kernel_output"]).strip())
         return patch
 
     def _derive_tool_calls(
@@ -359,6 +486,84 @@ class FrontService:
     ) -> tuple[list[FrontToolCall], str]:
         tool_names = set(self.tool_names)
         metadata = dict(signal.metadata or {})
+
+        if signal.name == "user_speech_started":
+            stop_calls = self._build_stop_expression_calls(
+                tool_names=tool_names,
+                reason="yield the floor to the user and clear leftover expression",
+            )
+            if stop_calls:
+                tool_list = ", ".join(call.tool_name for call in stop_calls)
+                return stop_calls, f"front cleared expressive loop(s) for user speech: {tool_list}"
+            if "do_nothing" in tool_names:
+                return (
+                    [
+                        FrontToolCall(
+                            tool_name="do_nothing",
+                            arguments={"reason": "User is speaking; hold a quiet listening posture."},
+                            reason="yield the floor to user speech",
+                        )
+                    ],
+                    "front selected do_nothing to yield for user speech",
+                )
+
+        if signal.name == "assistant_audio_started":
+            stop_calls = self._build_stop_expression_calls(
+                tool_names=tool_names,
+                reason="hand expressive control back to reply audio",
+            )
+            if stop_calls:
+                tool_list = ", ".join(call.tool_name for call in stop_calls)
+                return stop_calls, f"front cleared expressive loop(s) for assistant audio: {tool_list}"
+
+        if signal.name == "user_speech_stopped" and "do_nothing" in tool_names:
+            return (
+                [
+                    FrontToolCall(
+                        tool_name="do_nothing",
+                        arguments={"reason": "User finished speaking; hold a close listening-wait posture."},
+                        reason="listening_wait hold",
+                    )
+                ],
+                "front selected do_nothing for listening_wait handoff",
+            )
+
+        if signal.name == "settling_entered" and "do_nothing" in tool_names:
+            return (
+                [
+                    FrontToolCall(
+                        tool_name="do_nothing",
+                        arguments={"reason": "Reply finished; hold a short settling posture before idling."},
+                        reason="settling hold",
+                    )
+                ],
+                "front selected do_nothing for settling_entered",
+            )
+
+        if signal.name == "idle_tick":
+            if "move_head" in tool_names:
+                direction = self._resolve_idle_look_direction(signal.thread_id)
+                return (
+                    [
+                        FrontToolCall(
+                            tool_name="move_head",
+                            arguments={"direction": direction},
+                            reason="idle look-around",
+                        )
+                    ],
+                    f"front selected move_head:{direction} for idle_tick",
+                )
+            if "do_nothing" in tool_names:
+                return (
+                    [
+                        FrontToolCall(
+                            tool_name="do_nothing",
+                            arguments={"reason": "Hold a calm idle posture while waiting."},
+                            reason="idle hold",
+                        )
+                    ],
+                    "front selected do_nothing fallback for idle_tick",
+                )
 
         if lifecycle_state == "idle" and "do_nothing" in tool_names:
             return (
@@ -398,6 +603,35 @@ class FrontService:
                 )
 
         return [], f"front accepted signal {signal.name} without explicit tool call"
+
+    @staticmethod
+    def _build_stop_expression_calls(
+        *,
+        tool_names: set[str],
+        reason: str,
+    ) -> list[FrontToolCall]:
+        calls: list[FrontToolCall] = []
+        if "stop_emotion" in tool_names:
+            calls.append(
+                FrontToolCall(
+                    tool_name="stop_emotion",
+                    reason=reason,
+                )
+            )
+        if "stop_dance" in tool_names:
+            calls.append(
+                FrontToolCall(
+                    tool_name="stop_dance",
+                    reason=reason,
+                )
+            )
+        return calls
+
+    def _resolve_idle_look_direction(self, thread_id: str) -> str:
+        history = self.get_signal_history(thread_id)
+        idle_tick_count = sum(1 for item in history if item.name == "idle_tick")
+        directions = ("left", "right", "front")
+        return directions[max(idle_tick_count - 1, 0) % len(directions)]
 
     def _build_presentation_prompt(
         self,

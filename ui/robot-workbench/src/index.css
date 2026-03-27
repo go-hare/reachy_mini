@@ -1,0 +1,282 @@
+@import "streamdown/styles.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 240 10% 3.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 240 10% 3.9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 240 10% 3.9%;
+    --primary: 240 5.9% 10%;
+    --primary-foreground: 0 0% 98%;
+    --secondary: 240 4.8% 95.9%;
+    --secondary-foreground: 240 5.9% 10%;
+    --muted: 240 4.8% 95.9%;
+    --muted-foreground: 240 3.8% 46.1%;
+    --accent: 240 4.8% 95.9%;
+    --accent-foreground: 240 5.9% 10%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 98%;
+    --success: 142.1 76.2% 36.3%;
+    --success-foreground: 0 0% 98%;
+    --warning: 32 94.6% 43.7%;
+    --warning-foreground: 0 0% 98%;
+    --link: 221.2 83.2% 53.3%;
+    --border: 240 5.9% 90%;
+    --input: 240 5.9% 90%;
+    --ring: 240 5.9% 10%;
+    --radius: 0.5rem;
+    --sidebar-background: 0 0% 98%;
+    --sidebar-foreground: 240 5.3% 26.1%;
+    --sidebar-primary: 240 5.9% 10%;
+    --sidebar-primary-foreground: 0 0% 98%;
+    --sidebar-accent: 240 4.8% 95.9%;
+    --sidebar-accent-foreground: 240 5.9% 10%;
+    --sidebar-border: 220 13% 91%;
+    --sidebar-ring: 217.2 91.2% 59.8%;
+    --sidebar-active: 214 95% 93%;
+    --sidebar-active-foreground: 240 5.9% 10%;
+    --scrollbar-thumb: 240 4% 72%;
+    --scrollbar-thumb-active: 240 4% 56%;
+    --scrollbar-track: 240 5% 96%;
+    --dashboard-axis: #64748b;
+    --dashboard-grid: rgba(100, 116, 139, 0.22);
+    --dashboard-dot-muted: rgba(100, 116, 139, 0.35);
+    --dashboard-dot-low: #f3b35a;
+    --dashboard-dot-mid: #8b5cf6;
+    --dashboard-dot-high: #3b82f6;
+    --dashboard-dot-peak: #e2e8f0;
+    --dashboard-chart-bg: transparent;
+    --dashboard-metrics-bg: transparent;
+    --dashboard-timeline-bg: transparent;
+    --dashboard-agent-claude: #3b82f6;
+    --dashboard-agent-codex: #22c55e;
+    --dashboard-agent-gemini: #8b5cf6;
+    --dashboard-agent-ollama: #f59e0b;
+    --dashboard-agent-default: #94a3b8;
+  }
+  .dark {
+    --background: 240 10% 3.9%;
+    --foreground: 0 0% 98%;
+    --card: 240 10% 3.9%;
+    --card-foreground: 0 0% 98%;
+    --popover: 240 10% 3.9%;
+    --popover-foreground: 0 0% 98%;
+    --primary: 0 0% 98%;
+    --primary-foreground: 240 5.9% 10%;
+    --secondary: 240 3.7% 15.9%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 240 3.7% 15.9%;
+    --muted-foreground: 240 5% 64.9%;
+    --accent: 240 3.7% 15.9%;
+    --accent-foreground: 0 0% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 0 0% 98%;
+    --success: 142.1 70.6% 45.3%;
+    --success-foreground: 0 0% 98%;
+    --warning: 38 92% 50%;
+    --warning-foreground: 0 0% 98%;
+    --link: 217.2 91.2% 59.8%;
+    --border: 240 3.7% 15.9%;
+    --input: 240 3.7% 15.9%;
+    --ring: 240 4.9% 83.9%;
+    --sidebar-background: 240 5.9% 10%;
+    --sidebar-foreground: 240 4.8% 95.9%;
+    --sidebar-primary: 224.3 76.3% 48%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 240 3.7% 15.9%;
+    --sidebar-accent-foreground: 240 4.8% 95.9%;
+    --sidebar-border: 240 3.7% 15.9%;
+    --sidebar-ring: 217.2 91.2% 59.8%;
+    --sidebar-active: 224 50% 18%;
+    --sidebar-active-foreground: 0 0% 98%;
+    --scrollbar-thumb: 240 4% 36%;
+    --scrollbar-thumb-active: 240 5% 54%;
+    --scrollbar-track: 240 4% 12%;
+    --dashboard-axis: #94a3b8;
+    --dashboard-grid: rgba(100, 116, 139, 0.25);
+    --dashboard-dot-muted: rgba(148, 163, 184, 0.35);
+    --dashboard-dot-low: #f5b457;
+    --dashboard-dot-mid: #8b5cf6;
+    --dashboard-dot-high: #2563eb;
+    --dashboard-dot-peak: #f8fafc;
+    --dashboard-chart-bg: transparent;
+    --dashboard-metrics-bg: transparent;
+    --dashboard-timeline-bg: transparent;
+    --dashboard-agent-claude: #3b82f6;
+    --dashboard-agent-codex: #22c55e;
+    --dashboard-agent-gemini: #8b5cf6;
+    --dashboard-agent-ollama: #f59e0b;
+    --dashboard-agent-default: #94a3b8;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  
+  html, body, #root {
+    height: 100%;
+    overflow: hidden;
+  }
+  
+  .no-drag {
+    -webkit-app-region: no-drag;
+  }
+  
+  [data-tauri-drag-region] {
+    -webkit-app-region: drag;
+    user-select: none;
+    /* Ensure minimum height for drag area */
+    min-height: 24px;
+  }
+  
+  [data-tauri-drag-region] button,
+  [data-tauri-drag-region] a,
+  [data-tauri-drag-region] input,
+  [data-tauri-drag-region] select,
+  [data-tauri-drag-region] .no-drag {
+    -webkit-app-region: no-drag;
+    user-select: auto;
+  }
+  
+  /* Keep normal cursor for drag regions */
+  [data-tauri-drag-region] {
+    cursor: default;
+  }
+  
+  /* Fallback drag behavior - when CSS drag regions fail */
+  .drag-fallback {
+    cursor: default;
+    user-select: none;
+  }
+
+  /* Enhanced drag area styling */
+  .drag-area {
+    background: transparent;
+    position: relative;
+    cursor: default;
+  }
+
+  .drag-area:hover {
+    background: rgba(0, 0, 0, 0.02);
+  }
+
+  .drag-area:active {
+    cursor: default;
+    background: rgba(0, 0, 0, 0.04);
+  }
+
+  /* Ensure proper spacing and layout */
+  .sidebar-header-spaced {
+    padding-top: 2.5rem;
+  }
+
+  /* Debug mode for drag areas - add class 'debug-drag' to body to visualize */
+  .debug-drag [data-tauri-drag-region] {
+    background: rgba(255, 0, 0, 0.1) !important;
+    border: 1px dashed red;
+  }
+
+  /* Let the real sidebar content region own scrolling so the footer stays flush. */
+  [data-sidebar="sidebar"] {
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  .drag-fallback:active {
+    cursor: -webkit-grabbing;
+  }
+  
+  /* Debug mode - uncomment to see drag regions visually */
+  /*
+  [data-tauri-drag-region] {
+    background-color: rgba(255, 0, 0, 0.1) !important;
+    border: 1px dashed red !important;
+  }
+  */
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not(.force-light) {
+    --background: 240 10% 3.9%;
+    --foreground: 0 0% 98%;
+    --card: 240 10% 3.9%;
+    --card-foreground: 0 0% 98%;
+    --popover: 240 10% 3.9%;
+    --popover-foreground: 0 0% 98%;
+    --primary: 0 0% 98%;
+    --primary-foreground: 240 5.9% 10%;
+    --secondary: 240 3.7% 15.9%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 240 3.7% 15.9%;
+    --muted-foreground: 240 5% 64.9%;
+    --accent: 240 3.7% 15.9%;
+    --accent-foreground: 0 0% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 0 0% 98%;
+    --success: 142.1 70.6% 45.3%;
+    --success-foreground: 0 0% 98%;
+    --warning: 38 92% 50%;
+    --warning-foreground: 0 0% 98%;
+    --link: 217.2 91.2% 59.8%;
+    --border: 240 3.7% 15.9%;
+    --input: 240 3.7% 15.9%;
+    --ring: 240 4.9% 83.9%;
+    --sidebar-background: 240 5.9% 10%;
+    --sidebar-foreground: 240 4.8% 95.9%;
+    --sidebar-primary: 224.3 76.3% 48%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 240 3.7% 15.9%;
+    --sidebar-accent-foreground: 240 4.8% 95.9%;
+    --sidebar-border: 240 3.7% 15.9%;
+    --sidebar-ring: 217.2 91.2% 59.8%;
+    --sidebar-active: 224 50% 18%;
+    --sidebar-active-foreground: 0 0% 98%;
+    --scrollbar-thumb: 240 4% 36%;
+    --scrollbar-thumb-active: 240 5% 54%;
+    --scrollbar-track: 240 4% 12%;
+  }
+}
+
+/* ─── Global scrollbar theming ───
+   Uses standard scrollbar-color (works in modern WebKit/Safari 18+).
+   ::-webkit-scrollbar pseudo-elements are NOT used because Tauri's
+   macOS WebKit webview doesn't render them correctly and they conflict
+   with scrollbar-color. For components needing precise scrollbar control,
+   use Radix ScrollArea instead of native scrollbars. ─── */
+* {
+  scrollbar-color: hsl(var(--scrollbar-thumb)) hsl(var(--scrollbar-track));
+  scrollbar-width: thin;
+}
+
+/* Utility: themed scrollbar with stable gutter */
+.theme-scrollbar {
+  scrollbar-gutter: stable;
+  scrollbar-color: hsl(var(--scrollbar-thumb)) hsl(var(--scrollbar-track));
+  scrollbar-width: thin;
+}
+
+/* Utility: code editor scrollbar with stable gutter on both edges */
+.with-scrollbars,
+pre.overflow-x-auto {
+  scrollbar-width: thin;
+  scrollbar-color: hsl(var(--scrollbar-thumb)) hsl(var(--scrollbar-track));
+}
+
+.with-scrollbars {
+  scrollbar-gutter: stable both-edges;
+}

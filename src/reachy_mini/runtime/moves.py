@@ -140,6 +140,14 @@ class MovementState:
     current_move: Move | None = None
     move_start_time: float | None = None
     last_activity_time: float = 0.0
+    surface_offsets: tuple[float, float, float, float, float, float] = (
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+    )
     speech_offsets: tuple[float, float, float, float, float, float] = (
         0.0,
         0.0,
@@ -226,6 +234,16 @@ class MovementManager:
         )
 
         self._command_queue: Queue[tuple[str, Any]] = Queue()
+        self._surface_offsets_lock = threading.Lock()
+        self._pending_surface_offsets: tuple[float, float, float, float, float, float] = (
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+        )
+        self._surface_offsets_dirty = False
         self._speech_offsets_lock = threading.Lock()
         self._pending_speech_offsets: tuple[float, float, float, float, float, float] = (
             0.0,
@@ -274,6 +292,16 @@ class MovementManager:
         with self._speech_offsets_lock:
             self._pending_speech_offsets = offsets
             self._speech_offsets_dirty = True
+
+    def set_surface_offsets(
+        self,
+        offsets: tuple[float, float, float, float, float, float],
+    ) -> None:
+        """Update low-amplitude surface-expression secondary offsets."""
+
+        with self._surface_offsets_lock:
+            self._pending_surface_offsets = offsets
+            self._surface_offsets_dirty = True
 
     def set_face_tracking_offsets(
         self,
@@ -324,6 +352,15 @@ class MovementManager:
             self._handle_command(command, payload, current_time)
 
     def _apply_pending_offsets(self) -> None:
+        surface_offsets: tuple[float, float, float, float, float, float] | None = None
+        with self._surface_offsets_lock:
+            if self._surface_offsets_dirty:
+                surface_offsets = self._pending_surface_offsets
+                self._surface_offsets_dirty = False
+
+        if surface_offsets is not None:
+            self.state.surface_offsets = surface_offsets
+
         speech_offsets: tuple[float, float, float, float, float, float] | None = None
         with self._speech_offsets_lock:
             if self._speech_offsets_dirty:
@@ -489,12 +526,24 @@ class MovementManager:
 
     def _get_secondary_pose(self) -> FullBodyPose:
         current_offsets = (
-            self.state.speech_offsets[0] + self.state.face_tracking_offsets[0],
-            self.state.speech_offsets[1] + self.state.face_tracking_offsets[1],
-            self.state.speech_offsets[2] + self.state.face_tracking_offsets[2],
-            self.state.speech_offsets[3] + self.state.face_tracking_offsets[3],
-            self.state.speech_offsets[4] + self.state.face_tracking_offsets[4],
-            self.state.speech_offsets[5] + self.state.face_tracking_offsets[5],
+            self.state.surface_offsets[0]
+            + self.state.speech_offsets[0]
+            + self.state.face_tracking_offsets[0],
+            self.state.surface_offsets[1]
+            + self.state.speech_offsets[1]
+            + self.state.face_tracking_offsets[1],
+            self.state.surface_offsets[2]
+            + self.state.speech_offsets[2]
+            + self.state.face_tracking_offsets[2],
+            self.state.surface_offsets[3]
+            + self.state.speech_offsets[3]
+            + self.state.face_tracking_offsets[3],
+            self.state.surface_offsets[4]
+            + self.state.speech_offsets[4]
+            + self.state.face_tracking_offsets[4],
+            self.state.surface_offsets[5]
+            + self.state.speech_offsets[5]
+            + self.state.face_tracking_offsets[5],
         )
         if current_offsets == self._cached_secondary_offsets:
             return self._cached_secondary_pose

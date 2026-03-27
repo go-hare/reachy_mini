@@ -26,21 +26,28 @@
             <div class="card chat-card">
                 <div class="chat-header">
                     <h2>Chat</h2>
-                    <p>消息会按当前 app 内部的 <code>profiles/</code> 文件来驱动前台和内核。</p>
+                    <p>文本输入和浏览器麦克风转写都会按当前 app 内部的 <code>profiles/</code> 文件来驱动前台和内核。</p>
                 </div>
 
                 <div class="chat-log" id="chat-log">
                     <div class="message assistant">
-                        <div class="bubble">我已经在这里了。你可以直接发一句话，我会按这个 app 的 profile 来回复。</div>
+                        <div class="bubble">我已经在这里了。你可以直接发一句话，也可以点 Talk 用浏览器麦克风和我说话。</div>
                     </div>
                 </div>
 
                 <form class="composer" id="chat-form">
                     <label class="sr-only" for="message-input">Message</label>
                     <textarea id="message-input" rows="3" placeholder="比如：帮我看看这个 app 现在的行为对不对"></textarea>
+                    <div class="speech-preview" id="speech-preview" hidden></div>
                     <div class="composer-bar">
-                        <span class="hint">Enter 发送，Shift+Enter 换行</span>
-                        <button type="submit" id="send-button">Send</button>
+                        <div class="composer-meta">
+                            <span class="hint" id="composer-hint">Enter 发送，Shift+Enter 换行；Talk 可直接说话</span>
+                            <span class="mic-status" id="mic-status" data-state="idle">麦克风待命</span>
+                        </div>
+                        <div class="composer-actions">
+                            <button type="button" class="secondary-button" id="mic-button">Talk</button>
+                            <button type="submit" id="send-button">Send</button>
+                        </div>
                     </div>
                 </form>
             </div>
@@ -62,14 +69,14 @@
                     <h2>Flow</h2>
                     <ol>
                         <li><code>ReachyMiniApp</code> 常驻托管当前 app 的 runtime</li>
-                        <li>页面通过 <code>/ws/agent</code> 把用户文本发进 runtime</li>
+                        <li>页面通过 <code>/ws/agent</code> 把文本或浏览器语音生命周期事件发进 runtime</li>
                         <li><code>front</code> 先回一轮可见 hint，再把消息投给 <code>kernel</code></li>
                         <li><code>kernel</code> 处理完成后，再交给 <code>front</code> 输出 final</li>
                         <li>页面持续监听 <code>surface_state</code>、hint、final 和错误事件</li>
                     </ol>
                 </div>
             </div>
-        </div>
+        </section>
     </div>
 
     <script src="/static/main.js"></script>

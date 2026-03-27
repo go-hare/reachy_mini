@@ -15,7 +15,7 @@
 
 ## 2. 本文档冻结的结论
 
-截至 2026-03-26，以下结论已经冻结：
+截至 2026-03-27，以下结论已经冻结：
 
 1. 当前项目不是 app。
 2. 当前项目的职责是：
@@ -112,7 +112,7 @@
 
 ## 4. 为什么采用 WebSocket
 
-本系统的文本对话链路不是单次同步请求，而是多阶段异步事件链：
+本系统的浏览器对话链路不是单次同步请求，而是多阶段异步事件链：
 
 1. 用户发来一条消息
 2. `front` 先给出首轮可见回复
@@ -143,14 +143,15 @@
 
 主链路如下：
 
-1. 浏览器通过 WebSocket 发送 `user_text`
-2. 宿主实例将消息交给 resident runtime
-3. runtime 先执行 `front.reply(...)`
-4. runtime 将该阶段结果推送给浏览器
-5. runtime 将用户输入投递给 `kernel`
-6. `kernel` 处理完后，结果进入 `front.present(...)`
-7. runtime 将最终结果推送给浏览器
-8. `surface_state` 在整个过程中持续推送给浏览器
+1. 浏览器通过 WebSocket 发送 `user_text`，或者发送 `user_speech_started / user_speech_stopped`
+2. 如果使用浏览器语音识别，最终 transcript 仍会回落成一条 `user_text`
+3. 宿主实例将文本 turn 和 speech lifecycle 事件都交给 resident runtime
+4. runtime 先执行 `front.reply(...)`
+5. runtime 将该阶段结果推送给浏览器
+6. runtime 将用户输入投递给 `kernel`
+7. `kernel` 处理完后，结果进入 `front.present(...)`
+8. runtime 将最终结果推送给浏览器
+9. `surface_state` 在整个过程中持续推送给浏览器
 
 ### 5.2 关键职责
 
@@ -178,6 +179,8 @@
 
 ### 6.1 浏览器 -> 用户 app
 
+文本输入：
+
 ```json
 {
   "type": "user_text",
@@ -185,6 +188,31 @@
   "text": "你好"
 }
 ```
+
+语音开始：
+
+```json
+{
+  "type": "user_speech_started",
+  "thread_id": "main",
+  "text": ""
+}
+```
+
+语音结束：
+
+```json
+{
+  "type": "user_speech_stopped",
+  "thread_id": "main",
+  "text": "你好"
+}
+```
+
+当前第一版麦克风链路采用浏览器内建 `SpeechRecognition`。
+
+- 不上传 raw PCM 到当前 runtime
+- 最终仍统一回落成 `user_text` 进入主文本链路
 
 ### 6.2 用户 app -> 浏览器
 
@@ -224,7 +252,7 @@
 2. 管理 runtime 生命周期
 3. 持有 runtime loop / readiness 状态
 4. 在 `settings_app` 上挂 WebSocket
-5. 把浏览器发来的 `user_text` 交给 runtime
+5. 把浏览器发来的 `user_text / user_speech_*` 交给 runtime
 6. 订阅 runtime 输出队列
 7. 把 `surface_state` 和文本事件转发给浏览器
 
@@ -263,13 +291,14 @@
 
 ## 9. 当前不做的事
 
-本文档冻结的范围只限于文本对话通道，不包含：
+本文档冻结的范围只限于浏览器事件对话通道，不包含：
 
-1. 音频/TTS 输出
-2. 视觉联动
-3. 机器人动作映射
-4. desktop / desktop-dev 接入
-5. 工具调用执行完成后的机器人动作编排细节
+1. 原始 PCM 输入采集 / server VAD
+2. 音频/TTS 输出
+3. 视觉联动
+4. 机器人动作映射
+5. desktop / desktop-dev 接入
+6. 工具调用执行完成后的机器人动作编排细节
 
 ## 10. 后续实现约束
 
@@ -279,5 +308,5 @@
 2. 不再新增 `web_bridge.py` 这类中间桥接层
 3. 不再把浏览器前端和内部 `front` 混为一个概念
 4. 用户创建的 `profiles/<name>/` 始终是唯一需要被称为 app 的对象
-5. 文本对话通道默认以 WebSocket 作为主通道
+5. 文本与浏览器 speech lifecycle 通道默认以 WebSocket 作为主通道
 6. 在当前前提下，runtime 实例生命周期统一挂在 `ReachyMiniApp`
