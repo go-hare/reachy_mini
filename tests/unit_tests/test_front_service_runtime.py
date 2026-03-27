@@ -100,7 +100,7 @@ def test_front_service_accepts_expressive_signals(tmp_path: Path) -> None:
                 thread_id="cli:main",
                 turn_id="turn-1",
                 user_text="帮我看看日志",
-                metadata={"kernel_output": "需要先查看日志", "motion_hint": "nod"},
+                metadata={"kernel_output": "需要先查看日志"},
             )
         )
 
@@ -110,9 +110,6 @@ def test_front_service_accepts_expressive_signals(tmp_path: Path) -> None:
         assert result.lifecycle_state == "replying"
         assert result.surface_patch["phase"] == "replying"
         assert result.surface_patch["source_signal"] == "kernel_output_ready"
-        assert result.surface_patch["motion_hint"] == "nod"
-        assert result.surface_patch["presence"] == "near"
-        assert result.surface_patch["body_state"] == "leaning_in"
         assert result.surface_patch["has_kernel_output"] is True
         assert result.reply_text == ""
         assert result.tool_calls == []
@@ -219,7 +216,7 @@ def test_front_service_yields_floor_when_user_speech_starts(tmp_path: Path) -> N
         )
 
         assert result.lifecycle_state == "listening"
-        assert result.surface_patch["presence"] == "beside"
+        assert result.surface_patch["phase"] == "listening"
         assert [call.tool_name for call in result.tool_calls] == ["stop_emotion", "stop_dance"]
         assert "user speech" in result.debug_reason
 
@@ -258,14 +255,10 @@ def test_front_service_holds_listening_wait_and_settling_postures(tmp_path: Path
         )
 
         assert listening_wait.lifecycle_state == "listening_wait"
-        assert listening_wait.surface_patch["presence"] == "steady"
-        assert listening_wait.surface_patch["body_state"] == "steady_listening"
         assert listening_wait.surface_patch["recommended_hold_ms"] == 600
         assert listening_wait.tool_calls[0].tool_name == "do_nothing"
 
         assert settling.lifecycle_state == "settling"
-        assert settling.surface_patch["motion_hint"] == "stay_close"
-        assert settling.surface_patch["body_state"] == "resting_close"
         assert settling.surface_patch["recommended_hold_ms"] == 900
         assert settling.tool_calls[0].tool_name == "do_nothing"
 

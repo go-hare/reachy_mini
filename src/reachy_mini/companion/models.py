@@ -20,12 +20,4 @@ class SurfaceExpression:
     """How the companion intent should look and feel externally."""
 
     text_style: str
-    presence: str
     expression: str
-    motion_hint: str
-    body_state: str
-    breathing_hint: str
-    linger_hint: str
-    speaking_phase: str
-    settling_phase: str
-    idle_phase: str

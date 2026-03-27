@@ -30,47 +30,6 @@ _EXPLICIT_MOTION_PRIORITIES: dict[str, int] = {
     "emotion": 20,
     "move_head": 30,
 }
-_ZERO_SURFACE_OFFSETS: tuple[float, float, float, float, float, float] = (
-    0.0,
-    0.0,
-    0.0,
-    0.0,
-    0.0,
-    0.0,
-)
-_PRESENCE_SURFACE_OFFSETS: dict[str, tuple[float, float, float, float, float, float]] = {
-    "close": (0.0, 0.0, 0.002, 0.0, -0.05, 0.0),
-    "near": (0.0, 0.0, 0.001, 0.0, -0.03, 0.0),
-    "forward": (0.0, 0.0, 0.001, 0.0, -0.04, 0.0),
-    "beside": (0.0, 0.0, 0.0, 0.03, 0.0, 0.04),
-    "steady": (0.0, 0.0, 0.0, 0.0, -0.01, 0.0),
-}
-_BODY_STATE_SURFACE_OFFSETS: dict[str, tuple[float, float, float, float, float, float]] = {
-    "soothing_close": (0.0, 0.0, 0.002, 0.02, -0.04, 0.0),
-    "upright_bright": (0.0, 0.0, 0.001, 0.0, -0.02, 0.0),
-    "bouncy_close": (0.0, 0.0, 0.003, 0.0, -0.02, 0.0),
-    "steady_listening": (0.0, 0.0, 0.0, 0.01, -0.03, 0.0),
-    "resting_beside": (0.0, 0.0, 0.0, 0.02, 0.01, 0.02),
-    "resting_close": (0.0, 0.0, 0.001, 0.01, -0.02, 0.0),
-    "leaning_in": (0.0, 0.0, 0.002, 0.0, -0.05, 0.0),
-    "listening_beside": (0.0, 0.0, 0.0, 0.03, -0.02, 0.03),
-}
-_MOTION_HINT_SURFACE_OFFSETS: dict[str, tuple[float, float, float, float, float, float]] = {
-    "small_tilt": (0.0, 0.0, 0.0, 0.05, 0.0, 0.0),
-    "nod": (0.0, 0.0, 0.0, 0.0, -0.05, 0.0),
-    "bounce": (0.0, 0.0, 0.002, 0.0, -0.01, 0.0),
-    "minimal": _ZERO_SURFACE_OFFSETS,
-    "stay_close": (0.0, 0.0, 0.001, 0.0, -0.03, 0.0),
-    "small_nod": (0.0, 0.0, 0.0, 0.0, -0.03, 0.0),
-}
-_SURFACE_OFFSET_LIMITS: tuple[float, float, float, float, float, float] = (
-    0.01,
-    0.01,
-    0.01,
-    0.12,
-    0.12,
-    0.18,
-)
 
 
 @dataclass(slots=True, frozen=True)
@@ -96,11 +55,6 @@ class EmbodimentCoordinator:
     _current_phase: str = field(default="idle", init=False, repr=False)
     _current_surface_state: dict[str, Any] = field(
         default_factory=lambda: {"phase": "idle"},
-        init=False,
-        repr=False,
-    )
-    _current_surface_offsets: tuple[float, float, float, float, float, float] = field(
-        default=_ZERO_SURFACE_OFFSETS,
         init=False,
         repr=False,
     )
@@ -145,7 +99,6 @@ class EmbodimentCoordinator:
 
         self._current_phase = phase
         self._current_surface_state = current_state
-        self._current_surface_offsets = self._apply_surface_baseline(current_state)
         speech_driver = self.speech_driver
         if speech_driver is not None:
             speech_driver.apply_phase(phase)
@@ -390,52 +343,6 @@ class EmbodimentCoordinator:
         camera_worker.set_head_tracking_enabled(should_enable)
         self._head_tracking_active = should_enable
 
-    def _apply_surface_baseline(
-        self,
-        state: Mapping[str, Any] | None,
-    ) -> tuple[float, float, float, float, float, float]:
-        movement_manager = self.movement_manager
-        if movement_manager is None or not hasattr(movement_manager, "set_surface_offsets"):
-            return _ZERO_SURFACE_OFFSETS
-
-        offsets = self._resolve_surface_offsets(state)
-        movement_manager.set_surface_offsets(offsets)
-        return offsets
-
-    @classmethod
-    def _resolve_surface_offsets(
-        cls,
-        state: Mapping[str, Any] | None,
-    ) -> tuple[float, float, float, float, float, float]:
-        if not isinstance(state, Mapping):
-            return _ZERO_SURFACE_OFFSETS
-
-        offsets = [0.0] * 6
-        for lookup, table in (
-            ("presence", _PRESENCE_SURFACE_OFFSETS),
-            ("body_state", _BODY_STATE_SURFACE_OFFSETS),
-            ("motion_hint", _MOTION_HINT_SURFACE_OFFSETS),
-        ):
-            key = str(state.get(lookup, "") or "").strip()
-            delta = table.get(key)
-            if delta is None:
-                continue
-            for index, value in enumerate(delta):
-                offsets[index] += float(value)
-
-        clamped = [
-            max(-limit, min(limit, value))
-            for value, limit in zip(offsets, _SURFACE_OFFSET_LIMITS, strict=False)
-        ]
-        return (
-            float(clamped[0]),
-            float(clamped[1]),
-            float(clamped[2]),
-            float(clamped[3]),
-            float(clamped[4]),
-            float(clamped[5]),
-        )
-
     def _resolve_move_duration(self, library: Any, move_name: str) -> float:
         try:
             move = library.get(move_name)
@@ -468,10 +375,9 @@ class EmbodimentCoordinator:
         if not isinstance(state, Mapping):
             return "idle"
 
-        for key in ("phase", "lifecycle_phase", "speaking_phase"):
-            value = str(state.get(key, "") or "").strip().lower()
-            if value in {"idle", "settling", "listening_wait", "replying", "listening"}:
-                return value
+        value = str(state.get("phase", "") or "").strip().lower()
+        if value in {"idle", "settling", "listening_wait", "replying", "listening"}:
+            return value
         return "idle"
 
     @classmethod

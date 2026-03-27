@@ -1,4 +1,4 @@
-"""Build runtime-facing surface-state payloads from companion semantics."""
+"""Build minimal runtime-facing surface-state payloads."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 @dataclass(slots=True, frozen=True)
 class CompanionSurfaceBundle:
-    """Surface-expression package returned for one replying turn."""
+    """Surface package returned for one replying turn."""
 
     intent: CompanionIntent
     expression: SurfaceExpression
@@ -27,19 +27,11 @@ def build_listening_surface_state(
     affect_state: "AffectState | None" = None,
     emotion_signal: "EmotionSignal | None" = None,
 ) -> dict[str, Any]:
-    """Build the default listening posture before kernel output exists."""
+    """Build the default listening state before kernel output exists."""
 
     state = {
         "thread_id": thread_id,
         "phase": "listening",
-        "presence": "beside",
-        "motion_hint": "small_nod",
-        "body_state": "listening_beside",
-        "breathing_hint": "steady_even",
-        "linger_hint": "remain_available",
-        "speaking_phase": "listening",
-        "settling_phase": "listening",
-        "idle_phase": "idle_ready",
         "recommended_hold_ms": 0,
     }
     state.update(build_affect_payload(affect_state))
@@ -53,20 +45,12 @@ def build_listening_wait_surface_state(
     affect_state: "AffectState | None" = None,
     emotion_signal: "EmotionSignal | None" = None,
 ) -> dict[str, Any]:
-    """Build the short post-speech waiting posture before replying begins."""
+    """Build the short post-speech waiting state before replying begins."""
 
     state = {
         "thread_id": thread_id,
         "phase": "listening_wait",
-        "presence": "steady",
-        "motion_hint": "stay_close",
-        "body_state": "steady_listening",
-        "breathing_hint": "steady_even",
-        "linger_hint": "remain_available",
-        "speaking_phase": "listening",
-        "settling_phase": "listening",
-        "idle_phase": "idle_ready",
-        "recommended_hold_ms": 0,
+        "recommended_hold_ms": 600,
     }
     state.update(build_affect_payload(affect_state))
     state.update(build_emotion_payload(emotion_signal))
@@ -79,19 +63,11 @@ def build_idle_surface_state(
     affect_state: "AffectState | None" = None,
     emotion_signal: "EmotionSignal | None" = None,
 ) -> dict[str, Any]:
-    """Build the default quiet-idle posture when no expressive reply exists."""
+    """Build the default idle state when no expressive reply exists."""
 
     state = {
         "thread_id": thread_id,
         "phase": "idle",
-        "presence": "beside",
-        "motion_hint": "minimal",
-        "body_state": "resting_beside",
-        "breathing_hint": "soft_slow",
-        "linger_hint": "quiet_stay",
-        "speaking_phase": "replying",
-        "settling_phase": "resting",
-        "idle_phase": "idle_ready",
         "recommended_hold_ms": 0,
     }
     state.update(build_affect_payload(affect_state))
@@ -138,39 +114,14 @@ def build_companion_phase_surface_state(
     affect_state: "AffectState | None" = None,
     emotion_signal: "EmotionSignal | None" = None,
 ) -> dict[str, Any]:
-    """Build one runtime-facing surface state for a companion phase."""
+    """Build one minimal runtime-facing state for a companion phase."""
 
+    _ = companion_intent, surface_expression
     normalized_phase = str(phase or "").strip().lower() or "idle"
-    recommended_hold_ms = 900 if normalized_phase == "settling" else 0
-    motion_hint = surface_expression.motion_hint
-    lifecycle_phase = surface_expression.speaking_phase
-
-    if normalized_phase == "settling":
-        lifecycle_phase = surface_expression.settling_phase
-        motion_hint = "stay_close"
-    elif normalized_phase == "idle":
-        lifecycle_phase = surface_expression.idle_phase
-        motion_hint = "minimal"
-
     state = {
         "thread_id": thread_id,
         "phase": normalized_phase,
-        "mode": companion_intent.mode,
-        "warmth": companion_intent.warmth,
-        "initiative": companion_intent.initiative,
-        "intensity": companion_intent.intensity,
-        "text_style": surface_expression.text_style,
-        "presence": surface_expression.presence,
-        "expression": surface_expression.expression,
-        "motion_hint": motion_hint,
-        "body_state": surface_expression.body_state,
-        "breathing_hint": surface_expression.breathing_hint,
-        "linger_hint": surface_expression.linger_hint,
-        "speaking_phase": surface_expression.speaking_phase,
-        "settling_phase": surface_expression.settling_phase,
-        "idle_phase": surface_expression.idle_phase,
-        "lifecycle_phase": lifecycle_phase,
-        "recommended_hold_ms": recommended_hold_ms,
+        "recommended_hold_ms": 900 if normalized_phase == "settling" else 0,
     }
     state.update(build_affect_payload(affect_state))
     state.update(build_emotion_payload(emotion_signal))

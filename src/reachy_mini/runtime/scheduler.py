@@ -305,10 +305,7 @@ class RuntimeScheduler:
                     thread_id=thread_id,
                     turn_id=turn_id,
                     user_text=user_text,
-                    metadata={
-                        "phase": "listening",
-                        "motion_hint": "small_nod",
-                    },
+                    metadata={"phase": "listening"},
                 )
             )
             memory = self._build_front_memory_view(thread_id=thread_id, user_text=user_text)
@@ -385,10 +382,7 @@ class RuntimeScheduler:
             thread_id=thread_id,
             user_text=user_text,
             surface_state=build_listening_surface_state(thread_id=thread_id),
-            metadata={
-                "phase": "listening",
-                "motion_hint": "small_nod",
-            },
+            metadata={"phase": "listening"},
             surface_state_handler=surface_state_handler,
         )
 
@@ -408,10 +402,7 @@ class RuntimeScheduler:
             thread_id=thread_id,
             user_text=user_text,
             surface_state=build_listening_wait_surface_state(thread_id=thread_id),
-            metadata={
-                "phase": "listening_wait",
-                "motion_hint": "stay_close",
-            },
+            metadata={"phase": "listening_wait"},
             surface_state_handler=surface_state_handler,
         )
 
@@ -1094,7 +1085,6 @@ class RuntimeScheduler:
                     metadata={
                         "phase": "replying",
                         "kernel_output": kernel_output,
-                        "motion_hint": surface_expression.motion_hint,
                     },
                 )
             )
@@ -1192,10 +1182,7 @@ class RuntimeScheduler:
                     thread_id=thread_id,
                     turn_id=turn_id,
                     user_text=user_text,
-                    metadata={
-                        "phase": "settling",
-                        "motion_hint": "stay_close",
-                    },
+                    metadata={"phase": "settling"},
                 )
             )
             await self._push_surface_state(
@@ -1216,10 +1203,7 @@ class RuntimeScheduler:
                     thread_id=thread_id,
                     turn_id=turn_id,
                     user_text=user_text,
-                    metadata={
-                        "phase": "idle",
-                        "motion_hint": "minimal",
-                    },
+                    metadata={"phase": "idle"},
                 )
             )
             await self._push_surface_state(
@@ -1267,9 +1251,7 @@ class RuntimeScheduler:
             "initiative": companion_intent.initiative,
             "intensity": companion_intent.intensity,
             "text_style": surface_expression.text_style,
-            "presence": surface_expression.presence,
             "expression": surface_expression.expression,
-            "motion_hint": surface_expression.motion_hint,
         }
         metadata.update(build_affect_payload(affect_state))
         metadata.update(build_emotion_payload(emotion_signal))
@@ -1292,7 +1274,6 @@ class RuntimeScheduler:
                         for tag in [
                             companion_intent.mode,
                             surface_expression.text_style,
-                            surface_expression.presence,
                             surface_expression.expression,
                             emotion_signal.primary_emotion if emotion_signal is not None else "",
                             emotion_signal.support_need if emotion_signal is not None else "",

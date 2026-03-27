@@ -23,6 +23,7 @@ import { ProjectIdentityHeader } from "@/components/project-identity-header"
 import { ProjectChooserModal } from "@/components/ProjectChooserModal"
 import { DashboardView } from "@/components/dashboard/DashboardView"
 import { DocsViewer } from "@/components/DocsViewer"
+import { RobotSidePanel } from "@/components/workbench/RobotSidePanel"
 import { useRecentProjects, RecentProject } from "@/hooks/use-recent-projects"
 import { useSettings } from "@/contexts/settings-context"
 import type { MenuEventPayload } from "@/types/menu"
@@ -63,8 +64,8 @@ function ProjectView({ project, selectedAgent, activeTab, onTabChange, onExecuti
   }, [onTabChange])
 
   return (
-    <div className="flex-1 flex min-h-0 min-w-0">
-      <div className="flex-1 flex flex-col min-h-0 min-w-0">
+    <div className="flex flex-1 min-h-0 min-w-0 overflow-hidden">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <Tabs value={activeTab} onValueChange={handleTabChange} className="flex-1 flex flex-col min-h-0 min-w-0">
           <TabsContent value="chat" className="flex-1 flex flex-col m-0 min-h-0 min-w-0" forceMount>
             <ChatInterface
@@ -88,6 +89,7 @@ function ProjectView({ project, selectedAgent, activeTab, onTabChange, onExecuti
           </TabsContent>
         </Tabs>
       </div>
+      <RobotSidePanel projectName={project.name} />
     </div>
   )
 }

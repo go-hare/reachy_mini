@@ -156,10 +156,9 @@ class SurfaceDriver:
         if not isinstance(state, Mapping):
             return "idle"
 
-        for key in ("phase", "lifecycle_phase", "speaking_phase"):
-            value = str(state.get(key, "") or "").strip().lower()
-            if value in _PHASE_PRIORITY:
-                return value
+        value = str(state.get("phase", "") or "").strip().lower()
+        if value in _PHASE_PRIORITY:
+            return value
         return "idle"
 
     @classmethod

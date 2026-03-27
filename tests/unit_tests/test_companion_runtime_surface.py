@@ -43,7 +43,7 @@ def _fake_emotion_signal() -> SimpleNamespace:
 
 
 def test_build_listening_surface_state_includes_affect_and_emotion() -> None:
-    """Listening state should be companion-owned and carry semantic payloads."""
+    """Listening state should stay lightweight while carrying affect and emotion."""
 
     state = build_listening_surface_state(
         thread_id="app:main",
@@ -52,30 +52,27 @@ def test_build_listening_surface_state_includes_affect_and_emotion() -> None:
     )
 
     assert state["phase"] == "listening"
-    assert state["motion_hint"] == "small_nod"
+    assert state["recommended_hold_ms"] == 0
     assert state["affect_pressure"] == 0.42
     assert state["emotion_primary"] == "anxious"
 
 
 def test_build_idle_surface_state_returns_default_quiet_idle() -> None:
-    """Default idle state should stay in a quiet beside posture."""
+    """Default idle state should remain minimal."""
 
     state = build_idle_surface_state(thread_id="app:main")
 
     assert state["phase"] == "idle"
-    assert state["body_state"] == "resting_beside"
-    assert state["motion_hint"] == "minimal"
     assert state["recommended_hold_ms"] == 0
 
 
 def test_build_listening_wait_surface_state_returns_non_listening_hold() -> None:
-    """Listening-wait should keep presence without freezing antennas as active listening."""
+    """Listening-wait should express only a short runtime hold."""
 
     state = build_listening_wait_surface_state(thread_id="app:main")
 
     assert state["phase"] == "listening_wait"
-    assert state["motion_hint"] == "stay_close"
-    assert state["body_state"] == "steady_listening"
+    assert state["recommended_hold_ms"] == 600
 
 
 def test_build_turn_surface_bundle_builds_replying_state_from_companion_rules() -> None:
@@ -90,14 +87,13 @@ def test_build_turn_surface_bundle_builds_replying_state_from_companion_rules() 
     )
 
     assert bundle.intent.mode == "comfort"
-    assert bundle.expression.motion_hint in {"small_tilt", "stay_close"}
+    assert bundle.expression.text_style == "soft_wrap"
     assert bundle.state["phase"] == "replying"
-    assert bundle.state["mode"] == bundle.intent.mode
     assert bundle.state["emotion_support_need"] == "comfort"
 
 
 def test_build_companion_phase_surface_state_overrides_settling_and_idle_motion() -> None:
-    """Settling and idle phases should override motion semantics without changing intent."""
+    """Settling and idle phases should only affect the runtime hold."""
 
     bundle = build_turn_surface_bundle(
         thread_id="app:main",
@@ -119,10 +115,7 @@ def test_build_companion_phase_surface_state_overrides_settling_and_idle_motion(
     )
 
     assert settling["phase"] == "settling"
-    assert settling["motion_hint"] == "stay_close"
-    assert settling["lifecycle_phase"] == bundle.expression.settling_phase
     assert settling["recommended_hold_ms"] == 900
 
     assert idle["phase"] == "idle"
-    assert idle["motion_hint"] == "minimal"
-    assert idle["lifecycle_phase"] == bundle.expression.idle_phase
+    assert idle["recommended_hold_ms"] == 0

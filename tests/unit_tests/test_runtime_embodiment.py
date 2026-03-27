@@ -40,7 +40,6 @@ class FakeMovementManager:
         self.queued_moves: list[object] = []
         self.moving_durations: list[float] = []
         self.clear_count = 0
-        self.surface_offsets: list[tuple[float, float, float, float, float, float]] = []
 
     def set_listening(self, listening: bool) -> None:
         self.listening_calls.append(bool(listening))
@@ -56,12 +55,6 @@ class FakeMovementManager:
 
     def clear_move_queue(self) -> None:
         self.clear_count += 1
-
-    def set_surface_offsets(
-        self,
-        offsets: tuple[float, float, float, float, float, float],
-    ) -> None:
-        self.surface_offsets.append(offsets)
 
 
 class FakeReachyMini:
@@ -177,21 +170,18 @@ def test_embodiment_coordinator_exposes_current_surface_state_and_settling_hold(
             {
                 "thread_id": "app:test",
                 "phase": "replying",
-                "presence": "near",
-                "body_state": "leaning_in",
+                "source_signal": "kernel_output_ready",
             }
         )
         == "replying"
     )
-    assert coordinator.current_surface_state["presence"] == "near"
-    assert coordinator.current_surface_state["body_state"] == "leaning_in"
+    assert coordinator.current_surface_state["source_signal"] == "kernel_output_ready"
 
     assert (
         coordinator.apply_surface_state(
             {
                 "thread_id": "app:test",
                 "phase": "settling",
-                "presence": "steady",
                 "recommended_hold_ms": 900,
             }
         )
@@ -199,40 +189,12 @@ def test_embodiment_coordinator_exposes_current_surface_state_and_settling_hold(
     )
     assert coordinator.apply_surface_state({"thread_id": "app:test", "phase": "idle"}) == "settling"
     assert coordinator.current_phase == "settling"
-    assert coordinator.current_surface_state["presence"] == "steady"
+    assert coordinator.current_surface_state["recommended_hold_ms"] == 900
 
     fake_time["value"] = 10.95
 
     assert coordinator.current_phase == "idle"
     assert coordinator.current_surface_state == {"phase": "idle"}
-
-
-def test_embodiment_coordinator_translates_surface_semantics_into_offsets() -> None:
-    """Coordinator should translate richer surface hints into subtle body baseline offsets."""
-    movement_manager = FakeMovementManager()
-    coordinator = EmbodimentCoordinator(
-        movement_manager=movement_manager,
-        surface_driver=SurfaceDriver(movement_manager=movement_manager),
-    )
-
-    assert (
-        coordinator.apply_surface_state(
-            {
-                "thread_id": "app:test",
-                "phase": "listening",
-                "presence": "beside",
-                "body_state": "listening_beside",
-                "motion_hint": "small_nod",
-            }
-        )
-        == "listening"
-    )
-
-    assert movement_manager.surface_offsets
-    latest = movement_manager.surface_offsets[-1]
-    assert latest != (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-    assert latest[3] > 0.0
-    assert latest[4] < 0.0
 
 
 def test_embodiment_coordinator_handles_explicit_motion_actions() -> None:

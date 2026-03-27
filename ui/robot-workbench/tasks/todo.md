@@ -181,10 +181,10 @@
 - [x] Run focused verification for the header model/status pass
 - [x] Inspect the Reachy desktop reference app and map reusable robot-facing modules
 - [x] Write PRD/TDD for the first robot workbench three-pane shell
-- [ ] Add failing regression coverage for project-only robot side panel rendering
-- [ ] Add the first robot side panel shell with MuJoCo and Reachy sections
-- [ ] Reshape the project view into center workspace plus right-side robot panel
-- [ ] Run focused verification for the three-pane robot workbench shell
+- [x] Add failing regression coverage for project-only robot side panel rendering
+- [x] Add the first robot side panel shell with MuJoCo and Reachy sections
+- [x] Reshape the project view into center workspace plus right-side robot panel
+- [x] Run focused verification for the three-pane robot workbench shell
 
 # Review
 
@@ -240,6 +240,11 @@
   - `src/components/__tests__/App.projectSelection.chatDefault.test.tsx`
   - `cargo check --manifest-path src-tauri/Cargo.toml`
   - `cargo check` still reports pre-existing Rust `unused_*` warnings in `src-tauri/src/commands/cli_commands.rs` and legacy services/models, but no new compile errors were introduced.
+- Robot workbench shell pass:
+  - `src/components/__tests__/App.robotWorkbench.shell.test.tsx`
+  - `src/components/__tests__/App.projectSelection.chatDefault.test.tsx`
+  - `src/components/__tests__/App.projectHeader.identity.test.tsx`
+  - `bun x tsc --noEmit` still fails because the repo already has broad pre-existing TypeScript issues across older tests and unrelated components; this shell change did not introduce a new standalone compiler error in the touched files.
 - Follow-up footer pass passed:
   - `src/components/chat/__tests__/ChatControlsBar.test.tsx`
   - `src/components/chat/__tests__/ChatInput.dynamicModes.test.tsx`

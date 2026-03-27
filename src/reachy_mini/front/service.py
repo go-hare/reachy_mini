@@ -85,13 +85,6 @@ _SURFACE_TEXT_STYLE_HINTS = {
     "warm_clear": "信息依然清楚，但整体是暖的，像一边陪着一边把事讲明白。",
     "soft_calm": "柔和又安静，不吵不闹，但一直给人安全感。",
 }
-_SURFACE_PRESENCE_HINTS = {
-    "near": "靠近一点，像在桌边轻声回应。",
-    "forward": "往前一步带节奏，但不要压过用户。",
-    "close": "距离更近，互动感更强。",
-    "steady": "稳定在场，不贴脸也不缺席。",
-    "beside": "像陪在旁边，安静但一直都在。",
-}
 _SURFACE_EXPRESSION_HINTS = {
     "gentle": "神态柔和，语气放松。",
     "happy": "带一点开心和鼓励感。",
@@ -102,45 +95,6 @@ _SURFACE_EXPRESSION_HINTS = {
     "happy_gentle": "开心是真的，但还是柔和的，不会吵闹。",
     "playful_soft": "带一点俏皮，但底色还是软的、亲近的。",
     "attentive_warm": "认真专注，同时把温度留在话里，让人感觉不是一个人在扛。",
-}
-_SURFACE_MOTION_HINTS = {
-    "small_tilt": "像轻轻歪头回应，动作感很小。",
-    "nod": "像轻轻点头，表达接住和确认。",
-    "bounce": "有一点雀跃感，但保持克制。",
-    "minimal": "几乎没有动作感，把重心放在内容本身。",
-    "stay_close": "不做多余动作，只传达一直陪着的感觉。",
-    "small_nod": "像一边听你说一边轻轻点头，安静但很在场。",
-}
-_BODY_STATE_HINTS = {
-    "soothing_close": "桌面体像轻轻靠近你，进入安抚陪伴状态。",
-    "upright_bright": "桌面体更抬起来一点，像真心为你高兴。",
-    "bouncy_close": "桌面体更灵动一点，靠近但不扑脸。",
-    "steady_listening": "桌面体处在稳定倾听姿态，像认真陪你处理眼前这件事。",
-    "resting_beside": "桌面体安静待在旁边，存在感柔和但持续。",
-    "resting_close": "桌面体更贴近一些，动作收住，以陪着和安抚为主。",
-    "leaning_in": "桌面体稍微前倾，像更专注地和你一起看这件事。",
-    "listening_beside": "桌面体在旁边轻轻回应，保持低打扰的倾听状态。",
-}
-_BREATHING_HINTS = {
-    "slow_deep": "呼吸更慢更深，让整体气氛先安下来。",
-    "light_lift": "呼吸轻一点、提一点，带出温暖的提气感。",
-    "quick_light": "呼吸稍微轻快，但仍然克制自然。",
-    "steady_even": "呼吸稳定均匀，给人可依靠的处理感。",
-    "soft_slow": "呼吸很轻很慢，像静静陪在桌边。",
-}
-_LINGER_HINTS = {
-    "stay_near": "说完后不要马上抽离，保持贴近陪伴一小会儿。",
-    "hold_warmth": "说完后把暖意留住一下，像还在和用户一起开心。",
-    "spark_then_stay": "说完后先留一点轻松活力，再自然停住。",
-    "remain_available": "说完后保持随时可继续处理的在场感。",
-    "quiet_stay": "说完后安静留在旁边，不打扰，但不消失。",
-}
-_LIFECYCLE_PHASE_HINTS = {
-    "replying": "当前在出声回应阶段，桌面体要和文字同步在场。",
-    "settling": "说完后缓一下，像自然落回桌边，不要突然断掉。",
-    "listening": "说完后保持倾听状态，像还在等你下一句。",
-    "resting": "说完后回到更安静的陪伴状态，轻轻待着。",
-    "idle_ready": "说完后进入轻待命状态，随时可以继续回应。",
 }
 _PRIMARY_EMOTION_HINTS = {
     "neutral": "情绪不必过度渲染，保持自然在场就好。",
@@ -161,15 +115,6 @@ _SUPPORT_NEED_HINTS = {
     "celebrate": "陪着高兴一下，让亮度出来，但别浮夸。",
 }
 _SURFACE_PATCH_METADATA_KEYS = (
-    "motion_hint",
-    "presence",
-    "body_state",
-    "breathing_hint",
-    "linger_hint",
-    "speaking_phase",
-    "settling_phase",
-    "idle_phase",
-    "lifecycle_phase",
     "recommended_hold_ms",
     "idle_seconds",
     "chunk_bytes",
@@ -383,11 +328,9 @@ class FrontService:
             )
 
         if lifecycle_state == "listening_wait":
-            patch = FrontService._surface_patch_from_state(
+            return FrontService._surface_patch_from_state(
                 build_listening_wait_surface_state(thread_id=thread_id)
             )
-            patch["recommended_hold_ms"] = 600
-            return patch
 
         if lifecycle_state == "idle":
             return FrontService._surface_patch_from_state(
@@ -397,59 +340,23 @@ class FrontService:
         if lifecycle_state == "replying":
             return {
                 "phase": "replying",
-                "presence": "near",
-                "motion_hint": "small_nod",
-                "body_state": "leaning_in",
-                "breathing_hint": "steady_even",
-                "linger_hint": "remain_available",
-                "speaking_phase": "replying",
-                "settling_phase": "settling",
-                "idle_phase": "idle_ready",
-                "lifecycle_phase": "replying",
                 "recommended_hold_ms": 0,
             }
 
         if lifecycle_state == "settling":
             return {
                 "phase": "settling",
-                "presence": "steady",
-                "motion_hint": "stay_close",
-                "body_state": "resting_close",
-                "breathing_hint": "soft_slow",
-                "linger_hint": "quiet_stay",
-                "speaking_phase": "replying",
-                "settling_phase": "settling",
-                "idle_phase": "idle_ready",
-                "lifecycle_phase": "settling",
                 "recommended_hold_ms": 900,
             }
 
         if lifecycle_state == "attending":
             return {
                 "phase": "attending",
-                "presence": "forward",
-                "motion_hint": "small_tilt",
-                "body_state": "leaning_in",
-                "breathing_hint": "steady_even",
-                "linger_hint": "remain_available",
-                "speaking_phase": "listening",
-                "settling_phase": "listening",
-                "idle_phase": "idle_ready",
-                "lifecycle_phase": "listening",
                 "recommended_hold_ms": 0,
             }
 
         return {
             "phase": "observing",
-            "presence": "steady",
-            "motion_hint": "minimal",
-            "body_state": "resting_beside",
-            "breathing_hint": "steady_even",
-            "linger_hint": "remain_available",
-            "speaking_phase": "listening",
-            "settling_phase": "resting",
-            "idle_phase": "idle_ready",
-            "lifecycle_phase": "listening",
             "recommended_hold_ms": 0,
         }
 
@@ -764,15 +671,7 @@ class FrontService:
         return "\n".join(
             [
                 f"- 文字风格: {expression.text_style}（{_describe_hint(_SURFACE_TEXT_STYLE_HINTS, expression.text_style, '自然表达即可。')}）",
-                f"- 存在感: {expression.presence}（{_describe_hint(_SURFACE_PRESENCE_HINTS, expression.presence, '保持稳定在场。')}）",
-                f"- 表情气质: {expression.expression}（{_describe_hint(_SURFACE_EXPRESSION_HINTS, expression.expression, '情绪表达保持自然。')}）",
-                f"- 动作感提示: {expression.motion_hint}（{_describe_hint(_SURFACE_MOTION_HINTS, expression.motion_hint, '不要刻意写动作。')}）",
-                f"- 桌面体状态: {expression.body_state}（{_describe_hint(_BODY_STATE_HINTS, expression.body_state, '保持自然在场。')}）",
-                f"- 呼吸节奏: {expression.breathing_hint}（{_describe_hint(_BREATHING_HINTS, expression.breathing_hint, '呼吸保持自然。')}）",
-                f"- 停留方式: {expression.linger_hint}（{_describe_hint(_LINGER_HINTS, expression.linger_hint, '说完后自然留一点在场感。')}）",
-                f"- 说话阶段: {expression.speaking_phase}（{_describe_hint(_LIFECYCLE_PHASE_HINTS, expression.speaking_phase, '当前处在回应阶段。')}）",
-                f"- 收束阶段: {expression.settling_phase}（{_describe_hint(_LIFECYCLE_PHASE_HINTS, expression.settling_phase, '说完后自然收一下。')}）",
-                f"- 待机阶段: {expression.idle_phase}（{_describe_hint(_LIFECYCLE_PHASE_HINTS, expression.idle_phase, '最终回到轻待命状态。')}）",
+                f"- 外显情绪: {expression.expression}（{_describe_hint(_SURFACE_EXPRESSION_HINTS, expression.expression, '情绪表达保持自然。')}）",
             ]
         )
 
@@ -804,34 +703,16 @@ class FrontService:
                 f"- 句子节奏: {_describe_hint(_MODE_SENTENCE_RHYTHM_HINTS, mode, '句子短一点，保持自然停顿。')}",
                 f"- 关系距离: {_describe_hint(_MODE_RELATION_DISTANCE_HINTS, mode, '关系距离保持自然亲近。')}",
                 f"- 可用信号: {_describe_hint(_MODE_SIGNAL_HINTS, mode, '用很轻的在场感和陪伴感就够。')}",
-                f"- 表达质地: {self._describe_surface_texture(surface_expression)}",
-                f"- 桌面体余韵: {self._describe_desktop_presence(surface_expression)}",
-                f"- 生命周期: {self._describe_lifecycle(surface_expression)}",
+                f"- 整体手感: {self._describe_surface_texture(surface_expression)}",
             ]
         )
 
     def _describe_surface_texture(self, expression: SurfaceExpression) -> str:
         fragments = [
             _describe_hint(_SURFACE_TEXT_STYLE_HINTS, expression.text_style, "自然表达即可。"),
-            _describe_hint(_SURFACE_PRESENCE_HINTS, expression.presence, "保持稳定在场。"),
+            _describe_hint(_SURFACE_EXPRESSION_HINTS, expression.expression, "情绪表达保持自然。"),
         ]
         return " / ".join(fragment for fragment in fragments if fragment)
-
-    def _describe_desktop_presence(self, expression: SurfaceExpression) -> str:
-        fragments = [
-            _describe_hint(_BODY_STATE_HINTS, expression.body_state, "保持自然在场。"),
-            _describe_hint(_BREATHING_HINTS, expression.breathing_hint, "呼吸保持自然。"),
-            _describe_hint(_LINGER_HINTS, expression.linger_hint, "说完后自然留一点在场感。"),
-        ]
-        return " / ".join(fragment for fragment in fragments if fragment)
-
-    def _describe_lifecycle(self, expression: SurfaceExpression) -> str:
-        fragments = [
-            f"说话时是 {_describe_hint(_LIFECYCLE_PHASE_HINTS, expression.speaking_phase, '回应阶段。')}",
-            f"说完先进入 {_describe_hint(_LIFECYCLE_PHASE_HINTS, expression.settling_phase, '收束阶段。')}",
-            f"最后回到 {_describe_hint(_LIFECYCLE_PHASE_HINTS, expression.idle_phase, '轻待命状态。')}",
-        ]
-        return " / ".join(fragments)
 
 
 def _describe_hint(hints: dict[str, str], key: str, fallback: str) -> str:

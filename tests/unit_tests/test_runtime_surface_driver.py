@@ -58,36 +58,32 @@ def test_surface_driver_aggregates_concurrent_thread_phases() -> None:
     assert driver.current_phase == "idle"
 
 
-def test_surface_driver_exposes_richer_aggregate_state() -> None:
-    """The aggregate driver state should preserve richer surface semantics, not just phase."""
+def test_surface_driver_preserves_additional_metadata() -> None:
+    """The aggregate driver state should preserve extra metadata, not just phase."""
     driver = SurfaceDriver()
 
     driver.apply_state(
         {
             "thread_id": "thread-a",
             "phase": "replying",
-            "presence": "near",
-            "body_state": "leaning_in",
+            "source_signal": "kernel_output_ready",
         }
     )
     driver.apply_state(
         {
             "thread_id": "thread-b",
             "phase": "listening",
-            "presence": "beside",
-            "body_state": "listening_beside",
+            "source_signal": "user_speech_started",
         }
     )
 
     assert driver.current_state["phase"] == "listening"
-    assert driver.current_state["presence"] == "beside"
-    assert driver.current_state["body_state"] == "listening_beside"
+    assert driver.current_state["source_signal"] == "user_speech_started"
 
     driver.apply_state({"thread_id": "thread-b", "phase": "idle"})
 
     assert driver.current_state["phase"] == "replying"
-    assert driver.current_state["presence"] == "near"
-    assert driver.current_state["body_state"] == "leaning_in"
+    assert driver.current_state["source_signal"] == "kernel_output_ready"
 
 
 def test_surface_driver_holds_settling_until_recommended_hold_expires() -> None:
@@ -100,7 +96,6 @@ def test_surface_driver_holds_settling_until_recommended_hold_expires() -> None:
             {
                 "thread_id": "thread-a",
                 "phase": "settling",
-                "presence": "steady",
                 "recommended_hold_ms": 900,
             }
         )
@@ -108,7 +103,7 @@ def test_surface_driver_holds_settling_until_recommended_hold_expires() -> None:
     )
     assert driver.apply_state({"thread_id": "thread-a", "phase": "idle"}) == "settling"
     assert driver.current_state["phase"] == "settling"
-    assert driver.current_state["presence"] == "steady"
+    assert driver.current_state["recommended_hold_ms"] == 900
 
     fake_time["value"] = 10.95
 
