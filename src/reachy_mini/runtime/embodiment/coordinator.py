@@ -68,22 +68,14 @@ class EmbodimentCoordinator:
     def current_phase(self) -> str:
         """Return the latest aggregate embodiment phase."""
 
-        surface_driver = self.surface_driver
-        if surface_driver is not None:
-            self._current_phase = surface_driver.current_phase
-            self._current_surface_state = surface_driver.current_state
+        self._refresh_public_state()
         return self._current_phase
 
     @property
     def current_surface_state(self) -> dict[str, Any]:
         """Return the latest aggregate surface-state snapshot seen by the coordinator."""
 
-        surface_driver = self.surface_driver
-        if surface_driver is not None:
-            self._current_surface_state = surface_driver.current_state
-            self._current_phase = str(
-                self._current_surface_state.get("phase", self._current_phase) or self._current_phase
-            )
+        self._refresh_public_state()
         return dict(self._current_surface_state)
 
     def apply_surface_state(self, state: Mapping[str, Any] | None) -> str:
@@ -274,6 +266,19 @@ class EmbodimentCoordinator:
 
     def _current_time(self) -> float:
         return float(self.now_fn())
+
+    def _refresh_public_state(self) -> None:
+        """Refresh timed coordination state before exposing public snapshots."""
+
+        now = self._current_time()
+        self._refresh_explicit_motion_state(now)
+        surface_driver = self.surface_driver
+        if surface_driver is not None:
+            self._current_surface_state = surface_driver.current_state
+            self._current_phase = str(
+                self._current_surface_state.get("phase", self._current_phase) or self._current_phase
+            )
+        self._sync_head_tracking(now)
 
     def _explicit_motion_active(self, now: float | None = None) -> bool:
         resolved_now = self._current_time() if now is None else float(now)

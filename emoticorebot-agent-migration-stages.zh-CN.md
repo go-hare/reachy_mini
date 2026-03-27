@@ -101,8 +101,12 @@
    - `BrainKernel` 已经接入
    - `surface_state` 已经能产出
    - `MovementManager`、`CameraWorker`、`HeadWobbler` 已有第一版接线
-   - 但 `front` 还没有真正长成接近原版的外显大脑
-   - 外显类工具与任务类工具也还没有彻底完成职责拆分
+   - `front` 在功能上已经承接原版 agent 的核心职责：prompt/profile 约束、用户可见回复包装、verification 收口、外显事件到 tool/phase 决策
+   - `runtime` 已开始稳定收口为“宿主编排 + 执行协调”，不再继续承接旧 agent 的大语义包袱
+   - 外显类工具与任务类工具的主链路职责拆分已经落地
+   - 当前与原版 agent 仍未 1:1 的功能差异主要只剩两点：
+     - 正常对话时，`front` LLM 还不会像上游 realtime agent 那样自由自动 function-call 外显工具
+     - idle 创意动作当前仍主要收口为 `move_head / do_nothing`，尚未完全放开到 `play_emotion / dance / camera`
 
 ## 3. 总体阶段图
 
@@ -113,7 +117,7 @@
 | 0 | 基线冻结 | 固定方向、分层、工具归属、文档口径 | 已完成 |
 | 1 | Resident Runtime 与 App/Profile 收口 | 理顺 app 文件包、CLI、profile loader、resident runtime 主路径 | 已完成第一版 |
 | 2 | 文本双脑闭环 | 跑通 `app 文件包 -> front -> kernel -> front` 的文本主链路 | 已完成第一版 |
-| 3 | Front 外显大脑建设 | 让 `front` 向原版外显能力靠近，并承接外显类工具 | 已完成第一版 |
+| 3 | Front 外显大脑建设 | 让 `front` 向原版外显能力靠近，并承接外显类工具 | 核心功能已对齐 |
 | 4 | 执行协调层与身体输出接回 | 建立 coordinator / driver，把外显决策稳定落到机器人身体 | 已开始第一段 |
 | 5 | 旧资产迁移与主干收口 | 迁移剩余 legacy 资产，清理旧路径，完成语义收口 | 后续阶段 |
 
@@ -295,30 +299,37 @@
 - 外显类工具不再继续作为 `kernel` 的默认决策工具集混用
 - “原版能力对齐”开始体现在 `front` 行为上，而不只是文档描述
 
-### 7.7 当前代码现实与 Stage 3 的真正缺口
+### 7.7 当前代码现实与 Stage 3 的剩余缺口
 
-截至 2026-03-27，当前代码里与 Stage 3 最相关的现实是：
+截至 2026-03-28，当前代码里与 Stage 3 最相关的现实是：
 
-1. `front` 已经不再只是文本层，但外显决策还偏薄
+1. `front` 在功能上已经承接原版 agent 的核心职责
    - `src/reachy_mini/front/service.py`
-   - 现在已经有正式的 `handle_signal(...)` 入口
-   - 也已经能把 `user_speech_started / user_speech_stopped / assistant_audio_* / idle_tick / vision_attention_updated` 映射到生命周期状态
-   - 但当前真正落地成外显动作的，主要还是 `idle_tick -> move_head/do_nothing` 和部分 attention 跟随
-   - 所以它已经开始进入“外显导演层”，但还远没到原版那种完整表现力
+   - `src/reachy_mini/front/prompt.py`
+   - 当前已经覆盖：
+     - profile / prompt 约束
+     - `reply(...)` 与 `present(...)` 两段用户可见回复包装
+     - verification 场景收口
+     - `user_speech_started / user_speech_stopped / assistant_audio_* / idle_tick / vision_attention_updated` 到生命周期状态与前台工具决策的映射
+   - 因此，“`front` = 原版 agent 的功能承接层”已经可以作为当前文档口径冻结
+   - 当前尚未与原版完全 1:1 的，只剩两条可选增强：
+     - 正常对话时，`front` LLM 还不会像上游 realtime agent 一样自由自动 function-call 外显工具
+     - idle 创意动作仍主要收口为 `move_head / do_nothing`
 
 2. `kernel` 已经不再默认持有全部系统工具
    - `src/reachy_mini/runtime/tool_loader.py`
    - 当前已经拆成 `kernel_system_tools`、`front_tools`、`profile_tools`
    - `RuntimeScheduler` 会把 `front_tools` 交给 `FrontService`，把 `kernel_tools` 交给 `BrainKernel`
-   - 但兼容层里的 `build_system_tools(...)` 仍然存在，因此文档口径要理解成“已启动拆分，不是所有历史接口都删除了”
+   - 这意味着“外显工具归 `front`”已经不是纯文档目标，而是当前主链路现实
+   - 兼容层里的 `build_system_tools(...)` 仍然存在，但它不再代表主决策平面的职责归属
 
-3. 外显类工具与任务类工具已经完成第一阶段拆分，但治理边界还不算最终稳定
+3. 外显类工具与任务类工具已经完成主链路拆分，后续重点是增强前台决策深度
    - `src/reachy_mini/runtime/tools/__init__.py`
    - `move_head / play_emotion / dance / head_tracking / do_nothing` 这类外显工具已经能走 `front` 平面
    - 但工具本体仍共享同一套 runtime context / coordinator 落地层
-   - 所以下一阶段更重要的是继续稳固“谁来决定调用它们”，而不是再把工具文件机械拆更多份
+   - 所以下一阶段更重要的是决定“哪些场景继续规则化收口，哪些场景重新开放给前台自由选择”，而不是再把工具文件机械拆更多份
 
-4. `front` 已经有显式事件入口，但事件生产面还没有完全补齐
+4. `front` 已经有显式事件入口，但输入事件生产面还没有完全补齐
    - 当前 runtime / app 已正式支持：
      - 用户说话开始/结束
      - 助手音频开始/增量/结束
@@ -329,7 +340,11 @@
    - 浏览器模板和示例前端也已补入第一版麦克风输入：`SpeechRecognition -> user_speech_started / user_speech_stopped -> 最终 user_text`
    - 但 raw PCM / input audio buffer / server VAD 输入链路，以及更完整的视觉关注事件生产仍未完成
 
-所以，Stage 3 的真正任务已经不是“从 0 给 front 增加接口”，而是：
+5. `runtime` 在这条线上已经明显收薄
+   - `scheduler.py / surface_driver.py / coordinator.py` 的主职责已开始稳定为宿主编排、状态收束与执行协调
+   - 当前已经不是“runtime 继续背 front 大语义”的问题，而是前台功能已经到位后，如何继续精修自由度和事件源
+
+所以，Stage 3 剩余任务已经不是“从 0 给 front 增加接口”，而是：
 
 - 继续增强 `front` 的外显决策深度
 - 继续稳固外显工具平面与 `kernel` 的决策边界
@@ -510,9 +525,10 @@
 
 如果 Stage 3 做完，系统应该达到下面这个状态：
 
-- `front` 已经像原版那样开始承担“外显会话层”的职责
+- `front` 已经在功能上承担原版 agent 的“外显会话层”职责
 - `kernel` 已经从外显工具调度中退出主决策平面
 - runtime 已经能够同时承载“文本表现”和“外显表现”
+- 与原版尚未 1:1 的，主要只剩“前台自由调外显工具”和“idle 创意动作范围”这两条可选增强
 - 但身体执行仍然是下一阶段的重点
 
 也就是说，Stage 3 完成后，系统会先变成：
@@ -849,7 +865,6 @@ Stage 3 的策略已经可以收口成一句话：
 `Stage 3: Front 外显大脑建设`
 
 先把 `front` 做成接近原版的外显会话层，再通过协调层把它稳定落到 Reachy 身体上。
-
 
 
 

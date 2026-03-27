@@ -317,5 +317,6 @@ def test_embodiment_coordinator_suspends_and_resumes_head_tracking_around_motion
     assert coordinator.camera_worker.enabled_states == [True, False]
 
     fake_time["value"] = 11.6
-    assert coordinator.apply_surface_state({"thread_id": "app:test", "phase": "idle"}) == "idle"
+    assert coordinator.current_phase == "idle"
+    assert coordinator.current_surface_state == {"phase": "idle"}
     assert coordinator.camera_worker.enabled_states == [True, False, True]

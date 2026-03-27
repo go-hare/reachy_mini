@@ -33,6 +33,27 @@ export function useReachyStatus(settings: RobotWorkbenchSettings): ReachyStatusR
   })
 
   useEffect(() => {
+    const setOfflineState = (message: string, preserveExistingError = true) => {
+      setState((prev) => {
+        const nextError = preserveExistingError ? prev.error ?? message : message
+
+        if (
+          prev.connectionState === 'offline' &&
+          prev.daemonBaseUrl === daemonBaseUrl &&
+          prev.error === nextError
+        ) {
+          return prev
+        }
+
+        return {
+          ...prev,
+          connectionState: 'offline',
+          daemonBaseUrl,
+          error: nextError,
+        }
+      })
+    }
+
     const clearSocket = () => {
       if (reconnectTimerRef.current != null) {
         window.clearTimeout(reconnectTimerRef.current)
@@ -75,12 +96,18 @@ export function useReachyStatus(settings: RobotWorkbenchSettings): ReachyStatusR
     const connect = () => {
       if (cancelled) return
 
-      setState((prev) => ({
-        ...prev,
-        connectionState: 'connecting',
-        daemonBaseUrl,
-        error: null,
-      }))
+      setState((prev) => {
+        if (prev.connectionState === 'offline' && prev.daemonBaseUrl === daemonBaseUrl) {
+          return prev
+        }
+
+        return {
+          ...prev,
+          connectionState: 'connecting',
+          daemonBaseUrl,
+          error: null,
+        }
+      })
 
       try {
         const socket = new WebSocket(buildReachyStateWebSocketUrl(daemonBaseUrl))
@@ -88,12 +115,18 @@ export function useReachyStatus(settings: RobotWorkbenchSettings): ReachyStatusR
 
         socket.onopen = () => {
           if (cancelled) return
-          setState((prev) => ({
-            ...prev,
-            connectionState: prev.snapshot ? 'live' : 'connecting',
-            daemonBaseUrl,
-            error: null,
-          }))
+          setState((prev) => {
+            if (prev.connectionState === 'offline' && prev.daemonBaseUrl === daemonBaseUrl) {
+              return prev
+            }
+
+            return {
+              ...prev,
+              connectionState: prev.snapshot ? 'live' : 'connecting',
+              daemonBaseUrl,
+              error: null,
+            }
+          })
         }
 
         socket.onmessage = (event) => {
@@ -109,34 +142,19 @@ export function useReachyStatus(settings: RobotWorkbenchSettings): ReachyStatusR
               lastUpdatedAt: nextSnapshot.timestamp ?? new Date().toISOString(),
             })
           } catch {
-            setState((prev) => ({
-              ...prev,
-              connectionState: 'offline',
-              daemonBaseUrl,
-              error: 'Received invalid Reachy state payload',
-            }))
+            setOfflineState('Received invalid Reachy state payload', false)
           }
         }
 
         socket.onerror = () => {
           if (cancelled) return
-          setState((prev) => ({
-            ...prev,
-            connectionState: 'offline',
-            daemonBaseUrl,
-            error: prev.error ?? `Unable to reach Reachy daemon at ${daemonBaseUrl}`,
-          }))
+          setOfflineState(`Unable to reach Reachy daemon at ${daemonBaseUrl}`)
         }
 
         socket.onclose = () => {
           if (cancelled) return
 
-          setState((prev) => ({
-            ...prev,
-            connectionState: 'offline',
-            daemonBaseUrl,
-            error: prev.error ?? 'Last stream disconnected',
-          }))
+          setOfflineState('Last stream disconnected')
 
           reconnectTimerRef.current = window.setTimeout(() => {
             reconnectTimerRef.current = null
@@ -144,12 +162,7 @@ export function useReachyStatus(settings: RobotWorkbenchSettings): ReachyStatusR
           }, RECONNECT_DELAY_MS)
         }
       } catch {
-        setState((prev) => ({
-          ...prev,
-          connectionState: 'offline',
-          daemonBaseUrl,
-          error: `Unable to reach Reachy daemon at ${daemonBaseUrl}`,
-        }))
+        setOfflineState(`Unable to reach Reachy daemon at ${daemonBaseUrl}`, false)
       }
     }
 

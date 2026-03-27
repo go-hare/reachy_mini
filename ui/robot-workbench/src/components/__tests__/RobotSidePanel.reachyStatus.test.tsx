@@ -50,6 +50,7 @@ if (typeof document !== 'undefined') describe('ReachyStatusPanel live status', (
   })
 
   afterEach(() => {
+    vi.useRealTimers()
     vi.unstubAllGlobals()
     vi.clearAllMocks()
   })
@@ -136,5 +137,37 @@ if (typeof document !== 'undefined') describe('ReachyStatusPanel live status', (
     })
 
     expect(screen.getByText('Last stream disconnected')).toBeInTheDocument()
+  })
+
+  it('keeps the offline UI stable while reconnect retries are scheduled', async () => {
+    vi.useFakeTimers()
+
+    settingsMock.useSettings.mockReturnValue({
+      settings: {
+        robot_settings: {
+          live_status_enabled: true,
+          daemon_base_url: 'http://reachy-mini.local:8000',
+        },
+      },
+    })
+
+    render(<ReachyStatusPanel />)
+
+    await act(async () => {
+      MockWebSocket.instances[0]?.emitClose()
+    })
+
+    expect(screen.getByText('Offline')).toBeInTheDocument()
+    expect(screen.getByText('Last stream disconnected')).toBeInTheDocument()
+
+    await act(async () => {
+      vi.advanceTimersByTime(2_000)
+    })
+
+    expect(MockWebSocket.instances).toHaveLength(2)
+    expect(screen.getByText('Offline')).toBeInTheDocument()
+    expect(screen.getByText('Last stream disconnected')).toBeInTheDocument()
+    expect(screen.queryByText('Connecting')).not.toBeInTheDocument()
+
   })
 })

@@ -176,11 +176,23 @@ fn sanitize_robot_daemon_base_url(value: &str) -> String {
     }
 }
 
+fn deserialize_robot_daemon_base_url<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw =
+        Option::<String>::deserialize(deserializer)?.unwrap_or_else(default_robot_daemon_base_url);
+    Ok(sanitize_robot_daemon_base_url(&raw))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RobotSettings {
     #[serde(default = "default_robot_live_status_enabled")]
     pub live_status_enabled: bool,
-    #[serde(default = "default_robot_daemon_base_url")]
+    #[serde(
+        default = "default_robot_daemon_base_url",
+        deserialize_with = "deserialize_robot_daemon_base_url"
+    )]
     pub daemon_base_url: String,
 }
 

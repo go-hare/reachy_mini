@@ -14,7 +14,7 @@
 
 本文档已按当前仓库实现同步到：
 
-- 2026-03-27
+- 2026-03-28
 
 配套的阶段性执行文档见：
 
@@ -761,27 +761,31 @@ profile 不再是旧 conversation 的提示词目录，而是新 Agent 的完整
 
 换句话说，外显工具不应继续作为 `kernel` 的默认工具集混入同一决策平面。
 
-在当前代码现实里，截至 2026-03-27：
+在当前代码现实里，截至 2026-03-28：
 
-- 系统工具仍然主要通过 `runtime/tool_loader.py` 合并后交给 `BrainKernel`
-- Reachy 机器人工具当前第一版也仍然挂在这一路上
+- `runtime/tool_loader.py` 已经拆成 `kernel_system_tools`、`front_tools`、`profile_tools`
+- `RuntimeScheduler` 当前会把 `front_tools` 交给 `FrontService`，把 `kernel_tools` 交给 `BrainKernel`
+- Reachy 的外显工具主链路已经不再默认挂在 `kernel` 决策平面，而是开始由 `front` 持有并通过 runtime/coordinator 执行
 
 这意味着：
 
-- “外显工具归 `front`”已经成为新的架构决策
-- 但代码上还没有完成这一步职责拆分
+- “外显工具归 `front`”已经不只是架构决策，而是当前主链路现实
+- 当前剩余差异不再是“工具归属错位”，而主要是：
+  - 正常对话时，`front` LLM 还不会像上游 realtime agent 一样自由自动 function-call 外显工具
+  - idle 创意动作范围当前仍主要收口为 `move_head / do_nothing`
 
-因此，后续改造目标不是“继续往 `kernel` 里加更多外显工具”，而是把这批工具从 `kernel` 侧转移到 `front` 侧。
+因此，后续改造目标不是“继续往 `kernel` 里加更多外显工具”，而是继续增强 `front` 的自由决策深度，并只在必要处保留规则化收口。
 
-运行时加载顺序中与 `kernel` 相关的部分应按下面模型固定：
+运行时加载顺序中与 `kernel/front` 相关的部分应按下面模型固定：
 
 1. 先加载系统级工具
 2. 再加载当前 app 的 profile 私有工具
-3. 最终把两者合并后交给 `BrainKernel`
+3. 单独装配 `front` 持有的外显工具集合
+4. 将前两者合并后交给 `BrainKernel`
 
 这里的重点不是继续兼容旧 `tools.txt`，而是让新 runtime 直接读取目录。
 
-截至 2026-03-27，当前实现已经有第一版落地：
+截至 2026-03-28，当前实现已经有第一版落地：
 
 - `src/reachy_mini/runtime/tool_loader.py`
   负责合并系统工具与 profile 工具
@@ -1562,7 +1566,6 @@ profile 不再是旧 conversation 的提示词目录，而是新 Agent 的完整
 16. “原版能力对齐”的主目标是补齐 `front` 的外显工作能力，而不是继续扩张 `kernel`。
 
 这就是本项目后续改造的统一基线。
-
 
 
 

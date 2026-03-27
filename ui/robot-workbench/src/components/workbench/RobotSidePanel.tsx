@@ -46,7 +46,7 @@ function RobotPanelCard({
             <p className="mt-1 text-xs leading-5 text-muted-foreground">{description}</p>
           </div>
           <span
-            className={`inline-flex shrink-0 items-center rounded-full border px-2 py-1 text-[10px] font-medium uppercase tracking-[0.1em] ${statusClassName}`}
+            className={`inline-flex min-w-[88px] shrink-0 items-center justify-center rounded-full border px-2 py-1 text-[10px] font-medium uppercase tracking-[0.1em] ${statusClassName}`}
           >
             {status}
           </span>
