@@ -1,0 +1,12 @@
+[package]
+name = "robot-ui"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+codex-arg0 = { path = "../codex-rs/arg0" }
+codex-core = { path = "../codex-rs/core" }
+codex-tui-app-server = { path = "../codex-rs/tui_app_server", default-features = false }
+codex-utils-cli = { path = "../codex-rs/utils/cli" }

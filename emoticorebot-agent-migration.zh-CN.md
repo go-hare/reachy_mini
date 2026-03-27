@@ -12,6 +12,10 @@
 
 本文档是迁移设计文档，不是最终实现代码。
 
+本文档已按当前仓库实现同步到：
+
+- 2026-03-27
+
 配套的阶段性执行文档见：
 
 - `emoticorebot-agent-migration-stages.zh-CN.md`
@@ -26,7 +30,10 @@
 - `src/reachy_mini/runtime/`
 - `src/reachy_mini/core/`
 
-其中当前代码中的 `agent_runtime/` 与 `agent_core/` 视为过渡命名，目标统一收口到 `runtime/` 与 `core/`。
+其中：
+
+- 早期讨论中的 `agent_runtime/` 与 `agent_core/` 仅是过渡命名
+- 当前仓库代码已经实际收口到 `runtime/` 与 `core/`
 
 ## 2. 结论先行
 
@@ -38,17 +45,37 @@
 2. 删除或降级旧 agent 主流程，不再以 `OpenAI realtime + 旧 conversation profile 配置` 作为主脑。
 3. 将 `emoticorebot` 的 `front + runtime + brain_kernel + memory + affect + companion` 引入当前仓库。
 4. 复用旧 conversation app 中已经验证过的机器人动作能力、工具能力和人物设定素材。
-5. 用 `emoticorebot` 生成的 `surface_state / reply / tool call` 驱动 Reachy Mini 原有动作接口。
+5. 将 `front` 升级为真正的外显层，而不是简单文案包装层。
+6. 用 `emoticorebot` 生成的 `surface_state / reply / tool call` 驱动 Reachy Mini 原有动作接口。
 
 一句话总结：
 
 `Reachy Mini 继续做身体，emoticorebot 接管大脑。`
 
+进一步收口后的产品口径是：
+
+- `UI`
+  负责 app 创建、配置、运行壳和机器人模拟
+- `front`
+  负责外显复杂任务，是“外显大脑”或“外显导演层”
+- `kernel`
+  负责 Codex 风格的命令、工具、run 生命周期和多任务调度，是“任务大脑”
+- `robot runtime`
+  负责执行协调、真机驱动与模拟驱动，把 `front` / `kernel` 的结果稳定落到身体
+
+需要明确：
+
+- `UI` 不是 `front`
+- `front` 不是 `kernel`
+- `kernel` 也不是身体执行层
+
+也就是说，这次要对齐的“原版能力”，核心并不是更强的任务求解，而是更强的 `front` 外显编排能力。
+
 ## 3. 当前现状分析
 
 ### 3.1 当前仓库的核心职责
 
-当前仓库 `/Users/apple/work-py/reachy_mini` 主要是 Reachy Mini SDK 和运行底座，核心在：
+当前仓库 `D:/work/py/reachy_mini` 主要是 Reachy Mini SDK 和运行底座，核心在：
 
 - `src/reachy_mini/reachy_mini.py`
 - `src/reachy_mini/daemon/`
@@ -69,21 +96,22 @@
 
 ### 3.2 当前仓库中和旧 Agent 最接近的部分
 
-当前仓库中和旧 conversation agent 最相关的遗留代码曾经主要有：
+当前仓库中和旧 conversation agent 最相关、也是这次迁移的主要承接点，当前主要有：
 
 - `src/reachy_mini/apps/app.py`
-- 旧 `src/reachy_mini/apps/fork_conversation.py`
-- 旧 `src/reachy_mini/apps/templates/fork_conversation/`
+- `src/reachy_mini/runtime/main.py`
+- `src/reachy_mini/runtime/project.py`
+- `src/reachy_mini/runtime/profile_loader.py`
+- `src/reachy_mini/runtime/tool_loader.py`
 
-这些代码的职责不是实现完整 Agent，而是：
+其中：
 
-- 创建 app
-- fork 外部 `reachy_mini_conversation_app`
-- 生成 profile / tools / README / static 页面
+- 旧的 `fork_conversation` 入口和模板目录已经从仓库中删除
+- `reachy-mini-agent create` 现在直接生成新的 app 项目目录
+- `reachy-mini-agent agent` 与 `reachy-mini-agent web` 已作为新的 resident runtime 入口存在
+- `apps/app.py` 当前除了 app 生命周期外，也已经承担 resident runtime、WebSocket 和运行时工具上下文接线
 
-其中旧的 `fork_conversation` 入口和模板目录现在已经从仓库中删除。
-
-也就是说，当前仓库并没有一个完整、可直接替换的旧 Agent 内核。旧脑子主要存在于外部 conversation app 仓库中。
+也就是说，当前仓库已经不只是“删掉旧入口”，而是已经有了一版新的 Agent 运行主路径。旧脑子主要仍存在于外部 conversation app 仓库中，但当前仓库已具备替换主脑所需的基本骨架。
 
 ### 3.3 旧 conversation app 的能力边界
 
@@ -135,7 +163,73 @@
 
 这些都应作为新大脑可调用的能力层继续存在。
 
-### 4.3 `profiles/<name>/` 升级为用户创建的 App 项目目录
+### 4.3 `front` 与 `kernel` 的职责重新定义
+
+这次讨论已经进一步明确：
+
+- `front` 不是简单的文本润色层
+- `front` 也不是只能做“轻量回复”
+- `kernel` 也不是唯一会做复杂工作的层
+
+真正的职责划分应改为：
+
+- `front`
+  负责外显复杂任务
+- `kernel`
+  负责内置处理复杂任务
+
+其中：
+
+- `front` 的复杂任务包括：
+  - 倾听态、回复态、收束态、待机态编排
+  - 情绪表达与动作选择
+  - 说话时机与动作时机对齐
+  - 视线、头部、天线、呼吸感、陪伴感等外显策略
+  - 外显类工具的选择与调用
+- `kernel` 的复杂任务包括：
+  - 任务分解
+  - 复杂推理
+  - 文件、系统、工作区、外部服务等任务工具调用
+  - 记忆写入、读取和长期状态维护
+
+这一点非常重要：
+
+- 我们不是要把系统改成“front 简单、kernel 复杂”
+- 而是要改成“front 管外显复杂性，kernel 管任务复杂性”
+
+### 4.4 外显工具归属到 `front`
+
+关于工具归属，新的架构决策已经明确：
+
+- 外显类工具归 `front`
+- 任务类工具归 `kernel`
+
+这里的“外显类工具”包括但不限于：
+
+- `move_head`
+- `play_emotion`
+- `dance`
+- `stop_emotion`
+- `stop_dance`
+- `head_tracking`
+- `camera`
+- 未来用于 listening / replying / idle / settling 编排的动作工具
+
+这里的“任务类工具”包括但不限于：
+
+- 文件读写
+- 工作区搜索
+- system / exec / mcp / web 等任务工具
+- profile 私有的任务型工具
+
+需要特别说明的是：
+
+- “工具放在哪一层”不是线程数问题
+- 即使当前只有一个会话线程，也依然应该按“外显决策权属于谁”来划分
+
+因此，单线程不构成把外显工具继续留在 `kernel` 的理由。
+
+### 4.5 `profiles/<name>/` 升级为用户创建的 App 项目目录
 
 改造后，profile 不再以旧的 `instructions.txt`、`tools.txt` 为主结构，而是统一采用 `profiles/<name>/` 目录来承载用户创建的 app 项目。
 
@@ -198,7 +292,7 @@
 - 旧系统中，profile 最终驱动的是 realtime 主流程
 - 改造后，profile loader 的输出改为接入 `emoticorebot`
 
-### 4.4 不保留双脑并行
+### 4.6 不保留双脑并行
 
 最终系统中不应长期存在：
 
@@ -252,15 +346,24 @@
 以下内容建议保留，但不再以旧主流程运行：
 
 - `moves.py`
-  作为机器人动作调度层保留
+  当前第一版已落到 `src/reachy_mini/runtime/moves.py`
 - `camera_worker.py`
-  作为视觉输入层保留
+  当前第一版已落到 `src/reachy_mini/runtime/camera_worker.py`
 - `tools/`
-  作为机器人能力工具层保留
+  当前第一版 Reachy 机器人工具已落到 `src/reachy_mini/runtime/tools/reachy_tools.py`
 - `profiles/`
-  升级为新 Agent 的 app 项目目录
+  已升级为新 Agent 的 app 项目目录
 - `prompts/`
-  保留可复用提示词素材
+  继续保留为 profile 私有提示素材目录
+
+此外，围绕这些能力的配套层当前也已经出现第一版：
+
+- `src/reachy_mini/runtime/audio/`
+  放置 speech reactive wobble 相关能力
+- `src/reachy_mini/runtime/vision/`
+  放置 head tracking / local vision 相关能力
+- `src/reachy_mini/runtime/dance_emotion_moves.py`
+  放置 emotion / dance 队列动作资产
 
 以下内容不应作为主干继续保留：
 
@@ -270,23 +373,40 @@
 
 ### 5.4 从 emoticorebot 迁入的核心模块
 
-建议迁入当前仓库的核心模块：
+当前已经以“整包迁入”或“按 Reachy 语义适配后迁入”的核心模块，主要有：
 
-- `emoticorebot/brain_kernel/`
-- `emoticorebot/runtime/`
-- `emoticorebot/front/`
-- `emoticorebot/affect/`
-- `emoticorebot/companion/`
-- `emoticorebot/providers/`
-- `emoticorebot/config/`
-- `emoticorebot/app/`
+- `src/reachy_mini/core/`
+  承接 `brain kernel / memory / run store / sleep agent` 相关核心能力
+- `src/reachy_mini/front/`
+  承接 front prompt / front service，以及后续要增强的外显导演能力
+- `src/reachy_mini/affect/`
+  承接 affect runtime
+- `src/reachy_mini/companion/`
+  承接 companion intent 与 surface expression
+- `src/reachy_mini/runtime/config.py`
+  承接运行时配置装配
+- `src/reachy_mini/runtime/model_factory.py`
+  承接模型构建与 provider 适配
+- `src/reachy_mini/runtime/main.py`
+  承接 `agent` / `web` 入口
+- `src/reachy_mini/runtime/scheduler.py`
+  承接 resident runtime 生命周期与 kernel 桥接
 
 建议按需迁入的模块：
 
 - `emoticorebot/tools/`
   仅保留当前项目需要的基础工具抽象和必要工具
-- `emoticorebot/cli/` 中的 `agent` 命令
-  作为文本级调试与运行入口迁入
+- `emoticorebot/cli/` 中的 `agent` 命令语义
+  当前已经以 `reachy-mini-agent agent` 的形式迁入
+
+当前尚未以原目录形态完整保留，但语义已部分吸收到当前仓库的内容：
+
+- `providers/`
+  已体现在 `runtime/model_factory.py` 等适配层中，而不是单独保留原目录
+- `config/`
+  已体现在 `runtime/config.py`
+- `app/`
+  已体现在 `apps/app.py`、`runtime/project.py`、生成模板和 resident runtime 接线中
 
 建议暂不迁入的模块：
 
@@ -301,103 +421,202 @@
 
 ## 6. 目标架构
 
-### 6.1 目标分层
+### 6.1 产品视角与运行时视角
 
-改造后系统分为四层：
+为了让产品口径更简单，同时不丢失实现边界，建议同时保留两套视角：
 
-1. Reachy 基础层
-   - 机器人连接
-   - daemon
-   - motion
-   - media
-   - io
+- 产品视角：
+  - `UI + front + kernel + robot runtime`
+- 运行时细化视角：
+  - `5` 个运行时层
+  - `1` 个横向配置面
 
-2. Reachy 能力层
-   - 旧 conversation app 中可复用的动作管理
-   - camera worker
-   - 机器人工具
+其中：
 
-3. emoticorebot 大脑层
-   - front
-   - runtime
-   - brain kernel
-   - memory
-   - affect
-   - companion
+- 产品视角适合对外表达、产品讨论和团队日常沟通
+- 运行时细化视角适合做真实的代码分层、事件流设计和执行链路设计
 
-4. 输出执行层
-   - 将 `surface_state` 映射到 Reachy 动作
-   - 将 `reply` 映射到音频/TTS
-   - 将脑子的工具调用映射到 Reachy 机器人能力
+先看产品视角。
 
-### 6.2 数据流
+建议的 `4` 个产品层如下：
+
+1. `UI`
+   - 负责 app 创建、配置、运行壳和会话展示
+   - 可以提供机器人模拟视图
+   - 不承担核心智能决策
+
+2. `front`
+   - 负责外显复杂任务
+   - 负责前台表达、陪伴感、情绪、倾听态/回复态/收束态/待机态编排
+   - 负责外显类工具的选择与调用
+
+3. `kernel`
+   - 负责内置处理复杂任务
+   - 负责 Codex 风格的命令、工具、run 生命周期和多任务调度
+   - 负责推理、记忆、任务拆解、任务工具调用、事实结果生成
+
+4. `robot runtime`
+   - 负责承接 `front` 与 `kernel` 的结果
+   - 负责执行协调、真机驱动和模拟驱动
+   - 负责把高层决策翻译为稳定的机器人执行动作
+
+再看运行时细化视角。
+
+建议的 `5` 个运行时层如下：
+
+1. 信息输入层
+   - 负责接入用户文本、语音转写、WebSocket 事件、相机/视觉输入、按钮/触摸、系统状态事件
+   - 只负责“把信息送进来”
+   - 不负责重决策
+
+2. `front` 外显层
+   - 负责外显复杂任务
+   - 负责前台表达、陪伴感、情绪、倾听态/回复态/收束态/待机态编排
+   - 负责外显类工具的选择与调用
+
+3. `kernel` 任务层
+   - 负责内置处理复杂任务
+   - 负责 Codex 风格的命令、工具、run 生命周期和多任务调度
+   - 负责推理、记忆、任务拆解、任务工具调用、事实结果生成
+
+4. 执行协调层
+   - 负责统一仲裁 `front`、`kernel`、实时音频、视觉、idle 状态
+   - 负责把高层决策翻译为稳定的执行命令
+   - 这里应承载 `runtime` 的协调能力，以及后续的 `EmbodimentCoordinator`、`surface_driver.py`、`speech_driver.py`
+
+5. 身体输出层
+   - 负责真正驱动 Reachy 身体
+   - 包括 `MovementManager`
+   - 包括 `HeadWobbler`
+   - 包括 `CameraWorker`
+   - 包括 Reachy SDK / motion / media / io / daemon 等底层执行能力
+
+横向配置面为：
+
+- App/Profile 配置面
+  - 负责定义 persona、front 风格、tool policy、memory、prompts、profile 私有工具
+  - 当前主要落在 `profiles/<name>/profiles/`
+  - 它不是运行时主链路中的一层，而是贯穿 `front`、`kernel`、协调层的配置输入面
+
+### 6.2 `front` / `kernel` 双脑分工
+
+为了避免再次回到“一个大脑同时管所有事情”的旧混合状态，需要把这两层明确成两种不同的复杂性中心：
+
+1. `front` 是外显大脑
+   - 负责“怎么表现”
+   - 决定这一轮是贴近、安静、提气、调皮还是专注
+   - 决定 listening / replying / settling / idle 的外显过渡
+   - 决定是否调用外显类工具，以及调用哪一个
+   - 核心目标是让机器人“像活着一样在场”
+
+2. `kernel` 是任务大脑
+   - 负责“怎么解决”
+   - 决定要不要查文件、跑工具、写记忆、拆任务、做规划
+   - 负责 Codex 风格的命令、工具、run 生命周期管理
+   - 负责多任务调度、任务状态推进和任务取消/收束
+   - 负责真实事实、真实结果和任务推进
+   - 核心目标是把问题处理对
+
+这也解释了为什么当前反复提到“原版能力”。
+
+本次对齐原版时，真正要补的是：
+
+- `front` 的工作能力
+
+而不是：
+
+- 再造一个更大的 `kernel`
+
+### 6.3 数据流
 
 目标数据流如下：
 
-1. 用户输入进入 `emoticorebot.runtime`
-2. `front` 先给出用户可感知的前台回复
-3. `brain_kernel` 进行真正的决策、工具调用、记忆写入
-4. `brain_kernel` 产出：
+1. 用户先通过 `UI`、语音、视觉、按钮或 WebSocket 进入系统
+2. 这些输入再进入“信息输入层”，被标准化成当前 runtime 可消费的事件
+3. App/Profile 配置面为 `front`、`kernel` 和协调层提供 persona、prompt、tool policy、memory 配置
+4. `front` 做外显判断，决定前台回复风格、外显状态和是否触发外显类工具
+5. `brain_kernel` 进行内置任务决策、任务工具调用、记忆写入，并负责 Codex 风格的命令/工具/run 生命周期推进
+6. `front` 与 `brain_kernel` 分别产出：
+   - `front`
+     - 外显回复
+     - 外显工具调用
+     - 外显状态切换
+   - `brain_kernel`
+     - 事实结果
+     - 任务结论
+     - 任务工具调用
+7. `robot runtime` 内部的执行协调层统一仲裁这些输出，并翻译为稳定的执行对象：
    - `reply`
    - `surface_state`
-   - tool 调用
-5. Reachy 输出执行层将其翻译为：
+   - 外显工具动作
+   - 任务工具结果
+8. 身体输出层最终将其落到 Reachy 身体或模拟体：
    - 头部动作
    - 天线动作
    - body yaw
    - 音频播放/TTS
    - 视觉工具与追踪能力
+9. 最终可由 `UI` 把会话状态、任务状态和机器人状态呈现出来
 
 ## 7. 推荐目录规划
 
-### 7.1 当前仓库中的新目录建议
+### 7.1 当前仓库中的目录现状
 
-建议在当前仓库内增加以下目录：
+截至 2026-03-27，下面这些目录已经实际存在并承担迁移主路径职责：
 
 - `src/reachy_mini/core/`
-  放置迁入的 `emoticorebot` 核心能力或适配后的大脑层
-- `src/reachy_mini/core/memory.py`
-- `src/reachy_mini/core/`
-  以及后续收口后的 kernel / memory / affect / companion / providers 等核心能力
-
-建议增加 Reachy 专属执行层目录：
-
+- `src/reachy_mini/front/`
+- `src/reachy_mini/affect/`
+- `src/reachy_mini/companion/`
 - `src/reachy_mini/runtime/`
-
-建议增加正式 profile 目录：
-
+- `src/reachy_mini/runtime/tools/`
 - `profiles/`
 
-其中建议放置：
+其中当前 `runtime/` 下已经实际存在的关键文件包括：
 
-- `surface_driver.py`
-- `speech_driver.py`
-- `robot_tools.py`
-- `legacy_assets.py`
 - `main.py`
+- `config.py`
+- `project.py`
+- `profile_loader.py`
+- `tool_loader.py`
+- `web.py`
+- `scheduler.py`
+- `moves.py`
+- `camera_worker.py`
+- `dance_emotion_moves.py`
+- `audio/`
+- `vision/`
+
+当前已经正式落地、并正在继续收口的 Reachy 输出执行层文件包括：
+
+- `src/reachy_mini/runtime/surface_driver.py`
+- `src/reachy_mini/runtime/speech_driver.py`
+- `src/reachy_mini/runtime/embodiment/coordinator.py`
 
 ### 7.2 旧 conversation app 资产建议归档方式
 
-建议将旧 conversation app 中复用资产放在单独目录，避免与新脑子混杂：
+从语义上说，旧 conversation app 中复用的资产仍然适合与新脑子分层管理。
+
+但截至当前实现：
+
+- `src/reachy_mini/legacy_conversation_assets/` 目录还没有真正建立
+- 第一版已迁入或重写的资产，当前直接落在 `src/reachy_mini/runtime/` 与 `src/reachy_mini/runtime/tools/`
+
+也就是说，当前仓库选择的是：
+
+- 先把“真的会被 resident runtime 用到的能力”直接接入主运行时
+- 暂时不额外建立一个纯归档目录
+
+如果后续要增强“原始 legacy 资产”和“现运行时资产”的语义隔离，再引入：
 
 - `src/reachy_mini/legacy_conversation_assets/`
 
-可包含：
-
-- `moves.py`
-- `camera_worker.py`
-- `prompts/`
-- `tools/`
-
-这样可以明确表达：
-
-- 这些内容仍被使用
-- 但它们不再是主脑，只是资产层
+会更合适。
 
 注意：
 
 - `profiles/` 不建议继续作为 legacy 资产归档目录
-- `profiles/` 应升级为当前系统的正式 app 项目目录，内部 profile 文件包位于 `profiles/<name>/profiles/`
+- `profiles/` 已升级为当前系统的正式 app 项目目录，内部 profile 文件包位于 `profiles/<name>/profiles/`
 
 ## 8. 旧资产如何接入新大脑
 
@@ -470,7 +689,28 @@ profile 不再是旧 conversation 的提示词目录，而是新 Agent 的完整
 - `profiles/<name>/profiles/tools/`
   是当前 app 自己增加的私有工具目录
 
-运行时加载顺序也应按这个模型固定：
+运行时加载顺序在目标架构下也应按两套职责分开：
+
+1. `kernel` 加载任务类系统工具
+2. `kernel` 加载当前 app 的 profile 私有任务工具
+3. `front` 单独持有外显类工具集合
+4. 最终由 runtime/coordinator 统一执行到机器人能力层
+
+换句话说，外显工具不应继续作为 `kernel` 的默认工具集混入同一决策平面。
+
+在当前代码现实里，截至 2026-03-27：
+
+- 系统工具仍然主要通过 `runtime/tool_loader.py` 合并后交给 `BrainKernel`
+- Reachy 机器人工具当前第一版也仍然挂在这一路上
+
+这意味着：
+
+- “外显工具归 `front`”已经成为新的架构决策
+- 但代码上还没有完成这一步职责拆分
+
+因此，后续改造目标不是“继续往 `kernel` 里加更多外显工具”，而是把这批工具从 `kernel` 侧转移到 `front` 侧。
+
+运行时加载顺序中与 `kernel` 相关的部分应按下面模型固定：
 
 1. 先加载系统级工具
 2. 再加载当前 app 的 profile 私有工具
@@ -478,7 +718,7 @@ profile 不再是旧 conversation 的提示词目录，而是新 Agent 的完整
 
 这里的重点不是继续兼容旧 `tools.txt`，而是让新 runtime 直接读取目录。
 
-截至 2026-03-26，当前实现已经有第一版落地：
+截至 2026-03-27，当前实现已经有第一版落地：
 
 - `src/reachy_mini/runtime/tool_loader.py`
   负责合并系统工具与 profile 工具
@@ -487,7 +727,33 @@ profile 不再是旧 conversation 的提示词目录，而是新 Agent 的完整
 - `profiles/<name>/profiles/tools/`
   已作为 profile 私有工具的标准目录
 
-当前默认已接入的系统工具是工作区文件工具，具备真实文件读写能力，不再只是模型口头声称“已经创建文件”。
+当前默认已接入的系统工具，已经不只是工作区文件工具，还包括第一版 Reachy 机器人工具：
+
+- 工作区文件工具：
+  `read_file`、`write_file`、`edit_file`、`list_dir`、`search_files` 等
+- Reachy 机器人工具：
+  `move_head`
+  `do_nothing`
+  `head_tracking`
+  `camera`
+  `play_emotion`
+  `dance`
+  `stop_emotion`
+  `stop_dance`
+
+也就是说，当前 runtime 已经具备：
+
+- 真实文件读写能力
+- 第一版机器人动作/视觉能力工具接入能力
+
+但从新决策看，后续需要把这些 Reachy 机器人工具进一步细分：
+
+- 任务型机器人能力
+  如果未来存在，应继续归 `kernel`
+- 外显型机器人能力
+  应迁到 `front`
+
+当前第一版 Reachy 机器人工具中，绝大多数都更接近“外显型机器人能力”。
 
 #### 8.3.1 旧 emoticorebot 系统工具的去向
 
@@ -568,6 +834,12 @@ profile 不再是旧 conversation 的提示词目录，而是新 Agent 的完整
 2. 再迁移上面那批机器人能力工具
 3. 最后再决定是否需要重建后台工具管理层
 
+当前状态是：
+
+1. 系统文件工具：已完成第一版
+2. 机器人能力工具：已完成第一版接入
+3. 后台工具管理层：尚未接入，仍建议后置
+
 不建议一开始就迁：
 
 - `background_tool_manager.py`
@@ -592,6 +864,10 @@ profile 不再是旧 conversation 的提示词目录，而是新 Agent 的完整
 
 `moves.py` 建议完整保留，原因是它承载的是“机器人怎么动”，不是“机器人怎么想”。
 
+当前第一版代码已经直接位于：
+
+- `src/reachy_mini/runtime/moves.py`
+
 建议将其定位为：
 
 - 新大脑的动作编排引擎
@@ -601,6 +877,10 @@ profile 不再是旧 conversation 的提示词目录，而是新 Agent 的完整
 ### 8.5 camera_worker 的处理方式
 
 `camera_worker.py` 建议保留。
+
+当前第一版代码已经直接位于：
+
+- `src/reachy_mini/runtime/camera_worker.py`
 
 它在新系统中的角色是：
 
@@ -613,6 +893,25 @@ profile 不再是旧 conversation 的提示词目录，而是新 Agent 的完整
 ## 9. surface_state 到 Reachy 动作的映射方案
 
 这是本次改造的核心执行层。
+
+需要补充的关键决策是：
+
+- `surface_state` 仍然保留
+- 但它不再被视为原版能力的全部来源
+
+原版真正让人感觉“活着”的地方，不只是有一个抽象 `surface_state`，而是：
+
+- `front` 侧在倾听、说话、待机、情绪表达时有持续外显编排能力
+- 这些外显决策再通过动作层统一落到机器人身体上
+
+因此，`surface_state` 更适合作为：
+
+- 外显基线状态
+- 连续姿态和呼吸感的输入
+
+而不应成为：
+
+- 唯一的外显决策来源
 
 ### 9.1 输入来源
 
@@ -700,6 +999,31 @@ profile 不再是旧 conversation 的提示词目录，而是新 Agent 的完整
 - 转换为具体动作命令
 - 调用老的 `moves.py` 或 `reachy_mini.py` 接口
 
+当前实现状态：
+
+- `RuntimeScheduler` 已经能构建并持续推送 `surface_state`
+- `ReachyMiniApp` 已经支持通过 `surface_state_handler` 和 `/ws/agent` 转发这些状态
+- `surface_driver.py` 第一版已经建立，并已将 `surface_state` 映射到 `MovementManager` 的 `set_listening()` / `mark_activity()`
+- `surface_driver.py` 当前带有一层极薄的 `thread_id` 状态收束，避免多会话时单个 `idle` 直接覆盖仍在进行中的身体状态
+- `ReachyMiniApp` 的 WebSocket 与 `app.chat()` 已统一走同一条身体状态入口
+- `speech_driver.py` 与 `EmbodimentCoordinator` 第一版已经建立，开始把 `HeadWobbler` 从 app 细节提升为执行协调层能力
+- `speech_driver.py` 现在已开始正式接管 `HeadWobbler` 生命周期，并在 `replying` 阶段按音频新鲜度自动回收残留 speech motion
+- `move_head / play_emotion / dance / head_tracking / stop_*` 等外显工具现在已开始优先通过 `EmbodimentCoordinator` 落到身体执行层
+- coordinator 已具备第一条仲裁规则：显式动作开始时暂时压住 head tracking，并清理残留 speech motion，动作窗口结束后恢复期望 tracking
+- coordinator 已补入第二条仲裁规则：显式动作优先级暂定为 `move_head > play_emotion > dance`，高优先级可清队列抢占低优先级，低优先级在强动作窗口内会被延后
+- 但更完整的 coordinator 仲裁、音频主链路接入与动作编排仍未完成
+
+补充建议：
+
+- `surface_driver.py`
+  负责连续外显状态
+- `front` 外显工具
+  负责显式动作触发
+- `runtime/coordinator`
+  负责把两者统一仲裁后送到 `MovementManager`
+
+这比单纯依赖 `surface_state -> 动作映射` 更接近原版效果。
+
 ## 10. reply 到音频输出的映射方案
 
 ### 10.1 保留原有音频能力
@@ -714,6 +1038,13 @@ profile 不再是旧 conversation 的提示词目录，而是新 Agent 的完整
 2. 回复文本传给音频输出层
 3. 音频输出层使用旧项目的音频/语音机制播放
 4. 播放期间可触发头部和天线的 speech reactive wobble
+
+当前实现状态：
+
+- 运行时已经有 `HeadWobbler`、`speech_tapper` 等音频动作辅助能力
+- `ReachyMiniApp` 也已经暴露了音频 delta 喂给 wobble 的 helper
+- 但“最终 reply 文本 -> TTS/音频播放”这条正式输出链路仍未完成
+- 因此当前音频相关实现更接近“动作联动辅助层”，还不是完整的语音输出层
 
 ### 10.3 不建议保留的旧部分
 
@@ -837,6 +1168,7 @@ profile 不再是旧 conversation 的提示词目录，而是新 Agent 的完整
 - app 文件包已真正驱动 `front`
 - 文本回复链路已经接通 `front`
 - `agent` 命令行入口已可用于文本级启动和验证
+- `web` 命令行入口已可用于无硬件浏览器验证
 
 当前第一版实现已经落到：
 
@@ -853,6 +1185,7 @@ profile 不再是旧 conversation 的提示词目录，而是新 Agent 的完整
 
 - `reachy-mini-agent create <app_name>`
 - `reachy-mini-agent agent <app_name|app_path>`
+- `reachy-mini-agent web <app_name|app_path>`
 
 ### 阶段 2：再接入 kernel
 
@@ -866,7 +1199,7 @@ profile 不再是旧 conversation 的提示词目录，而是新 Agent 的完整
 - `kernel` 已接入主文本链路
 - 旧 realtime 主流程不再承担主脑职责
 
-当前 2026-03-26 的阶段性结果：
+截至 2026-03-27 的阶段性结果：
 
 - 已将 `emoticorebot` 的 standalone 内核代码直接迁入当前仓库：
   - `src/reachy_mini/core/`
@@ -887,6 +1220,22 @@ profile 不再是旧 conversation 的提示词目录，而是新 Agent 的完整
 
 - 机器人能根据新脑子进行自然动作反馈
 - 原有动作控制层继续工作
+
+当前状态补充：
+
+- `surface_state` 已经能产出
+- Reachy 机器人工具已经接入第一版
+- `MovementManager`、`CameraWorker`、`HeadWobbler` 等运行时上下文已经可注入 resident runtime
+- `surface_driver.py` 第一版已经建立，并已接通 `surface_state -> 身体基线状态`
+- `speech_driver.py` 第一版已经建立，并已把音频驱动入口正式收口
+- `EmbodimentCoordinator` 第一版已经建立，并已开始统一承接身体执行入口
+- `front` 已正式持有外显类工具
+- 外显类工具与任务类工具已完成第一版职责拆分
+- 外显类工具已开始优先通过 coordinator 落到身体执行层
+- coordinator 已开始处理动作 / tracking / speech 的冲突关系
+- coordinator 已补入显式动作优先级与抢占规则，当前优先级暂定为 `move_head > play_emotion > dance`
+- 但统一 coordinator 的完整仲裁策略和动作编排链仍未完成
+- 因此这一阶段仍然只算“已完成部分底座和接线”，还没有完全收口
 
 ### 阶段 4：迁移旧 conversation 资产
 
@@ -923,35 +1272,51 @@ profile 不再是旧 conversation 的提示词目录，而是新 Agent 的完整
   - 升级 Python 版本
   - 引入新脑子需要的依赖
 - `src/reachy_mini/apps/app.py`
-  - 删除旧的 `conversation/legacy-conversation` 模板入口
-  - 删除 `check` / `publish` 子命令，以及相关 `--publish`、`--private` 等发布参数
+  - 当前已完成 resident runtime / WebSocket / tool context 接线
+  - 后续重点应放在接入正式输出执行层，而不是旧 conversation 分支清理
 - `docs/source/index.mdx`
-  - 后续重写 AI/Conversation 说明
+  - 仍需继续重写首页口径，降低 legacy conversation / Hugging Face 发布流在主路径中的权重
 - `docs/source/SDK/integration.md`
-  - 后续重写 AI 集成说明
+  - 当前已完成第一版 resident runtime 文档重写，后续以增量补充为主
+- `docs/source/troubleshooting.md`
+  - 仍保留部分 legacy conversation / OpenAI realtime 说明，后续需要继续收口
 
-### 14.2 当前仓库中建议新增的文件
+### 14.2 当前仓库中已新增与仍待新增的文件
+
+当前已经存在：
 
 - `src/reachy_mini/runtime/main.py`
-- `src/reachy_mini/runtime/surface_driver.py`
-- `src/reachy_mini/runtime/speech_driver.py`
 - `src/reachy_mini/runtime/profile_loader.py`
 - `src/reachy_mini/runtime/tool_loader.py`
 - `src/reachy_mini/runtime/web.py`
 
-### 14.3 当前仓库中建议新增的目录
+在本轮迁移中已经新增：
+
+- `src/reachy_mini/runtime/surface_driver.py`
+- `src/reachy_mini/runtime/speech_driver.py`
+- `src/reachy_mini/runtime/embodiment/coordinator.py`
+
+### 14.3 当前仓库中已新增与仍待新增的目录
+
+当前已经存在：
 
 - `src/reachy_mini/core/`
-- `src/reachy_mini/legacy_conversation_assets/`
 - `profiles/`
 - `src/reachy_mini/runtime/tools/`
 
+当前仍待评估是否新增：
+
+- `src/reachy_mini/legacy_conversation_assets/`
+
 ### 14.4 旧资产迁入后建议位置
 
-- 旧 `moves.py` -> `src/reachy_mini/legacy_conversation_assets/moves.py`
-- 旧 `camera_worker.py` -> `src/reachy_mini/legacy_conversation_assets/camera_worker.py`
-- 旧 conversation app 原始 `tools/` 资产归档 -> `src/reachy_mini/legacy_conversation_assets/tools/`
-- 系统级共享工具与迁入的 Reachy 机器人工具 -> `src/reachy_mini/runtime/tools/`
+- 当前第一版 `moves.py` -> `src/reachy_mini/runtime/moves.py`
+- 当前第一版 `camera_worker.py` -> `src/reachy_mini/runtime/camera_worker.py`
+- 当前系统级共享工具与 Reachy 机器人工具 -> `src/reachy_mini/runtime/tools/`
+- 如果后续需要保存“未改写的原始 legacy 资产”，再考虑新增：
+  - `src/reachy_mini/legacy_conversation_assets/moves.py`
+  - `src/reachy_mini/legacy_conversation_assets/camera_worker.py`
+  - `src/reachy_mini/legacy_conversation_assets/tools/`
 - 旧 `profiles/` 内容 -> 重构为 `profiles/<name>/profiles/AGENTS.md`、`USER.md`、`SOUL.md`、`TOOLS.md`、`FRONT.md`、`config.jsonl`
 - profile 级记忆数据 -> `profiles/<name>/profiles/memory/`
 - profile 级 skills -> `profiles/<name>/profiles/skills/`
@@ -1016,6 +1381,23 @@ profile 不再是旧 conversation 的提示词目录，而是新 Agent 的完整
 - 工具调用适配层
 - profile loader
 - memory 写入是否正常
+
+截至当前仓库，已经存在的相关测试主要包括：
+
+- `tests/unit_tests/test_profile_loader.py`
+- `tests/unit_tests/test_runtime_tool_loader.py`
+- `tests/unit_tests/test_runtime_reachy_tools.py`
+- `tests/unit_tests/test_app_runtime_tool_context.py`
+- `tests/unit_tests/test_front_agent_runner.py`
+- `tests/unit_tests/test_kernel_agent_runner.py`
+- `tests/unit_tests/test_resident_runtime_host.py`
+- `tests/unit_tests/test_runtime_head_wobbler.py`
+
+当前仍然明显缺口较大的测试区域是：
+
+- `surface_driver.py` 对状态节流、去抖和映射逻辑的测试
+- `speech_driver.py` 对 reply 音频输出链路的测试
+- 真正面向动作执行层的端到端行为测试
 
 ### 16.2 集成测试
 
@@ -1091,6 +1473,10 @@ profile 不再是旧 conversation 的提示词目录，而是新 Agent 的完整
 10. `profiles/<name>/profiles/tools/` 继续保留给 app 私有扩展工具，不承载主运行时内置工具。
 11. 旧 conversation app 的机器人能力工具按当前 runtime 重写接入，不直接复用旧 `core_tools.py` 和旧后台工具编排层。
 12. `config.jsonl` 的模型配置统一使用 `api_key`，不再使用 `api_key_env`。
+13. `front` 被正式定义为外显大脑，不再视为简单文本包装层。
+14. `kernel` 被正式定义为任务大脑，不再承载默认的外显工具决策。
+15. 外显类工具应逐步从当前 `kernel` 侧加载模型迁移到 `front` 侧。
+16. “原版能力对齐”的主目标是补齐 `front` 的外显工作能力，而不是继续扩张 `kernel`。
 
 这就是本项目后续改造的统一基线。
 

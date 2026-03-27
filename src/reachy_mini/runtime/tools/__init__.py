@@ -27,14 +27,13 @@ from .reachy_tools import (
 )
 
 
-def build_system_tools(
+def build_kernel_system_tools(
     workspace_root: Path,
     *,
     runtime_context: ReachyToolContext | None = None,
 ) -> list[object]:
-    """Build the default system tool instances for one app workspace."""
+    """Build the task-side system tools visible to the kernel."""
     workspace = workspace_root.resolve()
-    context = runtime_context or ReachyToolContext()
     return [
         ReadFileTool(workspace=workspace, allowed_dir=workspace),
         WriteFileTool(workspace=workspace, allowed_dir=workspace),
@@ -44,6 +43,16 @@ def build_system_tools(
         InsertLinesTool(workspace=workspace, allowed_dir=workspace),
         DeleteLinesTool(workspace=workspace, allowed_dir=workspace),
         ReplaceLinesTool(workspace=workspace, allowed_dir=workspace),
+    ]
+
+
+def build_front_system_tools(
+    *,
+    runtime_context: ReachyToolContext | None = None,
+) -> list[object]:
+    """Build the expressive tool set owned by the front layer."""
+    context = runtime_context or ReachyToolContext()
+    return [
         MoveHeadTool(context=context),
         DoNothingTool(context=context),
         HeadTrackingTool(context=context),
@@ -52,6 +61,21 @@ def build_system_tools(
         DanceTool(context=context),
         StopEmotionTool(context=context),
         StopDanceTool(context=context),
+    ]
+
+
+def build_system_tools(
+    workspace_root: Path,
+    *,
+    runtime_context: ReachyToolContext | None = None,
+) -> list[object]:
+    """Build the full built-in tool set for compatibility with older callers."""
+    return [
+        *build_kernel_system_tools(
+            workspace_root,
+            runtime_context=runtime_context,
+        ),
+        *build_front_system_tools(runtime_context=runtime_context),
     ]
 
 
@@ -65,5 +89,7 @@ __all__ = [
     "ReachyToolContext",
     "StopDanceTool",
     "StopEmotionTool",
+    "build_front_system_tools",
+    "build_kernel_system_tools",
     "build_system_tools",
 ]

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from fastapi.testclient import TestClient
 
 from reachy_mini import ReachyMiniApp
+from reachy_mini.apps.app import ChatRequest
 from reachy_mini.runtime.scheduler import FrontOutputPacket
 
 
@@ -57,6 +58,35 @@ class FakeRuntime:
                 text="hint",
             ),
             FrontOutputPacket(
+                type="front_decision",
+                thread_id=thread_id,
+                turn_id="turn-1",
+                payload={
+                    "signal_name": "idle_entered",
+                    "lifecycle_state": "idle",
+                    "tool_calls": [
+                        {
+                            "tool_name": "do_nothing",
+                            "arguments": {"reason": "idle hold"},
+                            "reason": "idle hold",
+                        }
+                    ],
+                },
+            ),
+            FrontOutputPacket(
+                type="front_tool_result",
+                thread_id=thread_id,
+                turn_id="turn-1",
+                payload={
+                    "signal_name": "idle_entered",
+                    "tool_name": "do_nothing",
+                    "arguments": {"reason": "idle hold"},
+                    "reason": "idle hold",
+                    "success": True,
+                    "result": "Staying still: idle hold",
+                },
+            ),
+            FrontOutputPacket(
                 type="front_final_done",
                 thread_id=thread_id,
                 turn_id="turn-1",
@@ -73,6 +103,30 @@ class FakeRuntime:
 
     def get_thread_surface_state(self, thread_id: str) -> dict[str, str]:
         return {"thread_id": thread_id, "phase": "idle"}
+
+    def get_thread_front_decision(self, thread_id: str) -> dict[str, object]:
+        return {
+            "thread_id": thread_id,
+            "signal_name": "idle_entered",
+            "lifecycle_state": "idle",
+            "tool_calls": [
+                {
+                    "tool_name": "do_nothing",
+                    "arguments": {"reason": "idle hold"},
+                    "reason": "idle hold",
+                }
+            ],
+        }
+
+
+class FakeSurfaceDriver:
+    """Collect runtime surface states forwarded by the app host."""
+
+    def __init__(self) -> None:
+        self.states: list[dict[str, str]] = []
+
+    def apply_state(self, state: dict[str, str]) -> None:
+        self.states.append(dict(state))
 
 
 class ConcurrentFakeRuntime(FakeRuntime):
@@ -183,6 +237,8 @@ def test_reachy_mini_app_streams_resident_runtime_over_websocket(tmp_path: Path)
     try:
         assert app.wait_until_runtime_ready(timeout=2.0)
         assert app.settings_app is not None
+        surface_driver = FakeSurfaceDriver()
+        app.runtime_tool_context = SimpleNamespace(surface_driver=surface_driver)
 
         with TestClient(app.settings_app) as client:
             with client.websocket_connect("/ws/agent") as websocket:
@@ -198,15 +254,23 @@ def test_reachy_mini_app_streams_resident_runtime_over_websocket(tmp_path: Path)
                     }
                 )
 
-                events = [websocket.receive_json() for _ in range(3)]
+                events = [websocket.receive_json() for _ in range(5)]
                 event_types = [event["type"] for event in events]
 
                 assert "surface_state" in event_types
                 assert "front_hint_done" in event_types
+                assert "front_decision" in event_types
+                assert "front_tool_result" in event_types
                 assert "front_final_done" in event_types
 
                 hint_event = next(
                     event for event in events if event["type"] == "front_hint_done"
+                )
+                decision_event = next(
+                    event for event in events if event["type"] == "front_decision"
+                )
+                tool_event = next(
+                    event for event in events if event["type"] == "front_tool_result"
                 )
                 final_event = next(
                     event for event in events if event["type"] == "front_final_done"
@@ -214,9 +278,56 @@ def test_reachy_mini_app_streams_resident_runtime_over_websocket(tmp_path: Path)
 
                 assert hint_event["thread_id"] == "app:test"
                 assert hint_event["text"] == "hint"
+                assert decision_event["payload"]["signal_name"] == "idle_entered"
+                assert decision_event["payload"]["tool_calls"][0]["tool_name"] == "do_nothing"
+                assert tool_event["payload"]["tool_name"] == "do_nothing"
+                assert tool_event["payload"]["success"] is True
                 assert final_event["thread_id"] == "app:test"
                 assert final_event["text"] == "final reply"
                 assert runtime.started
+                assert surface_driver.states == [
+                    {"thread_id": "app:test", "phase": "replying"}
+                ]
+    finally:
+        stop_event.set()
+        worker.join(timeout=5.0)
+
+
+def test_reachy_mini_app_chat_returns_front_decision_and_tool_results(
+    tmp_path: Path,
+) -> None:
+    """Synchronous app.chat should expose the latest front decision and tool results."""
+
+    runtime = FakeRuntime()
+    app = RuntimeHostedApp(tmp_path / "profiles", runtime)
+    stop_event = threading.Event()
+    worker = threading.Thread(
+        target=app.run,
+        args=(SimpleNamespace(), stop_event),
+        daemon=True,
+    )
+    worker.start()
+
+    try:
+        assert app.wait_until_runtime_ready(timeout=2.0)
+        surface_driver = FakeSurfaceDriver()
+        app.runtime_tool_context = SimpleNamespace(surface_driver=surface_driver)
+        response = app.chat(
+            ChatRequest(
+                message="帮我看看现在是不是已经接入流程了",
+                thread_id="app:test",
+            )
+        )
+
+        assert response.reply == "final reply"
+        assert response.error == ""
+        assert response.surface_state == {"thread_id": "app:test", "phase": "idle"}
+        assert response.front_decision is not None
+        assert response.front_decision["signal_name"] == "idle_entered"
+        assert response.front_tool_results
+        assert response.front_tool_results[0]["tool_name"] == "do_nothing"
+        assert response.front_tool_results[0]["success"] is True
+        assert surface_driver.states == [{"thread_id": "app:test", "phase": "replying"}]
     finally:
         stop_event.set()
         worker.join(timeout=5.0)

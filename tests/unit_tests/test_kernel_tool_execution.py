@@ -85,12 +85,12 @@ def test_brain_kernel_executes_workspace_write_file_tool(tmp_path: Path) -> None
             agent_id=profile.name,
             model=kernel_model,
             task_router_model=SimpleTaskRouterModel(),
-            tools=tool_bundle.all_tools,
+            tools=tool_bundle.kernel_tools,
             memory_store=JsonlMemoryStore(profile.root),
             system_prompt=_build_kernel_system_prompt(
                 profile,
                 workspace_root=tool_bundle.workspace_root,
-                system_tool_names=tool_bundle.system_tool_names,
+                kernel_system_tool_names=tool_bundle.kernel_system_tool_names,
                 profile_tool_names=tool_bundle.profile_tool_names,
             ),
         )

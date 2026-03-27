@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Reachy Mini application base classes and helpers."""
 
 import asyncio
@@ -15,9 +17,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
 
-from reachy_mini.reachy_mini import ReachyMini
-
 if TYPE_CHECKING:
+    from reachy_mini.reachy_mini import ReachyMini
     from reachy_mini.runtime.scheduler import RuntimeScheduler
     from reachy_mini.runtime.tools import ReachyToolContext
 
@@ -38,6 +39,8 @@ class ChatResponse(BaseModel):
     reply: str
     error: str = ""
     surface_state: dict[str, Any] | None = None
+    front_decision: dict[str, Any] | None = None
+    front_tool_results: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class RuntimeStatusResponse(BaseModel):
@@ -162,6 +165,7 @@ class ReachyMiniApp:
             self.logger.info("Starting Reachy Mini app...")
             self.logger.info(f"Using media backend: {self.media_backend}")
             self.logger.info(f"Daemon on localhost: {self.daemon_on_localhost}")
+            from reachy_mini.reachy_mini import ReachyMini
 
             # Force the connection mode based on daemon location detection
             connection_mode: Literal["localhost_only", "network"] = (
@@ -209,7 +213,10 @@ class ReachyMiniApp:
         reachy_mini: ReachyMini | Any,
     ) -> "ReachyToolContext | None":
         """Build optional runtime tool dependencies from the running app instance."""
+        from reachy_mini.runtime.embodiment import EmbodimentCoordinator
         from reachy_mini.runtime.moves import MovementManager
+        from reachy_mini.runtime.speech_driver import SpeechDriver
+        from reachy_mini.runtime.surface_driver import SurfaceDriver
         from reachy_mini.runtime.tools import ReachyToolContext
         from reachy_mini.runtime.config import (
             VisionRuntimeConfig,
@@ -230,6 +237,9 @@ class ReachyMiniApp:
         vision_processor = None
         movement_manager = None
         head_wobbler = None
+        speech_driver = None
+        surface_driver = None
+        embodiment_coordinator = None
 
         if not vision_config.no_camera:
             media = getattr(reachy_mini, "media", None)
@@ -264,13 +274,23 @@ class ReachyMiniApp:
                 self.logger.warning("Failed to start movement manager: %s", exc)
 
         if movement_manager is not None:
+            surface_driver = SurfaceDriver(movement_manager=movement_manager)
             try:
                 from reachy_mini.runtime.audio import HeadWobbler
 
                 head_wobbler = HeadWobbler(movement_manager.set_speech_offsets)
-                head_wobbler.start()
+                speech_driver = SpeechDriver(head_wobbler=head_wobbler)
+                speech_driver.start()
             except Exception as exc:
                 self.logger.warning("Failed to start head wobbler: %s", exc)
+            embodiment_coordinator = EmbodimentCoordinator(
+                reachy_mini=reachy_mini,
+                movement_manager=movement_manager,
+                camera_worker=camera_worker,
+                motion_duration_s=1.0,
+                surface_driver=surface_driver,
+                speech_driver=speech_driver,
+            )
 
         return ReachyToolContext(
             reachy_mini=reachy_mini,
@@ -278,6 +298,9 @@ class ReachyMiniApp:
             vision_processor=vision_processor,
             movement_manager=movement_manager,
             head_wobbler=head_wobbler,
+            speech_driver=speech_driver,
+            surface_driver=surface_driver,
+            embodiment_coordinator=embodiment_coordinator,
         )
 
     def _build_head_tracker(self, vision_config: Any) -> Any | None:
@@ -323,8 +346,18 @@ class ReachyMiniApp:
         """Stop runtime-managed helper resources."""
         if context is None:
             return
+        speech_driver = getattr(context, "speech_driver", None)
+        if speech_driver is not None and hasattr(speech_driver, "stop"):
+            try:
+                speech_driver.stop()
+            except Exception as exc:
+                self.logger.warning("Failed to stop speech driver: %s", exc)
         head_wobbler = getattr(context, "head_wobbler", None)
-        if head_wobbler is not None and hasattr(head_wobbler, "stop"):
+        if (
+            head_wobbler is not None
+            and hasattr(head_wobbler, "stop")
+            and speech_driver is None
+        ):
             try:
                 head_wobbler.stop()
             except Exception as exc:
@@ -344,6 +377,9 @@ class ReachyMiniApp:
 
     def feed_runtime_audio_delta(self, delta_b64: str) -> bool:
         """Feed one assistant audio delta into the runtime head wobbler."""
+        coordinator = getattr(self.runtime_tool_context, "embodiment_coordinator", None)
+        if coordinator is not None and hasattr(coordinator, "feed_audio_delta"):
+            return bool(coordinator.feed_audio_delta(delta_b64))
         head_wobbler = getattr(self.runtime_tool_context, "head_wobbler", None)
         if head_wobbler is None or not hasattr(head_wobbler, "feed"):
             return False
@@ -352,11 +388,31 @@ class ReachyMiniApp:
 
     def reset_runtime_audio_motion(self) -> bool:
         """Reset queued speech-motion audio state for the resident runtime."""
+        coordinator = getattr(self.runtime_tool_context, "embodiment_coordinator", None)
+        if coordinator is not None and hasattr(coordinator, "reset_speech_motion"):
+            return bool(coordinator.reset_speech_motion())
         head_wobbler = getattr(self.runtime_tool_context, "head_wobbler", None)
         if head_wobbler is None or not hasattr(head_wobbler, "reset"):
             return False
         head_wobbler.reset()
         return True
+
+    def apply_runtime_surface_state(self, state: dict[str, Any]) -> None:
+        """Apply one runtime surface-state snapshot onto the embodiment driver."""
+        coordinator = getattr(self.runtime_tool_context, "embodiment_coordinator", None)
+        if coordinator is not None and hasattr(coordinator, "apply_surface_state"):
+            try:
+                coordinator.apply_surface_state(dict(state))
+            except Exception as exc:
+                self.logger.warning("Failed to apply runtime surface state: %s", exc)
+            return
+        surface_driver = getattr(self.runtime_tool_context, "surface_driver", None)
+        if surface_driver is None or not hasattr(surface_driver, "apply_state"):
+            return
+        try:
+            surface_driver.apply_state(dict(state))
+        except Exception as exc:
+            self.logger.warning("Failed to apply runtime surface state: %s", exc)
 
     def stop(self) -> None:
         """Stop the app gracefully."""
@@ -529,6 +585,11 @@ class ReachyMiniApp:
         queue = runtime.subscribe_front_outputs()
         final_reply = ""
         final_error = ""
+        front_decision: dict[str, Any] | None = None
+        front_tool_results: list[dict[str, Any]] = []
+
+        async def surface_state_handler(state: dict[str, Any]) -> None:
+            self.apply_runtime_surface_state(state)
 
         try:
             await runtime.handle_user_text(
@@ -536,6 +597,7 @@ class ReachyMiniApp:
                 session_id=session_id,
                 user_id=user_id,
                 user_text=str(payload.message),
+                surface_state_handler=surface_state_handler,
             )
             await runtime.wait_for_thread_idle(thread_id)
             await asyncio.sleep(0)
@@ -547,6 +609,10 @@ class ReachyMiniApp:
                         continue
                     if packet.type == "front_final_done":
                         final_reply = str(packet.text or "").strip()
+                    elif packet.type == "front_decision" and packet.payload is not None:
+                        front_decision = dict(packet.payload)
+                    elif packet.type == "front_tool_result" and packet.payload is not None:
+                        front_tool_results.append(dict(packet.payload))
                     elif packet.type == "turn_error":
                         final_error = str(packet.error or "").strip()
                 finally:
@@ -559,6 +625,8 @@ class ReachyMiniApp:
             reply=final_reply,
             error=final_error,
             surface_state=runtime.get_thread_surface_state(thread_id),
+            front_decision=front_decision or runtime.get_thread_front_decision(thread_id),
+            front_tool_results=front_tool_results,
         )
 
     async def _wait_and_publish_runtime_ready(
@@ -720,6 +788,7 @@ class ReachyMiniApp:
             await asyncio.wrap_future(put_future)
 
         async def surface_state_handler(state: dict[str, Any]) -> None:
+            self.apply_runtime_surface_state(state)
             await publish_event(
                 {
                     "type": "surface_state",

@@ -1,7 +1,10 @@
 """Resident runtime helpers for Reachy Mini."""
 
+from typing import Any
+
 from reachy_mini.core.memory import MemoryView
 
+from .embodiment import EmbodimentCoordinator
 from .config import (
     FrontModelConfig,
     KernelModelConfig,
@@ -12,10 +15,12 @@ from .moves import MovementManager
 from .project import AppProject, create_app_project, inspect_app_project
 from .profile_loader import ProfileBundle, load_profile_bundle
 from .scheduler import FrontOutputPacket, RuntimeScheduler
-from .web import HostedAppProject, WebBinding, build_web_host, resolve_web_binding
+from .speech_driver import SpeechDriver
+from .surface_driver import SurfaceDriver
 
 __all__ = [
     "AppProject",
+    "EmbodimentCoordinator",
     "FrontModelConfig",
     "FrontOutputPacket",
     "HostedAppProject",
@@ -25,6 +30,8 @@ __all__ = [
     "ProfileBundle",
     "ProfileRuntimeConfig",
     "RuntimeScheduler",
+    "SpeechDriver",
+    "SurfaceDriver",
     "WebBinding",
     "build_web_host",
     "create_app_project",
@@ -33,3 +40,18 @@ __all__ = [
     "load_profile_runtime_config",
     "resolve_web_binding",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    """Load web-host helpers lazily to avoid importing app/runtime stacks eagerly."""
+    if name in {"HostedAppProject", "WebBinding", "build_web_host", "resolve_web_binding"}:
+        from .web import HostedAppProject, WebBinding, build_web_host, resolve_web_binding
+
+        exports = {
+            "HostedAppProject": HostedAppProject,
+            "WebBinding": WebBinding,
+            "build_web_host": build_web_host,
+            "resolve_web_binding": resolve_web_binding,
+        }
+        return exports[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

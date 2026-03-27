@@ -6,6 +6,7 @@ from pathlib import Path
 from langchain_core.messages import AIMessage
 
 from reachy_mini.core.memory import MemoryView
+from reachy_mini.front import FrontSignal
 from reachy_mini.runtime.profile_loader import load_profile_bundle
 from reachy_mini.front import FrontService
 
@@ -77,5 +78,111 @@ def test_front_service_uses_profile_bundle_context(tmp_path: Path) -> None:
         assert "这是一个需要核实事实的请求" in model.messages[1].content
         assert "帮我看看日志" in model.messages[1].content
         assert "昨天也卡住了" not in model.messages[1].content
+
+    asyncio.run(_exercise())
+
+
+def test_front_service_accepts_expressive_signals(tmp_path: Path) -> None:
+    """Front should expose a formal signal entrypoint for lifecycle events."""
+
+    async def _exercise() -> None:
+        profile_root = tmp_path / "demo"
+        profile_root.mkdir()
+        _write_profile(profile_root)
+
+        profile = load_profile_bundle(profile_root)
+        model = RecordingModel()
+        service = FrontService(profile, model)
+
+        result = await service.handle_signal(
+            FrontSignal(
+                name="kernel_output_ready",
+                thread_id="cli:main",
+                turn_id="turn-1",
+                user_text="帮我看看日志",
+                metadata={"kernel_output": "需要先查看日志", "motion_hint": "nod"},
+            )
+        )
+
+        history = service.get_signal_history("cli:main")
+        latest = service.get_latest_signal_result("cli:main")
+
+        assert result.lifecycle_state == "replying"
+        assert result.surface_patch["phase"] == "replying"
+        assert result.surface_patch["source_signal"] == "kernel_output_ready"
+        assert result.surface_patch["motion_hint"] == "nod"
+        assert result.surface_patch["has_kernel_output"] is True
+        assert result.reply_text == ""
+        assert result.tool_calls == []
+        assert len(history) == 1
+        assert history[0].name == "kernel_output_ready"
+        assert latest == result
+
+    asyncio.run(_exercise())
+
+
+def test_front_service_decides_idle_tool_call_from_signal(tmp_path: Path) -> None:
+    """Idle lifecycle should yield a front-owned do_nothing intention when available."""
+
+    class FakeTool:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+    async def _exercise() -> None:
+        profile_root = tmp_path / "demo"
+        profile_root.mkdir()
+        _write_profile(profile_root)
+
+        profile = load_profile_bundle(profile_root)
+        model = RecordingModel()
+        service = FrontService(profile, model, tools=[FakeTool("do_nothing")])
+
+        result = await service.handle_signal(
+            FrontSignal(
+                name="idle_entered",
+                thread_id="cli:main",
+                turn_id="turn-2",
+            )
+        )
+
+        assert result.lifecycle_state == "idle"
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0].tool_name == "do_nothing"
+        assert result.tool_calls[0].arguments["reason"]
+        assert "do_nothing" in result.debug_reason
+
+    asyncio.run(_exercise())
+
+
+def test_front_service_decides_move_head_from_vision_signal(tmp_path: Path) -> None:
+    """Vision attention signals should be convertible into explicit front tool calls."""
+
+    class FakeTool:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+    async def _exercise() -> None:
+        profile_root = tmp_path / "demo"
+        profile_root.mkdir()
+        _write_profile(profile_root)
+
+        profile = load_profile_bundle(profile_root)
+        model = RecordingModel()
+        service = FrontService(profile, model, tools=[FakeTool("move_head")])
+
+        result = await service.handle_signal(
+            FrontSignal(
+                name="vision_attention_updated",
+                thread_id="cli:main",
+                turn_id="turn-3",
+                metadata={"direction": "left"},
+            )
+        )
+
+        assert result.lifecycle_state == "attending"
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0].tool_name == "move_head"
+        assert result.tool_calls[0].arguments == {"direction": "left"}
+        assert "move_head:left" in result.debug_reason
 
     asyncio.run(_exercise())

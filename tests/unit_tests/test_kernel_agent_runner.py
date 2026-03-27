@@ -9,6 +9,7 @@ from reachy_mini.core.memory import MemoryView
 from reachy_mini.runtime.config import load_profile_runtime_config
 from reachy_mini.runtime.profile_loader import load_profile_bundle
 from reachy_mini.runtime.scheduler import RuntimeScheduler
+from reachy_mini.runtime.tool_loader import build_runtime_tool_bundle
 
 
 def _write_profile(profile_root: Path) -> None:
@@ -142,6 +143,28 @@ class FakeFront:
     def __init__(self) -> None:
         self.reply_calls: list[dict[str, object]] = []
         self.present_calls: list[dict[str, object]] = []
+        self.signal_calls: list[object] = []
+        self.tool_runs: list[dict[str, object]] = []
+        self.tools = [self.FakeExpressiveTool(self.tool_runs)]
+
+    class FakeExpressiveTool:
+        def __init__(self, sink: list[dict[str, object]]) -> None:
+            self.name = "do_nothing"
+            self._sink = sink
+
+        def validate_params(self, params: dict[str, object]) -> list[str]:
+            _ = params
+            return []
+
+        async def execute(self, **kwargs):
+            self._sink.append(dict(kwargs))
+            return "front tool executed"
+
+    def get_tool(self, name: str):
+        for tool in self.tools:
+            if getattr(tool, "name", "") == name:
+                return tool
+        return None
 
     async def reply(self, **kwargs):
         self.reply_calls.append(kwargs)
@@ -150,6 +173,27 @@ class FakeFront:
     async def present(self, **kwargs):
         self.present_calls.append(kwargs)
         return "front final"
+
+    async def handle_signal(self, signal):
+        self.signal_calls.append(signal)
+        signal_name = getattr(signal, "name", "")
+        lifecycle_state = "idle" if signal_name == "idle_entered" else ""
+        tool_calls = (
+            [
+                {
+                    "tool_name": "do_nothing",
+                    "arguments": {"reason": "idle hold"},
+                    "reason": "idle hold",
+                }
+            ]
+            if signal_name == "idle_entered"
+            else []
+        )
+        return {
+            "signal_name": signal_name,
+            "lifecycle_state": lifecycle_state,
+            "tool_calls": tool_calls,
+        }
 
 
 class FakeMemoryStore:
@@ -265,6 +309,7 @@ def test_kernel_agent_runner_passes_affect_and_companion_through_front(tmp_path:
             front_style=config.front_style,
         )
 
+        latest_decision = None
         await runtime.start()
         try:
             reply = await _collect_final_reply(
@@ -272,6 +317,7 @@ def test_kernel_agent_runner_passes_affect_and_companion_through_front(tmp_path:
                 thread_id="cli:main",
                 user_text="帮我看看日志",
             )
+            latest_decision = runtime.get_thread_front_decision("cli:main")
         finally:
             await runtime.stop()
 
@@ -286,5 +332,96 @@ def test_kernel_agent_runner_passes_affect_and_companion_through_front(tmp_path:
         assert kernel.front_events[0]["front_event"]["metadata"]["emotion_primary"] == "anxious"
         assert kernel.front_events[1]["front_event"]["metadata"]["kernel_output"] == "kernel raw"
         assert kernel.front_events[1]["front_event"]["metadata"]["mode"] == "focused"
+        assert [getattr(signal, "name", "") for signal in front.signal_calls] == [
+            "turn_started",
+            "listening_entered",
+            "kernel_output_ready",
+            "settling_entered",
+            "idle_entered",
+        ]
+        assert latest_decision is not None
+        assert latest_decision["signal_name"] == "idle_entered"
+        assert latest_decision["lifecycle_state"] == "idle"
+        assert latest_decision["tool_calls"]
+        assert latest_decision["tool_calls"][0]["tool_name"] == "do_nothing"
+        assert front.tool_runs == [{"reason": "idle hold"}]
+
+    asyncio.run(_exercise())
+
+
+def test_runtime_scheduler_assigns_expressive_tools_to_front_only(tmp_path: Path) -> None:
+    """Runtime construction should keep expressive tools off the kernel tool plane."""
+    profile_root = tmp_path / "demo"
+    profile_root.mkdir()
+    _write_profile(profile_root)
+
+    profile = load_profile_bundle(profile_root)
+    config = load_profile_runtime_config(profile)
+    tool_bundle = build_runtime_tool_bundle(profile)
+    runtime = RuntimeScheduler.from_profile(
+        profile=profile,
+        config=config,
+        enable_affect=False,
+    )
+
+    kernel_tool_names = [
+        str(getattr(tool, "name", "") or "").strip() for tool in tool_bundle.kernel_tools
+    ]
+
+    assert "write_file" in kernel_tool_names
+    assert "move_head" not in kernel_tool_names
+    assert "play_emotion" not in kernel_tool_names
+    assert "move_head" in runtime.front.tool_names
+    assert "play_emotion" in runtime.front.tool_names
+    assert "camera" in runtime.front.tool_names
+
+
+def test_runtime_scheduler_publishes_front_tool_result_packets(tmp_path: Path) -> None:
+    """Front decision tool execution should be surfaced as runtime output packets."""
+
+    async def _exercise() -> None:
+        profile_root = tmp_path / "demo"
+        profile_root.mkdir()
+        _write_profile(profile_root)
+
+        profile = load_profile_bundle(profile_root)
+        config = load_profile_runtime_config(profile)
+        front = FakeFront()
+        kernel = FakeKernel()
+        runtime = RuntimeScheduler(
+            profile_root=profile.root,
+            front=front,
+            kernel=kernel,
+            affect_runtime=None,
+            front_style=config.front_style,
+        )
+
+        queue = runtime.subscribe_front_outputs()
+        try:
+            await runtime.start()
+            await runtime.handle_user_text(
+                thread_id="cli:main",
+                session_id="cli:main",
+                user_id="user",
+                user_text="帮我看看日志",
+            )
+            await runtime.wait_for_thread_idle("cli:main")
+
+            payloads: list[dict[str, object]] = []
+            while not queue.empty():
+                packet = queue.get_nowait()
+                try:
+                    if packet.type == "front_tool_result" and packet.payload is not None:
+                        payloads.append(dict(packet.payload))
+                finally:
+                    queue.task_done()
+        finally:
+            runtime.unsubscribe_front_outputs(queue)
+            await runtime.stop()
+
+        assert payloads
+        assert payloads[-1]["tool_name"] == "do_nothing"
+        assert payloads[-1]["success"] is True
+        assert payloads[-1]["result"] == "front tool executed"
 
     asyncio.run(_exercise())

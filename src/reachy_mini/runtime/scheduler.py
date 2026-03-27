@@ -29,6 +29,7 @@ from reachy_mini.runtime.model_factory import build_front_model, build_kernel_mo
 from reachy_mini.runtime.tool_loader import build_runtime_tool_bundle
 from reachy_mini.runtime.tools import ReachyToolContext
 from reachy_mini.companion import CompanionIntent, SurfaceExpression, build_companion_surface
+from reachy_mini.front.events import FrontSignal
 from reachy_mini.front.service import FrontService
 
 if TYPE_CHECKING:
@@ -40,7 +41,7 @@ def _build_kernel_system_prompt(
     profile: "ProfileBundle",
     *,
     workspace_root: Path | None = None,
-    system_tool_names: list[str] | None = None,
+    kernel_system_tool_names: list[str] | None = None,
     profile_tool_names: list[str] | None = None,
 ) -> str:
     """Compile the profile files into one kernel system prompt."""
@@ -52,19 +53,23 @@ def _build_kernel_system_prompt(
     if profile.tools_md.strip():
         sections.append(f"## TOOLS\n{profile.tools_md.strip()}")
     tool_policy_lines: list[str] = []
-    resolved_system_tool_names = [
-        name for name in (system_tool_names or []) if str(name or "").strip()
+    resolved_kernel_system_tool_names = [
+        name for name in (kernel_system_tool_names or []) if str(name or "").strip()
     ]
     resolved_profile_tool_names = [
         name for name in (profile_tool_names or []) if str(name or "").strip()
     ]
-    if workspace_root is not None or resolved_system_tool_names or resolved_profile_tool_names:
+    if (
+        workspace_root is not None
+        or resolved_kernel_system_tool_names
+        or resolved_profile_tool_names
+    ):
         tool_policy_lines.append("## RUNTIME_TOOL_POLICY")
         if workspace_root is not None:
             tool_policy_lines.append(f"- Current app workspace root: {workspace_root}")
-        if resolved_system_tool_names:
+        if resolved_kernel_system_tool_names:
             tool_policy_lines.append(
-                f"- System tools: {', '.join(resolved_system_tool_names)}"
+                f"- Kernel system tools: {', '.join(resolved_kernel_system_tool_names)}"
             )
         if resolved_profile_tool_names:
             tool_policy_lines.append(
@@ -96,6 +101,7 @@ class FrontOutputPacket:
     turn_id: str
     text: str = ""
     error: str = ""
+    payload: dict[str, Any] | None = None
 
     def as_event(self) -> dict[str, Any]:
         event: dict[str, Any] = {
@@ -112,6 +118,8 @@ class FrontOutputPacket:
             event["text"] = self.text
         elif self.type == "turn_error":
             event["error"] = self.error
+        if self.payload:
+            event["payload"] = dict(self.payload)
         return event
 
 
@@ -128,13 +136,17 @@ class RuntimeScheduler:
         runtime_tool_context: ReachyToolContext | None = None,
     ) -> "RuntimeScheduler":
         """Build a runtime scheduler directly from one loaded profile bundle."""
-        front = FrontService(profile, build_front_model(config.front_model))
         kernel_model = build_kernel_model(config.kernel_model)
         tool_bundle = build_runtime_tool_bundle(
             profile,
             runtime_context=runtime_tool_context,
         )
-        kernel_tools = tool_bundle.all_tools if hasattr(kernel_model, "bind_tools") else []
+        front = FrontService(
+            profile,
+            build_front_model(config.front_model),
+            tools=tool_bundle.front_tools,
+        )
+        kernel_tools = tool_bundle.kernel_tools if hasattr(kernel_model, "bind_tools") else []
         kernel = BrainKernel(
             agent_id=profile.name,
             model=kernel_model,
@@ -144,7 +156,9 @@ class RuntimeScheduler:
             system_prompt=_build_kernel_system_prompt(
                 profile,
                 workspace_root=tool_bundle.workspace_root if kernel_tools else None,
-                system_tool_names=tool_bundle.system_tool_names if kernel_tools else None,
+                kernel_system_tool_names=(
+                    tool_bundle.kernel_system_tool_names if kernel_tools else None
+                ),
                 profile_tool_names=tool_bundle.profile_tool_names if kernel_tools else None,
             ),
         )
@@ -181,6 +195,7 @@ class RuntimeScheduler:
         self._delivery_tasks: set[asyncio.Task[None]] = set()
         self._active_turns: dict[str, int] = {}
         self._thread_surface_state: dict[str, dict[str, Any]] = {}
+        self._thread_front_decisions: dict[str, dict[str, Any]] = {}
         self._front_output_subscribers: set[asyncio.Queue[FrontOutputPacket]] = set()
 
     async def start(self) -> None:
@@ -211,6 +226,7 @@ class RuntimeScheduler:
 
             self._pending_kernel_deliveries.clear()
             self._thread_surface_state.clear()
+            self._thread_front_decisions.clear()
             self._front_output_subscribers.clear()
             self._fail_pending_outputs(RuntimeError("Runtime scheduler stopped."))
             await self._cancel_delivery_tasks()
@@ -235,6 +251,14 @@ class RuntimeScheduler:
             affect_turn = self._evolve_affect_turn(user_text)
             affect_state = affect_turn.state if affect_turn is not None else None
             emotion_signal = affect_turn.emotion_signal if affect_turn is not None else None
+            await self._dispatch_front_signal(
+                FrontSignal(
+                    name="turn_started",
+                    thread_id=thread_id,
+                    turn_id=turn_id,
+                    user_text=user_text,
+                )
+            )
             await self._push_surface_state(
                 thread_id,
                 self._build_listening_state(
@@ -243,6 +267,18 @@ class RuntimeScheduler:
                     emotion_signal=emotion_signal,
                 ),
                 surface_state_handler=surface_state_handler,
+            )
+            await self._dispatch_front_signal(
+                FrontSignal(
+                    name="listening_entered",
+                    thread_id=thread_id,
+                    turn_id=turn_id,
+                    user_text=user_text,
+                    metadata={
+                        "phase": "listening",
+                        "motion_hint": "small_nod",
+                    },
+                )
             )
             memory = self._build_front_memory_view(thread_id=thread_id, user_text=user_text)
             front_reply = await self._emit_front_reply(
@@ -307,6 +343,12 @@ class RuntimeScheduler:
         if state is None:
             return None
         return dict(state)
+
+    def get_thread_front_decision(self, thread_id: str) -> dict[str, Any] | None:
+        decision = self._thread_front_decisions.get(thread_id)
+        if decision is None:
+            return None
+        return dict(decision)
 
     def subscribe_front_outputs(self) -> asyncio.Queue[FrontOutputPacket]:
         queue: asyncio.Queue[FrontOutputPacket] = asyncio.Queue()
@@ -641,6 +683,144 @@ class RuntimeScheduler:
         for subscriber in list(self._front_output_subscribers):
             subscriber.put_nowait(packet)
 
+    @staticmethod
+    def _extract_front_result_value(result: Any, key: str, default: Any = None) -> Any:
+        if isinstance(result, dict):
+            return result.get(key, default)
+        return getattr(result, key, default)
+
+    async def _dispatch_front_signal(self, signal: FrontSignal) -> None:
+        handler = getattr(self.front, "handle_signal", None)
+        if not callable(handler):
+            return
+        try:
+            maybe_awaitable = handler(signal)
+            if isawaitable(maybe_awaitable):
+                result = await maybe_awaitable
+            else:
+                result = maybe_awaitable
+            if result is not None:
+                tool_calls = self._extract_front_result_value(result, "tool_calls", []) or []
+                self._thread_front_decisions[signal.thread_id] = {
+                    "signal_name": str(self._extract_front_result_value(result, "signal_name", "") or ""),
+                    "turn_id": str(self._extract_front_result_value(result, "turn_id", "") or ""),
+                    "reply_text": str(self._extract_front_result_value(result, "reply_text", "") or ""),
+                    "lifecycle_state": str(
+                        self._extract_front_result_value(result, "lifecycle_state", "") or ""
+                    ),
+                    "surface_patch": dict(
+                        self._extract_front_result_value(result, "surface_patch", {}) or {}
+                    ),
+                    "tool_calls": [
+                        {
+                            "tool_name": str(self._extract_front_result_value(call, "tool_name", "") or ""),
+                            "arguments": dict(
+                                self._extract_front_result_value(call, "arguments", {}) or {}
+                            ),
+                            "reason": str(self._extract_front_result_value(call, "reason", "") or ""),
+                        }
+                        for call in list(tool_calls)
+                    ],
+                    "debug_reason": str(self._extract_front_result_value(result, "debug_reason", "") or ""),
+                }
+                self._publish_front_output(
+                    FrontOutputPacket(
+                        type="front_decision",
+                        thread_id=signal.thread_id,
+                        turn_id=str(self._extract_front_result_value(result, "turn_id", "") or signal.turn_id),
+                        payload=dict(self._thread_front_decisions[signal.thread_id]),
+                    )
+                )
+                await self._execute_front_tool_calls(
+                    thread_id=signal.thread_id,
+                    turn_id=str(
+                        self._extract_front_result_value(result, "turn_id", "") or signal.turn_id
+                    ),
+                    signal_name=str(
+                        self._extract_front_result_value(result, "signal_name", "") or signal.name
+                    ),
+                    tool_calls=self._thread_front_decisions[signal.thread_id]["tool_calls"],
+                )
+        except Exception:
+            return
+
+    def _resolve_front_tool(self, tool_name: str) -> Any | None:
+        getter = getattr(self.front, "get_tool", None)
+        if callable(getter):
+            try:
+                tool = getter(tool_name)
+            except Exception:
+                tool = None
+            if tool is not None:
+                return tool
+
+        for tool in list(getattr(self.front, "tools", []) or []):
+            if str(getattr(tool, "name", "") or "").strip() == str(tool_name or "").strip():
+                return tool
+        return None
+
+    async def _execute_front_tool_calls(
+        self,
+        *,
+        thread_id: str,
+        turn_id: str,
+        signal_name: str,
+        tool_calls: list[dict[str, Any]],
+    ) -> None:
+        for tool_call in list(tool_calls or []):
+            tool_name = str(tool_call.get("tool_name", "") or "").strip()
+            arguments = dict(tool_call.get("arguments", {}) or {})
+            reason = str(tool_call.get("reason", "") or "")
+            success = False
+            result_text = ""
+
+            tool = self._resolve_front_tool(tool_name)
+            if tool is None:
+                result_text = f"Error: front tool '{tool_name}' is not registered."
+            else:
+                try:
+                    validator = getattr(tool, "validate_params", None)
+                    if callable(validator):
+                        errors = list(validator(arguments) or [])
+                    else:
+                        errors = []
+                    if errors:
+                        result_text = (
+                            f"Error: Invalid parameters for front tool '{tool_name}': "
+                            + "; ".join(str(error) for error in errors)
+                        )
+                    else:
+                        executor = getattr(tool, "execute", None)
+                        if not callable(executor):
+                            result_text = f"Error: front tool '{tool_name}' has no execute() method."
+                        else:
+                            execution_result = executor(**arguments)
+                            if isawaitable(execution_result):
+                                execution_result = await execution_result
+                            result_text = str(execution_result or "")
+                            success = not result_text.startswith("Error")
+                except Exception as exc:
+                    result_text = (
+                        f"Error executing front tool '{tool_name}': "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+
+            self._publish_front_output(
+                FrontOutputPacket(
+                    type="front_tool_result",
+                    thread_id=thread_id,
+                    turn_id=turn_id,
+                    payload={
+                        "signal_name": signal_name,
+                        "tool_name": tool_name,
+                        "arguments": arguments,
+                        "reason": reason,
+                        "success": success,
+                        "result": result_text,
+                    },
+                )
+            )
+
     async def _publish_text_done(
         self,
         *,
@@ -720,6 +900,15 @@ class RuntimeScheduler:
                 and output.response is not None
                 and output.response.task_type == TaskType.none
             ):
+                await self._dispatch_front_signal(
+                    FrontSignal(
+                        name="idle_entered",
+                        thread_id=thread_id,
+                        turn_id=turn_id,
+                        user_text=str(delivery["user_text"]),
+                        metadata={"phase": "idle"},
+                    )
+                )
                 await self._push_surface_state(
                     thread_id,
                     self._build_idle_state(
@@ -739,6 +928,15 @@ class RuntimeScheduler:
 
             kernel_output = self._render_kernel_output(output)
             if not kernel_output:
+                await self._dispatch_front_signal(
+                    FrontSignal(
+                        name="idle_entered",
+                        thread_id=thread_id,
+                        turn_id=turn_id,
+                        user_text=str(delivery["user_text"]),
+                        metadata={"phase": "idle"},
+                    )
+                )
                 await self._push_surface_state(
                     thread_id,
                     self._build_idle_state(
@@ -762,6 +960,19 @@ class RuntimeScheduler:
                 kernel_output=kernel_output,
                 affect_state=delivery["affect_state"],
                 emotion_signal=delivery["emotion_signal"],
+            )
+            await self._dispatch_front_signal(
+                FrontSignal(
+                    name="kernel_output_ready",
+                    thread_id=thread_id,
+                    turn_id=turn_id,
+                    user_text=user_text,
+                    metadata={
+                        "phase": "replying",
+                        "kernel_output": kernel_output,
+                        "motion_hint": surface_expression.motion_hint,
+                    },
+                )
             )
             await self._push_surface_state(
                 thread_id,
@@ -798,6 +1009,15 @@ class RuntimeScheduler:
                     thread_id=thread_id,
                     turn_id=turn_id,
                     text=fallback,
+                )
+                await self._dispatch_front_signal(
+                    FrontSignal(
+                        name="idle_entered",
+                        thread_id=thread_id,
+                        turn_id=turn_id,
+                        user_text=user_text,
+                        metadata={"phase": "idle"},
+                    )
                 )
                 await self._push_surface_state(
                     thread_id,
@@ -838,6 +1058,18 @@ class RuntimeScheduler:
                 turn_id=turn_id,
                 text=final_reply,
             )
+            await self._dispatch_front_signal(
+                FrontSignal(
+                    name="settling_entered",
+                    thread_id=thread_id,
+                    turn_id=turn_id,
+                    user_text=user_text,
+                    metadata={
+                        "phase": "settling",
+                        "motion_hint": "stay_close",
+                    },
+                )
+            )
             await self._push_surface_state(
                 thread_id,
                 self._build_surface_state(
@@ -849,6 +1081,18 @@ class RuntimeScheduler:
                     surface_expression=surface_expression,
                 ),
                 surface_state_handler=delivery["surface_state_handler"],
+            )
+            await self._dispatch_front_signal(
+                FrontSignal(
+                    name="idle_entered",
+                    thread_id=thread_id,
+                    turn_id=turn_id,
+                    user_text=user_text,
+                    metadata={
+                        "phase": "idle",
+                        "motion_hint": "minimal",
+                    },
+                )
             )
             await self._push_surface_state(
                 thread_id,

@@ -136,6 +136,11 @@ def test_build_runtime_tool_context_creates_movement_manager(tmp_path: Path) -> 
     assert context.movement_manager.started is True
     assert context.head_wobbler is not None
     assert context.head_wobbler.started is True
+    assert context.speech_driver is not None
+    assert context.surface_driver is not None
+    assert context.embodiment_coordinator is not None
+    assert context.embodiment_coordinator.speech_driver is context.speech_driver
+    assert context.surface_driver.movement_manager is context.movement_manager
 
 
 def test_build_runtime_tool_context_starts_camera_worker_when_media_is_available(
@@ -178,6 +183,9 @@ def test_build_runtime_tool_context_starts_camera_worker_when_media_is_available
     assert context.movement_manager.camera_worker is context.camera_worker
     assert context.head_wobbler is not None
     assert context.head_wobbler.started is True
+    assert context.speech_driver is not None
+    assert context.surface_driver is not None
+    assert context.embodiment_coordinator is not None
 
     app.cleanup_runtime_tool_context(context)
     assert context.head_wobbler.stopped is True
@@ -233,6 +241,49 @@ def test_build_runtime_tool_context_honors_no_camera_setting(tmp_path: Path) -> 
     assert context.vision_processor is None
     assert context.movement_manager is not None
     assert context.head_wobbler is not None
+    assert context.speech_driver is not None
+    assert context.surface_driver is not None
+    assert context.embodiment_coordinator is not None
+
+
+def test_runtime_embodiment_helpers_delegate_to_coordinator(tmp_path: Path) -> None:
+    """Public app hooks should prefer the coordinator once Stage 4 wiring exists."""
+    profile_root = tmp_path / "profiles"
+    profile_root.mkdir()
+    _write_profile(profile_root)
+
+    app = ToolContextApp(profile_root)
+
+    class FakeCoordinator:
+        def __init__(self) -> None:
+            self.surface_states: list[dict[str, str]] = []
+            self.audio_deltas: list[str] = []
+            self.reset_calls = 0
+
+        def apply_surface_state(self, state: dict[str, str]) -> None:
+            self.surface_states.append(dict(state))
+
+        def feed_audio_delta(self, delta_b64: str) -> bool:
+            self.audio_deltas.append(delta_b64)
+            return True
+
+        def reset_speech_motion(self) -> bool:
+            self.reset_calls += 1
+            return True
+
+    coordinator = FakeCoordinator()
+    app.runtime_tool_context = ReachyToolContext(
+        reachy_mini=object(),
+        embodiment_coordinator=coordinator,
+    )
+
+    app.apply_runtime_surface_state({"thread_id": "app:test", "phase": "replying"})
+    assert app.feed_runtime_audio_delta("demo-audio") is True
+    assert app.reset_runtime_audio_motion() is True
+
+    assert coordinator.surface_states == [{"thread_id": "app:test", "phase": "replying"}]
+    assert coordinator.audio_deltas == ["demo-audio"]
+    assert coordinator.reset_calls == 1
 
 
 def test_build_runtime_tool_context_builds_yolo_tracker_and_local_vision(

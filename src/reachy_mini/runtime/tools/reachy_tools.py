@@ -7,7 +7,8 @@ import base64
 import logging
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Any
+from inspect import isawaitable
+from typing import TYPE_CHECKING, Any
 
 from reachy_mini.runtime.dance_emotion_moves import (
     DanceQueueMove,
@@ -22,6 +23,11 @@ logger = logging.getLogger(__name__)
 
 EMOTIONS_DATASET = "pollen-robotics/reachy-mini-emotions-library"
 DANCES_DATASET = "pollen-robotics/reachy-mini-dances-library"
+
+if TYPE_CHECKING:
+    from reachy_mini.runtime.embodiment import EmbodimentCoordinator
+    from reachy_mini.runtime.speech_driver import SpeechDriver
+    from reachy_mini.runtime.surface_driver import SurfaceDriver
 
 
 @lru_cache(maxsize=4)
@@ -42,6 +48,9 @@ class ReachyToolContext:
     motion_duration_s: float = 1.0
     movement_manager: MovementManager | None = None
     head_wobbler: Any | None = None
+    speech_driver: SpeechDriver | None = None
+    surface_driver: SurfaceDriver | None = None
+    embodiment_coordinator: EmbodimentCoordinator | None = None
 
 
 class ReachyRuntimeTool(Tool):
@@ -49,6 +58,25 @@ class ReachyRuntimeTool(Tool):
 
     def __init__(self, context: ReachyToolContext | None = None) -> None:
         self.context = context or ReachyToolContext()
+
+    async def _call_coordinator(
+        self,
+        method_name: str,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any | None:
+        """Call one coordinator method when the embodiment layer is configured."""
+
+        coordinator = self.context.embodiment_coordinator
+        if coordinator is None:
+            return None
+        method = getattr(coordinator, method_name, None)
+        if not callable(method):
+            return None
+        result = method(*args, **kwargs)
+        if isawaitable(result):
+            return await result
+        return result
 
 
 class DoNothingTool(ReachyRuntimeTool):
@@ -110,6 +138,10 @@ class HeadTrackingTool(ReachyRuntimeTool):
 
     async def execute(self, start: bool, **kwargs: Any) -> str:
         _ = kwargs
+        coordinated = await self._call_coordinator("set_head_tracking", bool(start))
+        if coordinated is not None:
+            return str(coordinated)
+
         camera_worker = self.context.camera_worker
         if camera_worker is None or not hasattr(
             camera_worker,
@@ -224,6 +256,10 @@ class MoveHeadTool(ReachyRuntimeTool):
 
     async def execute(self, direction: str, **kwargs: Any) -> str:
         _ = kwargs
+        coordinated = await self._call_coordinator("move_head", direction)
+        if coordinated is not None:
+            return str(coordinated)
+
         reachy_mini = self.context.reachy_mini
         movement_manager = self.context.movement_manager
         if reachy_mini is None or movement_manager is None:
@@ -289,10 +325,6 @@ class PlayEmotionTool(ReachyRuntimeTool):
 
     async def execute(self, emotion: str, **kwargs: Any) -> str:
         _ = kwargs
-        movement_manager = self.context.movement_manager
-        if movement_manager is None:
-            return "Error: play_emotion requires a connected ReachyMini runtime"
-
         emotion_name = str(emotion or "").strip()
         if not emotion_name:
             return "Error: Emotion name is required"
@@ -302,6 +334,14 @@ class PlayEmotionTool(ReachyRuntimeTool):
             available = library.list_moves()
             if emotion_name not in available:
                 return f"Error: Unknown emotion '{emotion_name}'. Available: {available}"
+
+            coordinated = await self._call_coordinator("play_emotion", emotion_name, library)
+            if coordinated is not None:
+                return str(coordinated)
+
+            movement_manager = self.context.movement_manager
+            if movement_manager is None:
+                return "Error: play_emotion requires a connected ReachyMini runtime"
             movement_manager.queue_move(EmotionQueueMove(emotion_name, library))
         except Exception as exc:
             return f"Error: play_emotion failed: {type(exc).__name__}: {exc}"
@@ -345,10 +385,6 @@ class DanceTool(ReachyRuntimeTool):
         **kwargs: Any,
     ) -> str:
         _ = kwargs
-        movement_manager = self.context.movement_manager
-        if movement_manager is None:
-            return "Error: dance requires a connected ReachyMini runtime"
-
         try:
             library = _load_recorded_moves(DANCES_DATASET)
             available = library.list_moves()
@@ -364,6 +400,13 @@ class DanceTool(ReachyRuntimeTool):
                 return f"Error: Unknown dance move '{move_name}'. Available: {available}"
 
             repeat_count = max(1, int(repeat))
+            coordinated = await self._call_coordinator("dance", move_name, repeat_count, library)
+            if coordinated is not None:
+                return str(coordinated)
+
+            movement_manager = self.context.movement_manager
+            if movement_manager is None:
+                return "Error: dance requires a connected ReachyMini runtime"
             for _ in range(repeat_count):
                 movement_manager.queue_move(DanceQueueMove(move_name, library))
         except Exception as exc:
@@ -389,6 +432,10 @@ class StopDanceTool(ReachyRuntimeTool):
 
     async def execute(self, **kwargs: Any) -> str:
         _ = kwargs
+        coordinated = await self._call_coordinator("clear_motion_queue", label="dance")
+        if coordinated is not None:
+            return str(coordinated)
+
         movement_manager = self.context.movement_manager
         if movement_manager is None:
             return "Error: stop_dance requires a connected ReachyMini runtime"
@@ -413,6 +460,10 @@ class StopEmotionTool(ReachyRuntimeTool):
 
     async def execute(self, **kwargs: Any) -> str:
         _ = kwargs
+        coordinated = await self._call_coordinator("clear_motion_queue", label="emotion")
+        if coordinated is not None:
+            return str(coordinated)
+
         movement_manager = self.context.movement_manager
         if movement_manager is None:
             return "Error: stop_emotion requires a connected ReachyMini runtime"

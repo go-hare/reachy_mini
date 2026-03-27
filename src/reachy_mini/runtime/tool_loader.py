@@ -9,7 +9,11 @@ from types import ModuleType
 from typing import Any
 
 from reachy_mini.runtime.profile_loader import ProfileBundle
-from reachy_mini.runtime.tools import ReachyToolContext, build_system_tools
+from reachy_mini.runtime.tools import (
+    ReachyToolContext,
+    build_front_system_tools,
+    build_kernel_system_tools,
+)
 
 
 @dataclass(frozen=True)
@@ -17,16 +21,39 @@ class RuntimeToolBundle:
     """Resolved runtime tools for one profile-backed app."""
 
     workspace_root: Path
-    system_tools: list[Any]
+    kernel_system_tools: list[Any]
+    front_tools: list[Any]
     profile_tools: list[Any]
 
     @property
     def all_tools(self) -> list[Any]:
-        return [*self.system_tools, *self.profile_tools]
+        """Legacy alias for the kernel-visible tool set."""
+        return self.kernel_tools
 
     @property
     def system_tool_names(self) -> list[str]:
-        return [str(getattr(tool, "name", "") or "").strip() for tool in self.system_tools]
+        """Legacy built-in tool names spanning kernel and front planes."""
+        return [
+            *self.kernel_system_tool_names,
+            *self.front_tool_names,
+        ]
+
+    @property
+    def system_tools(self) -> list[Any]:
+        """Legacy built-in tool list spanning kernel and front planes."""
+        return [*self.kernel_system_tools, *self.front_tools]
+
+    @property
+    def kernel_tools(self) -> list[Any]:
+        return [*self.kernel_system_tools, *self.profile_tools]
+
+    @property
+    def kernel_system_tool_names(self) -> list[str]:
+        return [str(getattr(tool, "name", "") or "").strip() for tool in self.kernel_system_tools]
+
+    @property
+    def front_tool_names(self) -> list[str]:
+        return [str(getattr(tool, "name", "") or "").strip() for tool in self.front_tools]
 
     @property
     def profile_tool_names(self) -> list[str]:
@@ -38,10 +65,13 @@ def build_runtime_tool_bundle(
     *,
     runtime_context: ReachyToolContext | None = None,
 ) -> RuntimeToolBundle:
-    """Build the merged runtime tool set for one profile."""
+    """Build the separated runtime tool planes for one profile."""
     workspace_root = profile.root.parent.resolve()
-    system_tools = build_system_tools(
+    kernel_system_tools = build_kernel_system_tools(
         workspace_root,
+        runtime_context=runtime_context,
+    )
+    front_tools = build_front_system_tools(
         runtime_context=runtime_context,
     )
     profile_tools = load_profile_tools(
@@ -51,7 +81,8 @@ def build_runtime_tool_bundle(
     )
     return RuntimeToolBundle(
         workspace_root=workspace_root,
-        system_tools=system_tools,
+        kernel_system_tools=kernel_system_tools,
+        front_tools=front_tools,
         profile_tools=profile_tools,
     )
 

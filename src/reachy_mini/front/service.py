@@ -10,6 +10,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from reachy_mini.affect import AffectState, EmotionSignal
 from reachy_mini.core.memory import MemoryView
 from reachy_mini.companion import CompanionIntent, SurfaceExpression
+from reachy_mini.front.events import FrontDecision, FrontSignal, FrontSignalResult, FrontToolCall
 from reachy_mini.front.prompt import FrontPromptBuilder
 from reachy_mini.utils.llm_utils import extract_message_text
 
@@ -158,11 +159,82 @@ _SUPPORT_NEED_HINTS = {
 class FrontService:
     """Fast conversational layer that talks to the user first."""
 
-    def __init__(self, profile: "ProfileBundle", model: Any):
+    def __init__(
+        self,
+        profile: "ProfileBundle",
+        model: Any,
+        *,
+        tools: list[Any] | None = None,
+    ):
         self.profile = profile
         self.profile_root = profile.root
         self.model = model
+        self.tools = list(tools or [])
         self.prompts = FrontPromptBuilder(self.profile_root)
+        self._signal_history: dict[str, list[FrontSignal]] = {}
+        self._latest_signal_result: dict[str, FrontDecision] = {}
+
+    @property
+    def tool_names(self) -> list[str]:
+        return [str(getattr(tool, "name", "") or "").strip() for tool in self.tools]
+
+    def get_tool(self, name: str) -> Any | None:
+        resolved_name = str(name or "").strip()
+        if not resolved_name:
+            return None
+        for tool in self.tools:
+            if str(getattr(tool, "name", "") or "").strip() == resolved_name:
+                return tool
+        return None
+
+    def get_signal_history(self, thread_id: str) -> list[FrontSignal]:
+        return list(self._signal_history.get(str(thread_id or ""), []))
+
+    def get_latest_signal_result(self, thread_id: str) -> FrontDecision | None:
+        return self._latest_signal_result.get(str(thread_id or ""))
+
+    def get_latest_front_decision(self, thread_id: str) -> FrontDecision | None:
+        return self.get_latest_signal_result(thread_id)
+
+    async def handle_signal(self, signal: FrontSignal) -> FrontSignalResult:
+        """Consume one expressive lifecycle signal from the runtime."""
+        thread_id = str(signal.thread_id or "").strip() or "app:main"
+        normalized_signal = FrontSignal(
+            name=str(signal.name or "").strip(),
+            thread_id=thread_id,
+            turn_id=str(signal.turn_id or "").strip(),
+            user_text=str(signal.user_text or ""),
+            metadata=dict(signal.metadata or {}),
+        )
+        history = self._signal_history.setdefault(thread_id, [])
+        history.append(normalized_signal)
+        if len(history) > 24:
+            del history[:-24]
+
+        result = self.decide_front_action(normalized_signal)
+        self._latest_signal_result[thread_id] = result
+        return result
+
+    def decide_front_action(self, signal: FrontSignal) -> FrontDecision:
+        """Build one lightweight expressive decision from a front signal."""
+        lifecycle_state = self._derive_lifecycle_state(signal.name)
+        tool_calls, debug_reason = self._derive_tool_calls(
+            signal=signal,
+            lifecycle_state=lifecycle_state,
+        )
+        return FrontDecision(
+            signal_name=signal.name,
+            thread_id=signal.thread_id,
+            turn_id=signal.turn_id,
+            reply_text="",
+            lifecycle_state=lifecycle_state,
+            surface_patch=self._derive_surface_patch(
+                signal=signal,
+                lifecycle_state=lifecycle_state,
+            ),
+            tool_calls=tool_calls,
+            debug_reason=debug_reason,
+        )
 
     async def reply(
         self,
@@ -242,6 +314,90 @@ class FrontService:
 
     def _front_system_text(self) -> str:
         return self.profile.front_md.strip()
+
+    @staticmethod
+    def _derive_lifecycle_state(signal_name: str) -> str:
+        mapping = {
+            "turn_started": "listening",
+            "listening_entered": "listening",
+            "user_speech_started": "listening",
+            "user_speech_stopped": "listening_wait",
+            "kernel_output_ready": "replying",
+            "assistant_audio_started": "replying",
+            "assistant_audio_delta": "replying",
+            "assistant_audio_finished": "settling",
+            "settling_entered": "settling",
+            "turn_settling": "settling",
+            "idle_tick": "idle",
+            "idle_entered": "idle",
+            "vision_attention_updated": "attending",
+        }
+        return mapping.get(str(signal_name or "").strip(), "observing")
+
+    @staticmethod
+    def _derive_surface_patch(
+        *,
+        signal: FrontSignal,
+        lifecycle_state: str,
+    ) -> dict[str, Any]:
+        patch: dict[str, Any] = {
+            "phase": lifecycle_state,
+            "source_signal": signal.name,
+        }
+        if signal.metadata:
+            if "motion_hint" in signal.metadata:
+                patch["motion_hint"] = signal.metadata["motion_hint"]
+            if "kernel_output" in signal.metadata:
+                patch["has_kernel_output"] = bool(str(signal.metadata["kernel_output"]).strip())
+        return patch
+
+    def _derive_tool_calls(
+        self,
+        *,
+        signal: FrontSignal,
+        lifecycle_state: str,
+    ) -> tuple[list[FrontToolCall], str]:
+        tool_names = set(self.tool_names)
+        metadata = dict(signal.metadata or {})
+
+        if lifecycle_state == "idle" and "do_nothing" in tool_names:
+            return (
+                [
+                    FrontToolCall(
+                        tool_name="do_nothing",
+                        arguments={"reason": "Hold a calm idle posture while waiting."},
+                        reason="idle hold",
+                    )
+                ],
+                f"front selected do_nothing for {signal.name}",
+            )
+
+        if signal.name == "vision_attention_updated":
+            direction = str(metadata.get("direction", "") or "").strip().lower()
+            if direction in {"left", "right", "up", "down", "front"} and "move_head" in tool_names:
+                return (
+                    [
+                        FrontToolCall(
+                            tool_name="move_head",
+                            arguments={"direction": direction},
+                            reason="align gaze with vision attention update",
+                        )
+                    ],
+                    f"front selected move_head:{direction} for vision attention",
+                )
+            if "tracking_enabled" in metadata and "head_tracking" in tool_names:
+                return (
+                    [
+                        FrontToolCall(
+                            tool_name="head_tracking",
+                            arguments={"start": bool(metadata["tracking_enabled"])},
+                            reason="toggle head tracking from vision attention update",
+                        )
+                    ],
+                    "front toggled head_tracking from vision attention update",
+                )
+
+        return [], f"front accepted signal {signal.name} without explicit tool call"
 
     def _build_presentation_prompt(
         self,

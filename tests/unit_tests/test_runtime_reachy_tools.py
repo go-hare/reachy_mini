@@ -125,6 +125,37 @@ class FakeRecordedMoves:
         return f"move:{move_name}"
 
 
+class FakeEmbodimentCoordinator:
+    """Collect explicit tool executions routed through the coordinator."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
+
+    async def move_head(self, direction: str) -> str:
+        self.calls.append(("move_head", (direction,), {}))
+        return f"Moved head {direction}"
+
+    def set_head_tracking(self, start: bool) -> str:
+        self.calls.append(("set_head_tracking", (start,), {}))
+        return "Head tracking started" if start else "Head tracking stopped"
+
+    def play_emotion(self, emotion_name: str, library: Any) -> str:
+        self.calls.append(("play_emotion", (emotion_name, library), {}))
+        return f"Playing emotion {emotion_name}"
+
+    def dance(self, move_name: str, repeat: int, library: Any) -> str:
+        self.calls.append(("dance", (move_name, repeat, library), {}))
+        return f"Playing dance {move_name} x{repeat}"
+
+    def clear_motion_queue(self, *, label: str = "motion") -> str:
+        self.calls.append(("clear_motion_queue", (), {"label": label}))
+        if label == "dance":
+            return "Stopped dance and cleared queue"
+        if label == "emotion":
+            return "Stopped emotion and cleared queue"
+        return "Cleared queued motion"
+
+
 def test_build_system_tools_includes_reachy_runtime_tools(tmp_path: Path) -> None:
     """The shared system tool set should include the migrated Reachy tools."""
     tools = build_system_tools(tmp_path)
@@ -181,6 +212,68 @@ def test_head_tracking_tool_toggles_camera_worker() -> None:
         assert start_result == "Head tracking started"
         assert stop_result == "Head tracking stopped"
         assert camera_worker.enabled_states == [True, False]
+
+    asyncio.run(_exercise())
+
+
+def test_reachy_tools_prefer_embodiment_coordinator_when_available() -> None:
+    """Front expressive tools should route through the coordinator before direct deps."""
+
+    async def _exercise() -> None:
+        coordinator = FakeEmbodimentCoordinator()
+        context = ReachyToolContext(
+            reachy_mini=FakeReachyMini(),
+            movement_manager=FakeMovementManager(),
+            camera_worker=FakeCameraWorker(),
+            embodiment_coordinator=coordinator,
+        )
+
+        with patch(
+            "reachy_mini.runtime.tools.reachy_tools._load_recorded_moves",
+            return_value=FakeRecordedMoves(["happy", "simple_nod"]),
+        ):
+            assert await MoveHeadTool(context=context).execute(direction="left") == "Moved head left"
+            assert await HeadTrackingTool(context=context).execute(start=True) == "Head tracking started"
+            assert await PlayEmotionTool(context=context).execute(emotion="happy") == "Playing emotion happy"
+            assert await DanceTool(context=context).execute(move="simple_nod", repeat=2) == "Playing dance simple_nod x2"
+            assert await StopDanceTool(context=context).execute() == "Stopped dance and cleared queue"
+            assert await StopEmotionTool(context=context).execute() == "Stopped emotion and cleared queue"
+
+        assert [call[0] for call in coordinator.calls] == [
+            "move_head",
+            "set_head_tracking",
+            "play_emotion",
+            "dance",
+            "clear_motion_queue",
+            "clear_motion_queue",
+        ]
+        assert coordinator.calls[4][2] == {"label": "dance"}
+        assert coordinator.calls[5][2] == {"label": "emotion"}
+
+    asyncio.run(_exercise())
+
+
+def test_head_tracking_tool_surfaces_deferred_tracking_status_from_coordinator() -> None:
+    """Coordinator arbitration messages should flow back through the tool layer."""
+
+    class DeferredCoordinator(FakeEmbodimentCoordinator):
+        def set_head_tracking(self, start: bool) -> str:
+            self.calls.append(("set_head_tracking", (start,), {}))
+            return "Head tracking deferred until motion settles"
+
+    async def _exercise() -> None:
+        coordinator = DeferredCoordinator()
+        tool = HeadTrackingTool(
+            context=ReachyToolContext(
+                camera_worker=FakeCameraWorker(),
+                embodiment_coordinator=coordinator,
+            )
+        )
+
+        result = await tool.execute(start=True)
+
+        assert result == "Head tracking deferred until motion settles"
+        assert coordinator.calls == [("set_head_tracking", (True,), {})]
 
     asyncio.run(_exercise())
 

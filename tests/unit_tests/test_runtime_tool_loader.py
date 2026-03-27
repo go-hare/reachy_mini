@@ -24,8 +24,8 @@ def _write_profile(profile_root: Path) -> None:
         (profile_root / directory).mkdir()
 
 
-def test_runtime_tool_bundle_includes_system_tools_and_profile_tools(tmp_path: Path) -> None:
-    """Runtime tools should merge built-in workspace tools and profile-defined tools."""
+def test_runtime_tool_bundle_splits_kernel_front_and_profile_tools(tmp_path: Path) -> None:
+    """Runtime tools should separate kernel, front, and profile ownership."""
     app_root = tmp_path / "demo_app"
     profile_root = app_root / "profiles"
     profile_root.mkdir(parents=True)
@@ -52,14 +52,17 @@ def test_runtime_tool_bundle_includes_system_tools_and_profile_tools(tmp_path: P
     bundle = build_runtime_tool_bundle(profile)
 
     assert bundle.workspace_root == app_root.resolve()
-    assert "write_file" in bundle.system_tool_names
-    assert "read_file" in bundle.system_tool_names
-    assert "move_head" in bundle.system_tool_names
-    assert "do_nothing" in bundle.system_tool_names
-    assert "head_tracking" in bundle.system_tool_names
-    assert "camera" in bundle.system_tool_names
-    assert "play_emotion" in bundle.system_tool_names
-    assert "dance" in bundle.system_tool_names
-    assert "stop_emotion" in bundle.system_tool_names
-    assert "stop_dance" in bundle.system_tool_names
+    assert "write_file" in bundle.kernel_system_tool_names
+    assert "read_file" in bundle.kernel_system_tool_names
+    assert "move_head" not in bundle.kernel_system_tool_names
+    assert "do_nothing" in bundle.front_tool_names
+    assert "move_head" in bundle.front_tool_names
+    assert "head_tracking" in bundle.front_tool_names
+    assert "camera" in bundle.front_tool_names
+    assert "play_emotion" in bundle.front_tool_names
+    assert "dance" in bundle.front_tool_names
+    assert "stop_emotion" in bundle.front_tool_names
+    assert "stop_dance" in bundle.front_tool_names
     assert "ping_tool" in bundle.profile_tool_names
+    assert "ping_tool" in [str(getattr(tool, "name", "") or "").strip() for tool in bundle.kernel_tools]
+    assert "move_head" not in [str(getattr(tool, "name", "") or "").strip() for tool in bundle.kernel_tools]
