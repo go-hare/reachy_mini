@@ -39,6 +39,10 @@ export interface AppSettings {
   show_onboarding_on_start?: boolean;
   docs_auto_sync?: boolean;
   chat_history_style?: 'palette' | 'sidebar' | 'strip';
+  robot_settings?: {
+    live_status_enabled?: boolean;
+    daemon_base_url?: string;
+  };
 }
 
 // ============================
@@ -164,6 +168,10 @@ export interface GeneralSettingsProps {
   onShowOnboardingOnStartChange?: (enabled: boolean) => void;
   maxConcurrentSessions?: number;
   onMaxConcurrentSessionsChange?: (value: number) => void;
+  tempReachyLiveStatusEnabled?: boolean;
+  onReachyLiveStatusEnabledChange?: (enabled: boolean) => void;
+  tempReachyDaemonBaseUrl?: string;
+  onReachyDaemonBaseUrlChange?: (value: string) => void;
 }
 
 export interface AppearanceSettingsProps {

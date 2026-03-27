@@ -1,5 +1,11 @@
 import { Bot, Boxes, Cpu, Orbit, RadioTower, Sparkles } from "lucide-react"
 import type { ComponentType, ReactNode } from "react"
+import { useSettings } from "@/contexts/settings-context"
+import { useReachyStatus } from "@/hooks/use-reachy-status"
+import {
+  getDefaultRobotWorkbenchSettings,
+  type ReachyXYZRPYPose,
+} from "@/lib/reachy-daemon"
 
 interface RobotPanelCardProps {
   title: string
@@ -71,6 +77,48 @@ function MetricRow({
   )
 }
 
+function formatRadiansAsDegrees(value?: number | null) {
+  if (typeof value !== "number" || Number.isNaN(value)) return "—"
+  return `${((value * 180) / Math.PI).toFixed(1)}deg`
+}
+
+function getEulerPose(pose: unknown): ReachyXYZRPYPose | null {
+  if (!pose || typeof pose !== "object" || Array.isArray(pose)) return null
+
+  const maybePose = pose as Partial<ReachyXYZRPYPose>
+  if (
+    typeof maybePose.x === "number" &&
+    typeof maybePose.y === "number" &&
+    typeof maybePose.z === "number" &&
+    typeof maybePose.roll === "number" &&
+    typeof maybePose.pitch === "number" &&
+    typeof maybePose.yaw === "number"
+  ) {
+    return maybePose as ReachyXYZRPYPose
+  }
+
+  return null
+}
+
+function formatAntennaPair(positions?: number[] | null) {
+  if (!Array.isArray(positions) || positions.length < 2) return "—"
+  return `${formatRadiansAsDegrees(positions[0])} / ${formatRadiansAsDegrees(positions[1])}`
+}
+
+function formatTimestamp(value?: string | null) {
+  if (!value) return "—"
+
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return value
+
+  return parsed.toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  })
+}
+
 export function MujocoPanel() {
   return (
     <RobotPanelCard
@@ -103,40 +151,104 @@ export function MujocoPanel() {
 }
 
 export function ReachyStatusPanel() {
+  const { settings } = useSettings()
+  const robotSettings = {
+    ...getDefaultRobotWorkbenchSettings(),
+    ...(settings.robot_settings || {}),
+  }
+  const { connectionState, snapshot, daemonBaseUrl, error, lastUpdatedAt } = useReachyStatus(robotSettings)
+  const headPose = getEulerPose(snapshot?.head_pose)
+
+  const panelStatus =
+    connectionState === "disabled"
+      ? "Disabled"
+      : connectionState === "live"
+        ? "Live"
+        : connectionState === "connecting"
+          ? "Connecting"
+          : "Offline"
+  const robotLinkValue =
+    connectionState === "disabled"
+      ? "Disabled"
+      : connectionState === "live"
+        ? "Connected"
+        : connectionState === "connecting"
+          ? "Connecting"
+          : "Disconnected"
+  const streamValue =
+    connectionState === "live"
+      ? "Streaming"
+      : connectionState === "connecting"
+        ? "Opening"
+        : connectionState === "disabled"
+          ? "Off"
+          : "Idle"
+  const poseSummary = headPose
+    ? `Yaw ${formatRadiansAsDegrees(headPose.yaw)} | Pitch ${formatRadiansAsDegrees(headPose.pitch)} | Roll ${formatRadiansAsDegrees(headPose.roll)}`
+    : "Waiting for the first Reachy state frame"
+
   return (
     <RobotPanelCard
       testId="reachy-status-panel"
       eyebrow="Robot"
       title="Reachy Status"
-      description="预留真实机器人连接、状态概览和动作控制区，下一轮再接 websocket 与命令通道。"
-      status="Offline"
+      description="实时订阅 Reachy daemon 状态流，先做只读状态镜像，命令控制仍留在下一轮。"
+      status={panelStatus}
+      statusTone={connectionState === "live" ? "success" : "neutral"}
     >
       <div className="flex h-full min-h-0 flex-col gap-3">
         <div className="grid gap-2 md:grid-cols-2">
-          <MetricRow icon={Bot} label="Robot Link" value="Disconnected" />
-          <MetricRow icon={RadioTower} label="Command Bus" value="Idle" />
+          <MetricRow icon={Bot} label="Robot Link" value={robotLinkValue} />
+          <MetricRow icon={RadioTower} label="State Stream" value={streamValue} />
+          <MetricRow icon={Cpu} label="Control Mode" value={snapshot?.control_mode ?? "—"} />
+          <MetricRow icon={Sparkles} label="Head Yaw" value={formatRadiansAsDegrees(headPose?.yaw)} />
         </div>
         <div className="rounded-2xl border border-border/60 bg-muted/20 p-3">
           <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-            Next Slots
+            Live Mirror
           </p>
-          <div className="mt-3 space-y-2">
-            <div className="flex items-center justify-between gap-3 text-xs">
-              <span className="text-foreground">Head pose mirror</span>
-              <span className="text-muted-foreground">Not wired</span>
+          <div className="mt-3 space-y-2 text-xs">
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-foreground">Daemon</span>
+              <span className="max-w-[220px] truncate text-muted-foreground">{daemonBaseUrl}</span>
             </div>
-            <div className="flex items-center justify-between gap-3 text-xs">
-              <span className="text-foreground">Motor health</span>
-              <span className="text-muted-foreground">Not wired</span>
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-foreground">Body yaw</span>
+              <span className="text-muted-foreground">{formatRadiansAsDegrees(snapshot?.body_yaw)}</span>
             </div>
-            <div className="flex items-center justify-between gap-3 text-xs">
-              <span className="text-foreground">Behavior controls</span>
-              <span className="text-muted-foreground">Not wired</span>
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-foreground">Antennas</span>
+              <span className="text-muted-foreground">{formatAntennaPair(snapshot?.antennas_position)}</span>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-foreground">Last update</span>
+              <span className="text-muted-foreground">{formatTimestamp(lastUpdatedAt)}</span>
             </div>
           </div>
         </div>
-        <div className="rounded-2xl border border-[hsl(var(--warning))]/30 bg-[hsl(var(--warning))]/10 px-3 py-2.5 text-xs text-[hsl(var(--warning))]">
-          当前阶段只固定桌面结构，不启动 Reachy 后端连接。
+        <div className="rounded-2xl border border-border/60 bg-background/70 p-3">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+            Head Pose
+          </p>
+          <p className="mt-3 text-xs text-foreground">{poseSummary}</p>
+          {headPose ? (
+            <p className="mt-2 text-[11px] text-muted-foreground">
+              X {headPose.x.toFixed(3)} | Y {headPose.y.toFixed(3)} | Z {headPose.z.toFixed(3)}
+            </p>
+          ) : null}
+        </div>
+        {connectionState === "disabled" ? (
+          <div className="rounded-2xl border border-border/60 bg-muted/20 px-3 py-2.5 text-xs text-muted-foreground">
+            Live status is disabled
+          </div>
+        ) : null}
+        {error ? (
+          <div className="rounded-2xl border border-[hsl(var(--warning))]/30 bg-[hsl(var(--warning))]/10 px-3 py-2.5 text-xs text-[hsl(var(--warning))]">
+            {error}
+          </div>
+        ) : null}
+        <div className="rounded-2xl border border-border/60 bg-muted/20 px-3 py-2.5 text-xs text-muted-foreground">
+          当前版本只镜像 Reachy 状态，不发送控制命令。
         </div>
       </div>
     </RobotPanelCard>

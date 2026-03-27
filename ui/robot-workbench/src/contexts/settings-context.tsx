@@ -1,6 +1,11 @@
 import { createContext, useContext, useState, useEffect, useLayoutEffect, ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { applyDashboardPalette } from '@/lib/dashboard-palettes';
+import {
+  getDefaultRobotWorkbenchSettings,
+  normalizeReachyDaemonBaseUrl,
+  type RobotWorkbenchSettings,
+} from '@/lib/reachy-daemon';
 
 type DefaultCliAgent = 'autohand' | 'claude' | 'codex' | 'gemini';
 
@@ -40,6 +45,7 @@ interface AppSettings {
   dashboard_chart_type?: 'scatter' | 'knowledge-base';
   docs_auto_sync?: boolean;
   chat_history_style?: 'palette' | 'sidebar' | 'strip';
+  robot_settings?: RobotWorkbenchSettings;
 }
 
 interface SettingsContextType {
@@ -70,6 +76,7 @@ const defaultSettings: AppSettings = {
   dashboard_chart_type: 'scatter',
   docs_auto_sync: false,
   chat_history_style: 'palette',
+  robot_settings: getDefaultRobotWorkbenchSettings(),
 };
 
 const SettingsContext = createContext<SettingsContextType | undefined>(undefined);
@@ -87,10 +94,16 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
         ...defaultSettings.code_settings,
         ...(appSettings.code_settings || {}),
       };
+      const mergedRobotSettings = {
+        ...defaultSettings.robot_settings,
+        ...(appSettings.robot_settings || {}),
+      };
+      mergedRobotSettings.daemon_base_url = normalizeReachyDaemonBaseUrl(mergedRobotSettings.daemon_base_url);
       setSettings({
         ...defaultSettings,
         ...appSettings,
         code_settings: mergedCodeSettings,
+        robot_settings: mergedRobotSettings,
         default_cli_agent: defaultCliAgent,
         suggest_create_agents_md: appSettings.suggest_create_agents_md ?? true,
       });
@@ -110,11 +123,19 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
             ...newSettings.code_settings,
           }
         : settings.code_settings;
+      const mergedRobotSettings = newSettings.robot_settings
+        ? {
+            ...(settings.robot_settings || getDefaultRobotWorkbenchSettings()),
+            ...newSettings.robot_settings,
+          }
+        : (settings.robot_settings || getDefaultRobotWorkbenchSettings());
+      mergedRobotSettings.daemon_base_url = normalizeReachyDaemonBaseUrl(mergedRobotSettings.daemon_base_url);
 
       const updatedSettings: AppSettings = {
         ...settings,
         ...newSettings,
         code_settings: mergedCodeSettings,
+        robot_settings: mergedRobotSettings,
       };
       updatedSettings.default_cli_agent = normalizeDefaultAgent(updatedSettings.default_cli_agent);
       await invoke('save_app_settings', { settings: updatedSettings });

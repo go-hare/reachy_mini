@@ -36,6 +36,10 @@ export function GeneralSettings({
   onShowOnboardingOnStartChange,
   maxConcurrentSessions = 10,
   onMaxConcurrentSessionsChange,
+  tempReachyLiveStatusEnabled = false,
+  onReachyLiveStatusEnabledChange,
+  tempReachyDaemonBaseUrl = 'http://localhost:8000',
+  onReachyDaemonBaseUrlChange,
 }: GeneralSettingsProps) {
   const { showSuccess, showError } = useToast()
   const [confirmOpen, setConfirmOpen] = useState(false)
@@ -145,6 +149,37 @@ export function GeneralSettings({
                 checked={!!tempShowOnboardingOnStart}
                 onCheckedChange={(val) => onShowOnboardingOnStartChange?.(val)}
               />
+            </div>
+          </div>
+          <div className="space-y-4">
+            <h4 className="text-sm font-medium">Robot Workbench</h4>
+            <div className="flex items-center justify-between rounded-md border border-border/60 p-4">
+              <div className="space-y-0.5">
+                <Label htmlFor="reachy-live-status-toggle">Enable Reachy Live Status</Label>
+                <p className="text-xs text-muted-foreground">
+                  {tempReachyLiveStatusEnabled
+                    ? 'Robot status live stream enabled for the configured daemon.'
+                    : 'Robot status live stream disabled.'}
+                </p>
+              </div>
+              <Switch
+                id="reachy-live-status-toggle"
+                checked={!!tempReachyLiveStatusEnabled}
+                onCheckedChange={(value) => onReachyLiveStatusEnabledChange?.(value)}
+                aria-label="Enable Reachy Live Status"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="reachy-daemon-url">Reachy Daemon URL</Label>
+              <Input
+                id="reachy-daemon-url"
+                placeholder="http://localhost:8000"
+                value={tempReachyDaemonBaseUrl}
+                onChange={(e) => onReachyDaemonBaseUrlChange?.(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                Lite usually runs on `http://localhost:8000`. Wireless commonly uses `http://reachy-mini.local:8000`.
+              </p>
             </div>
           </div>
           <div className="space-y-2">

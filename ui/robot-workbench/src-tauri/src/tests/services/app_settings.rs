@@ -98,4 +98,45 @@ mod tests {
             "normalize() must keep \"autohand\" intact — it is in the allowlist"
         );
     }
+
+    #[test]
+    fn default_settings_include_robot_status_defaults() {
+        let value = serde_json::to_value(AppSettings::default()).expect("serialize defaults");
+        let robot_settings = value
+            .get("robot_settings")
+            .expect("robot_settings should be present on default settings");
+
+        assert_eq!(
+            robot_settings
+                .get("live_status_enabled")
+                .and_then(|v| v.as_bool()),
+            Some(true),
+            "live status should default to enabled for the robot workbench"
+        );
+        assert_eq!(
+            robot_settings
+                .get("daemon_base_url")
+                .and_then(|v| v.as_str()),
+            Some("http://localhost:8000"),
+            "the default daemon URL should point at the local Reachy daemon"
+        );
+    }
+
+    #[test]
+    fn blank_robot_daemon_url_resets_to_default() {
+        let mut raw = serde_json::to_value(AppSettings::default()).expect("serialize defaults");
+        raw["robot_settings"]["daemon_base_url"] = Value::String("   ".to_string());
+        let value = round_trip(raw);
+
+        let daemon_url = value
+            .get("robot_settings")
+            .and_then(|v| v.get("daemon_base_url"))
+            .and_then(|v| v.as_str());
+
+        assert_eq!(
+            daemon_url,
+            Some("http://localhost:8000"),
+            "blank daemon URLs should normalize back to the standard default"
+        );
+    }
 }

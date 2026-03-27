@@ -80,6 +80,8 @@ pub struct AppSettings {
     #[serde(default = "default_show_onboarding_on_start")]
     /// Whether to show the onboarding guide on every app start
     pub show_onboarding_on_start: bool,
+    #[serde(default)]
+    pub robot_settings: RobotSettings,
 }
 
 fn default_show_console_output() -> bool {
@@ -158,6 +160,44 @@ fn default_time_saved_multiplier() -> f32 { 5.0 }
 fn default_dashboard_color_palette() -> String { "default".to_string() }
 fn default_dashboard_chart_type() -> String { "scatter".to_string() }
 fn default_show_onboarding_on_start() -> bool { false }
+fn default_robot_live_status_enabled() -> bool { true }
+fn default_robot_daemon_base_url() -> String { "http://localhost:8000".to_string() }
+
+fn sanitize_robot_daemon_base_url(value: &str) -> String {
+    let trimmed = value.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return default_robot_daemon_base_url();
+    }
+
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        trimmed.to_string()
+    } else {
+        format!("http://{}", trimmed)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RobotSettings {
+    #[serde(default = "default_robot_live_status_enabled")]
+    pub live_status_enabled: bool,
+    #[serde(default = "default_robot_daemon_base_url")]
+    pub daemon_base_url: String,
+}
+
+impl Default for RobotSettings {
+    fn default() -> Self {
+        Self {
+            live_status_enabled: default_robot_live_status_enabled(),
+            daemon_base_url: default_robot_daemon_base_url(),
+        }
+    }
+}
+
+impl RobotSettings {
+    pub fn normalize(&mut self) {
+        self.daemon_base_url = sanitize_robot_daemon_base_url(&self.daemon_base_url);
+    }
+}
 
 impl Default for CodeSettings {
     fn default() -> Self {
@@ -190,6 +230,7 @@ impl Default for AppSettings {
             show_dashboard_activity: None,
             dashboard_chart_type: default_dashboard_chart_type(),
             show_onboarding_on_start: default_show_onboarding_on_start(),
+            robot_settings: RobotSettings::default(),
         }
     }
 }
@@ -197,5 +238,6 @@ impl Default for AppSettings {
 impl AppSettings {
     pub fn normalize(&mut self) {
         self.default_cli_agent = sanitize_default_cli_agent(&self.default_cli_agent);
+        self.robot_settings.normalize();
     }
 }

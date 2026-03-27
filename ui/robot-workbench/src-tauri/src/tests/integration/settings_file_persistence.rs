@@ -89,6 +89,8 @@ mod tests {
         settings.code_settings.theme = "dracula".to_string();
         settings.code_settings.font_size = 18;
         settings.code_settings.auto_collapse_sidebar = true;
+        settings.robot_settings.live_status_enabled = false;
+        settings.robot_settings.daemon_base_url = "http://reachy-mini.local:8000".to_string();
 
         tauri::async_runtime::block_on(save_app_settings_internal(
             handle1.clone(),
@@ -115,6 +117,11 @@ mod tests {
         assert_eq!(loaded.code_settings.theme, "dracula".to_string());
         assert_eq!(loaded.code_settings.font_size, 18);
         assert!(loaded.code_settings.auto_collapse_sidebar);
+        assert!(!loaded.robot_settings.live_status_enabled);
+        assert_eq!(
+            loaded.robot_settings.daemon_base_url,
+            "http://reachy-mini.local:8000".to_string()
+        );
     }
 
     #[test]
@@ -140,6 +147,8 @@ mod tests {
         settings.code_settings.theme = "dracula".to_string();
         settings.code_settings.font_size = 18;
         settings.code_settings.auto_collapse_sidebar = true;
+        settings.robot_settings.live_status_enabled = false;
+        settings.robot_settings.daemon_base_url = "http://reachy-mini.local:8000".to_string();
 
         tauri::async_runtime::block_on(save_app_settings_internal(
             handle.clone(),
@@ -172,6 +181,11 @@ mod tests {
         assert_eq!(from_file.code_settings.theme, "dracula".to_string());
         assert_eq!(from_file.code_settings.font_size, 18);
         assert!(from_file.code_settings.auto_collapse_sidebar);
+        assert!(!from_file.robot_settings.live_status_enabled);
+        assert_eq!(
+            from_file.robot_settings.daemon_base_url,
+            "http://reachy-mini.local:8000".to_string()
+        );
 
         assert!(
             json.get("code").is_none(),

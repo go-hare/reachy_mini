@@ -35,6 +35,10 @@ import { useLLMSettings } from "@/hooks/use-llm-settings"
 import { useSettings as useAppSettingsContext } from "@/contexts/settings-context"
 import type { SettingsModalProps, SettingsTab } from "@/types/settings"
 import {
+  getDefaultRobotWorkbenchSettings,
+  normalizeReachyDaemonBaseUrl,
+} from "@/lib/reachy-daemon"
+import {
   defaultCustomAgentDefinition,
   defaultEnabledAgentsMap,
   type CustomAgentDefinition,
@@ -128,6 +132,10 @@ export function SettingsModal({ isOpen, onClose, initialTab, workingDir }: Setti
   const [tempDocsAutoSync, setTempDocsAutoSync] = useState<boolean>(false)
   const [chatHistoryStyle, setChatHistoryStyle] = useState<'palette' | 'sidebar' | 'strip'>('palette')
   const [tempChatHistoryStyle, setTempChatHistoryStyle] = useState<'palette' | 'sidebar' | 'strip'>('palette')
+  const [reachyLiveStatusEnabled, setReachyLiveStatusEnabled] = useState<boolean>(getDefaultRobotWorkbenchSettings().live_status_enabled)
+  const [tempReachyLiveStatusEnabled, setTempReachyLiveStatusEnabled] = useState<boolean>(getDefaultRobotWorkbenchSettings().live_status_enabled)
+  const [reachyDaemonBaseUrl, setReachyDaemonBaseUrl] = useState<string>(getDefaultRobotWorkbenchSettings().daemon_base_url)
+  const [tempReachyDaemonBaseUrl, setTempReachyDaemonBaseUrl] = useState<string>(getDefaultRobotWorkbenchSettings().daemon_base_url)
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
   const [showUnsavedChangesDialog, setShowUnsavedChangesDialog] = useState(false)
   const [agentSettings, setAgentSettings] = useState<Record<string, boolean>>({})
@@ -212,6 +220,15 @@ export function SettingsModal({ isOpen, onClose, initialTab, workingDir }: Setti
             const histStyle = (appSettings as any).chat_history_style || 'palette'
             setChatHistoryStyle(histStyle)
             setTempChatHistoryStyle(histStyle)
+            const robotSettings = (appSettings as any).robot_settings || getDefaultRobotWorkbenchSettings()
+            const liveStatusEnabled = robotSettings.live_status_enabled ?? getDefaultRobotWorkbenchSettings().live_status_enabled
+            const daemonBaseUrl = normalizeReachyDaemonBaseUrl(
+              robotSettings.daemon_base_url ?? getDefaultRobotWorkbenchSettings().daemon_base_url
+            )
+            setReachyLiveStatusEnabled(Boolean(liveStatusEnabled))
+            setTempReachyLiveStatusEnabled(Boolean(liveStatusEnabled))
+            setReachyDaemonBaseUrl(daemonBaseUrl)
+            setTempReachyDaemonBaseUrl(daemonBaseUrl)
           }
         } catch (appError) {
           console.warn('⚠️ Failed to load app settings (using defaults):', appError)
@@ -334,6 +351,8 @@ export function SettingsModal({ isOpen, onClose, initialTab, workingDir }: Setti
       tempShowDashboardActivity !== showDashboardActivity ||
       tempDashboardChartType !== dashboardChartType ||
       tempShowOnboardingOnStart !== showOnboardingOnStart ||
+      tempReachyLiveStatusEnabled !== reachyLiveStatusEnabled ||
+      tempReachyDaemonBaseUrl !== reachyDaemonBaseUrl ||
       tempChatHistoryStyle !== chatHistoryStyle ||
       JSON.stringify(tempAgentSettings) !== JSON.stringify(agentSettings) ||
       (tempAllAgentSettings && allAgentSettings && JSON.stringify(tempAllAgentSettings) !== JSON.stringify(allAgentSettings))
@@ -370,6 +389,10 @@ export function SettingsModal({ isOpen, onClose, initialTab, workingDir }: Setti
     dashboardChartType,
     tempShowOnboardingOnStart,
     showOnboardingOnStart,
+    tempReachyLiveStatusEnabled,
+    reachyLiveStatusEnabled,
+    tempReachyDaemonBaseUrl,
+    reachyDaemonBaseUrl,
     tempChatHistoryStyle,
     chatHistoryStyle,
     tempAgentSettings,
@@ -530,6 +553,41 @@ export function SettingsModal({ isOpen, onClose, initialTab, workingDir }: Setti
     }
     saveOnboarding()
   }, [tempShowOnboardingOnStart, settingsHydrated, showOnboardingOnStart])
+
+  useEffect(() => {
+    const normalizedDaemonUrl = normalizeReachyDaemonBaseUrl(tempReachyDaemonBaseUrl)
+    const robotSettingsChanged =
+      tempReachyLiveStatusEnabled !== reachyLiveStatusEnabled ||
+      normalizedDaemonUrl !== reachyDaemonBaseUrl
+
+    if (!settingsHydrated || !robotSettingsChanged) return
+
+    const timeout = window.setTimeout(async () => {
+      try {
+        await updateAppSettings({
+          robot_settings: {
+            live_status_enabled: tempReachyLiveStatusEnabled,
+            daemon_base_url: normalizedDaemonUrl,
+          },
+        })
+        setReachyLiveStatusEnabled(tempReachyLiveStatusEnabled)
+        setReachyDaemonBaseUrl(normalizedDaemonUrl)
+        setTempReachyDaemonBaseUrl(normalizedDaemonUrl)
+      } catch (e) {
+        console.error('Failed to auto-save robot_settings:', e)
+      }
+    }, 250)
+
+    return () => {
+      window.clearTimeout(timeout)
+    }
+  }, [
+    tempReachyLiveStatusEnabled,
+    tempReachyDaemonBaseUrl,
+    settingsHydrated,
+    reachyLiveStatusEnabled,
+    reachyDaemonBaseUrl,
+  ])
 
   // Default CLI agent changes are persisted via explicit Save action to respect unsaved-changes workflow.
 
@@ -969,6 +1027,10 @@ export function SettingsModal({ isOpen, onClose, initialTab, workingDir }: Setti
                   onShowOnboardingOnStartChange={setTempShowOnboardingOnStart}
                   maxConcurrentSessions={tempAllAgentSettings?.max_concurrent_sessions || 10}
                   onMaxConcurrentSessionsChange={(value) => handleUpdateAgentSetting('global', 'max_concurrent_sessions', value)}
+                  tempReachyLiveStatusEnabled={tempReachyLiveStatusEnabled}
+                  onReachyLiveStatusEnabledChange={setTempReachyLiveStatusEnabled}
+                  tempReachyDaemonBaseUrl={tempReachyDaemonBaseUrl}
+                  onReachyDaemonBaseUrlChange={setTempReachyDaemonBaseUrl}
                 />
               )}
               {activeTab === 'appearance' && (
