@@ -4,7 +4,9 @@ use crate::services::indexer::indexer_service;
 use std::sync::Arc;
 
 #[tauri::command]
-pub async fn get_indexer_status(db: tauri::State<'_, Arc<IndexDb>>) -> Result<IndexerStatus, String> {
+pub async fn get_indexer_status(
+    db: tauri::State<'_, Arc<IndexDb>>,
+) -> Result<IndexerStatus, String> {
     let total_sessions = db.get_total_sessions()?;
     let agents_indexed = db.get_indexed_agents()?;
 

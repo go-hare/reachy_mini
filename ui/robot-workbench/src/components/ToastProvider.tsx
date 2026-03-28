@@ -33,6 +33,11 @@ interface ToastProviderProps {
   children: React.ReactNode
 }
 
+function shouldSuppressToast(toast: Pick<ToastData, 'title' | 'message'>) {
+  const content = `${toast.title ?? ''}\n${toast.message}`.toLowerCase()
+  return content.includes('agents.md')
+}
+
 export function ToastProvider({ children }: ToastProviderProps) {
   const [toasts, setToasts] = useState<ToastData[]>([])
 
@@ -41,6 +46,10 @@ export function ToastProvider({ children }: ToastProviderProps) {
   }, [])
 
   const showToast = useCallback((toast: Omit<ToastData, 'id'>) => {
+    if (shouldSuppressToast(toast)) {
+      return
+    }
+
     setToasts(prev => {
       // Deduplicate: skip if a toast with the same title and message already exists
       const isDuplicate = prev.some(
@@ -90,7 +99,7 @@ export function ToastProvider({ children }: ToastProviderProps) {
       
       {/* Toast Container */}
       <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-sm">
-        {toasts.map((toast) => (
+        {toasts.filter((toast) => !shouldSuppressToast(toast)).map((toast) => (
           <Toast
             key={toast.id}
             id={toast.id}

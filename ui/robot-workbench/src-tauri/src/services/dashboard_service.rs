@@ -150,10 +150,26 @@ mod tests {
     #[test]
     fn test_compute_streaks_with_gap() {
         let activity = vec![
-            DailyActivity { date: "2026-03-01".into(), message_count: 3, token_count: 0 },
-            DailyActivity { date: "2026-03-02".into(), message_count: 2, token_count: 0 },
-            DailyActivity { date: "2026-03-03".into(), message_count: 0, token_count: 0 },
-            DailyActivity { date: "2026-03-04".into(), message_count: 1, token_count: 0 },
+            DailyActivity {
+                date: "2026-03-01".into(),
+                message_count: 3,
+                token_count: 0,
+            },
+            DailyActivity {
+                date: "2026-03-02".into(),
+                message_count: 2,
+                token_count: 0,
+            },
+            DailyActivity {
+                date: "2026-03-03".into(),
+                message_count: 0,
+                token_count: 0,
+            },
+            DailyActivity {
+                date: "2026-03-04".into(),
+                message_count: 1,
+                token_count: 0,
+            },
         ];
         let (current, longest) = compute_streaks(&activity);
         assert_eq!(current, 1);

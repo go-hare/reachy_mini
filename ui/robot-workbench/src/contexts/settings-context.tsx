@@ -3,6 +3,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { applyDashboardPalette } from '@/lib/dashboard-palettes';
 import {
   getDefaultRobotWorkbenchSettings,
+  normalizeWorkbenchLaunchCommand,
+  normalizeWorkbenchViewerUrl,
   normalizeReachyDaemonBaseUrl,
   type RobotWorkbenchSettings,
 } from '@/lib/reachy-daemon';
@@ -35,7 +37,6 @@ interface AppSettings {
   show_welcome_recent_projects?: boolean;
   max_chat_history?: number;
   default_cli_agent?: DefaultCliAgent;
-  suggest_create_agents_md?: boolean;
   has_completed_onboarding?: boolean;
   show_onboarding_on_start?: boolean;
   dashboard_time_range?: number;
@@ -69,7 +70,6 @@ const defaultSettings: AppSettings = {
     show_file_explorer: true,
   },
   default_cli_agent: FALLBACK_AGENT,
-  suggest_create_agents_md: true,
   has_completed_onboarding: false,
   show_onboarding_on_start: false,
   dashboard_color_palette: 'default',
@@ -99,13 +99,16 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
         ...(appSettings.robot_settings || {}),
       };
       mergedRobotSettings.daemon_base_url = normalizeReachyDaemonBaseUrl(mergedRobotSettings.daemon_base_url);
+      mergedRobotSettings.mujoco_viewer_url = normalizeWorkbenchViewerUrl(mergedRobotSettings.mujoco_viewer_url);
+      mergedRobotSettings.mujoco_viewer_launch_command = normalizeWorkbenchLaunchCommand(
+        mergedRobotSettings.mujoco_viewer_launch_command
+      );
       setSettings({
         ...defaultSettings,
         ...appSettings,
         code_settings: mergedCodeSettings,
         robot_settings: mergedRobotSettings,
         default_cli_agent: defaultCliAgent,
-        suggest_create_agents_md: appSettings.suggest_create_agents_md ?? true,
       });
     } catch (error) {
       console.warn('⚠️ Failed to load app settings (using defaults):', error);
@@ -123,13 +126,16 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
             ...newSettings.code_settings,
           }
         : settings.code_settings;
-      const mergedRobotSettings = newSettings.robot_settings
-        ? {
-            ...(settings.robot_settings || getDefaultRobotWorkbenchSettings()),
-            ...newSettings.robot_settings,
-          }
-        : (settings.robot_settings || getDefaultRobotWorkbenchSettings());
+      const mergedRobotSettings: RobotWorkbenchSettings = {
+        ...getDefaultRobotWorkbenchSettings(),
+        ...(settings.robot_settings || {}),
+        ...(newSettings.robot_settings || {}),
+      };
       mergedRobotSettings.daemon_base_url = normalizeReachyDaemonBaseUrl(mergedRobotSettings.daemon_base_url);
+      mergedRobotSettings.mujoco_viewer_url = normalizeWorkbenchViewerUrl(mergedRobotSettings.mujoco_viewer_url);
+      mergedRobotSettings.mujoco_viewer_launch_command = normalizeWorkbenchLaunchCommand(
+        mergedRobotSettings.mujoco_viewer_launch_command
+      );
 
       const updatedSettings: AppSettings = {
         ...settings,

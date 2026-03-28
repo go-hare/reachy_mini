@@ -46,7 +46,7 @@
 3. 将 `emoticorebot` 的 `front + runtime + brain_kernel + memory + affect + companion` 引入当前仓库。
 4. 复用旧 conversation app 中已经验证过的机器人动作能力、工具能力和人物设定素材。
 5. 将 `front` 升级为真正的外显层，而不是简单文案包装层。
-6. 用 `emoticorebot` 生成的 `surface_state / reply / tool call` 驱动 Reachy Mini 原有动作接口。
+6. 当前主链路已通过 `reply / tool call` 和 runtime 产出的 `surface_state` 驱动 Reachy Mini 原有动作接口；后续再把更多 `front` 外显状态决策直接接入执行层。
 
 一句话总结：
 
@@ -221,6 +221,11 @@
 - 工作区搜索
 - system / exec / mcp / web 等任务工具
 - profile 私有的任务型工具
+
+当前代码现状补充：
+
+- `kernel` 默认任务工具平面目前已经稳定接入的是文件与工作区类工具
+- `system / exec / mcp / web` 相关工具文件已经存在，但还没有全部进入默认主链路
 
 需要特别说明的是：
 
@@ -1183,9 +1188,10 @@ profile 不再是旧 conversation 的提示词目录，而是新 Agent 的完整
 
 - `requires-python = ">=3.11"`
 
-建议：
+当前状态与建议：
 
-- 将当前项目统一提升到 Python 3.11
+- 当前项目仍维持 `>=3.10`
+- 后续如果要继续扩大 `emoticorebot` 依赖整合范围，建议再统一提升到 Python 3.11
 
 否则后续依赖整合会持续存在问题。
 
@@ -1310,6 +1316,8 @@ profile 不再是旧 conversation 的提示词目录，而是新 Agent 的完整
 - `EmbodimentCoordinator` 第一版已经建立，并已开始统一承接身体执行入口
 - `front` 已正式持有外显类工具
 - 外显类工具与任务类工具已完成第一版职责拆分
+- `front` 当前已经能产出 `lifecycle_state / surface_patch / tool_calls`，但身体执行主链里的 phase `surface_state` 仍主要由 runtime/scheduler 推送，`front surface_patch` 还不是身体层唯一入口
+- `kernel` 默认任务工具平面当前仍以文件/工作区类工具为主，更宽的 `system / exec / mcp / web` 工具还未全部进入默认主链路
 - 外显类工具已开始优先通过 coordinator 落到身体执行层
 - coordinator 已开始处理动作 / tracking / speech 的冲突关系
 - coordinator 已补入显式动作优先级与抢占规则，当前优先级暂定为 `move_head > play_emotion > dance`
@@ -1416,7 +1424,7 @@ profile 不再是旧 conversation 的提示词目录，而是新 Agent 的完整
 
 应对：
 
-- 尽早统一到 Python 3.11
+- 在继续扩大依赖整合范围前统一到 Python 3.11；当前仍按 `>=3.10` 运行
 - 分阶段引入依赖
 
 ### 15.2 动作层耦合过深

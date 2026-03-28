@@ -152,11 +152,39 @@ pub fn normalize_legacy_agent_registry(
 ) -> AgentRegistrySettings {
     let mut agents = HashMap::new();
     let builtins = [
-        ("autohand", "Autohand Code", "autohand", "json-rpc", Some("hybrid".to_string()), &legacy.autohand),
-        ("claude", "Claude Code CLI", "claude", "cli-flags", None, &legacy.claude),
+        (
+            "autohand",
+            "Autohand Code",
+            "autohand",
+            "json-rpc",
+            Some("hybrid".to_string()),
+            &legacy.autohand,
+        ),
+        (
+            "claude",
+            "Claude Code CLI",
+            "claude",
+            "cli-flags",
+            None,
+            &legacy.claude,
+        ),
         ("codex", "Codex", "codex", "cli-flags", None, &legacy.codex),
-        ("gemini", "Gemini", "gemini", "cli-flags", None, &legacy.gemini),
-        ("ollama", "Ollama", "ollama", "cli-flags", None, &legacy.ollama),
+        (
+            "gemini",
+            "Gemini",
+            "gemini",
+            "cli-flags",
+            None,
+            &legacy.gemini,
+        ),
+        (
+            "ollama",
+            "Ollama",
+            "ollama",
+            "cli-flags",
+            None,
+            &legacy.ollama,
+        ),
     ];
 
     for (id, label, command, transport, protocol, settings) in builtins {

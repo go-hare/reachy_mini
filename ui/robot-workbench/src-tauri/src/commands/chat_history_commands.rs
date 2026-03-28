@@ -5,10 +5,10 @@ use crate::services::chat_history_service::{
     archive_session as archive_session_impl, delete_chat_session as delete_session_impl,
     ensure_commander_directory, export_chat_history as export_impl, extract_file_mentions,
     fork_session as fork_session_impl, get_chat_history_stats as get_stats_impl,
-    group_messages_into_sessions, load_chat_sessions as load_sessions_impl,
-    load_session_messages, migrate_legacy_chat_data as migrate_impl,
-    rename_session as rename_session_impl, save_chat_session as save_session_impl,
-    unarchive_session as unarchive_session_impl, update_summary as update_summary_impl,
+    group_messages_into_sessions, load_chat_sessions as load_sessions_impl, load_session_messages,
+    migrate_legacy_chat_data as migrate_impl, rename_session as rename_session_impl,
+    save_chat_session as save_session_impl, unarchive_session as unarchive_session_impl,
+    update_summary as update_summary_impl,
 };
 use crate::services::indexer::db::IndexDb;
 
@@ -128,7 +128,8 @@ pub async fn append_chat_message(
     message.metadata.file_mentions = extract_file_mentions(&content);
 
     // Try to find an existing session to append to
-    let recent_sessions = load_sessions_impl(&project_path, Some(1), Some(agent.clone()), None).await?;
+    let recent_sessions =
+        load_sessions_impl(&project_path, Some(1), Some(agent.clone()), None).await?;
 
     let session_to_use = if let Some(recent_session) = recent_sessions.first() {
         // Check if we should append to this session based on timing
@@ -262,10 +263,7 @@ pub async fn unarchive_chat_session(
 
 /// Fork a chat session (create a copy)
 #[tauri::command]
-pub async fn fork_chat_session(
-    project_path: String,
-    session_id: String,
-) -> Result<String, String> {
+pub async fn fork_chat_session(project_path: String, session_id: String) -> Result<String, String> {
     fork_session_impl(&project_path, &session_id).await
 }
 
@@ -308,18 +306,12 @@ pub async fn load_unified_chat_sessions(
 
     // 2. If indexed sessions are requested, merge them
     if include_indexed != Some(false) {
-        let indexed_rows = db.get_sessions_for_project(
-            Some(&project_path),
-            agent.as_deref(),
-            200,
-            0,
-        )?;
+        let indexed_rows =
+            db.get_sessions_for_project(Some(&project_path), agent.as_deref(), 200, 0)?;
 
         // Build a set of (agent, original_id) from local sessions for dedup
-        let local_ids: std::collections::HashSet<String> = local_sessions
-            .iter()
-            .map(|s| s.id.clone())
-            .collect();
+        let local_ids: std::collections::HashSet<String> =
+            local_sessions.iter().map(|s| s.id.clone()).collect();
 
         for idx in &indexed_rows {
             let candidate = ChatSession::from_indexed(idx);
@@ -478,7 +470,9 @@ mod tests {
             .unwrap();
 
         // Verify it's gone
-        let sessions_after = load_chat_sessions(project_path, None, None, None).await.unwrap();
+        let sessions_after = load_chat_sessions(project_path, None, None, None)
+            .await
+            .unwrap();
         assert_eq!(sessions_after.len(), 0);
     }
 

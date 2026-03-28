@@ -1,5 +1,7 @@
 use crate::models::indexer::IndexedSession;
-use crate::services::indexer::scanner::{AgentScanner, DiscoveredFile, ParseResult, truncate_summary};
+use crate::services::indexer::scanner::{
+    truncate_summary, AgentScanner, DiscoveredFile, ParseResult,
+};
 use async_trait::async_trait;
 use std::path::PathBuf;
 
@@ -9,9 +11,7 @@ pub struct CodexScanner {
 
 impl CodexScanner {
     pub fn new() -> Self {
-        let home = dirs::home_dir()
-            .unwrap_or_default()
-            .join(".codex");
+        let home = dirs::home_dir().unwrap_or_default().join(".codex");
         Self { home }
     }
 }
@@ -53,7 +53,11 @@ impl AgentScanner for CodexScanner {
 
         let file_mtime = std::fs::metadata(path)
             .and_then(|m| m.modified())
-            .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64)
+            .map(|t| {
+                t.duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64
+            })
             .unwrap_or(0);
 
         let mut session_id: Option<String> = None;
@@ -74,10 +78,15 @@ impl AgentScanner for CodexScanner {
                 match entry_type {
                     "session_meta" => {
                         if let Some(payload) = val.get("payload") {
-                            session_id = payload.get("id").and_then(|v| v.as_str()).map(String::from);
-                            cwd = payload.get("cwd").and_then(|v| v.as_str()).map(String::from);
+                            session_id =
+                                payload.get("id").and_then(|v| v.as_str()).map(String::from);
+                            cwd = payload
+                                .get("cwd")
+                                .and_then(|v| v.as_str())
+                                .map(String::from);
 
-                            if let Some(ts_str) = payload.get("timestamp").and_then(|v| v.as_str()) {
+                            if let Some(ts_str) = payload.get("timestamp").and_then(|v| v.as_str())
+                            {
                                 if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts_str) {
                                     session_start = Some(dt.timestamp());
                                 }
@@ -93,8 +102,12 @@ impl AgentScanner for CodexScanner {
                             }
                             // Extract first user message as summary
                             if summary.is_none() && role == "user" {
-                                if let Some(content_arr) = item.get("content").and_then(|c| c.as_array()) {
-                                    if let Some(text) = content_arr.iter().find_map(|b| b["text"].as_str()) {
+                                if let Some(content_arr) =
+                                    item.get("content").and_then(|c| c.as_array())
+                                {
+                                    if let Some(text) =
+                                        content_arr.iter().find_map(|b| b["text"].as_str())
+                                    {
                                         summary = Some(truncate_summary(text));
                                     }
                                 }
@@ -166,7 +179,11 @@ fn walk_jsonl_files(dir: &std::path::Path, files: &mut Vec<DiscoveredFile>) {
             if let Ok(meta) = std::fs::metadata(&path) {
                 let mtime = meta
                     .modified()
-                    .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64)
+                    .map(|t| {
+                        t.duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs() as i64
+                    })
                     .unwrap_or(0);
                 files.push(DiscoveredFile {
                     path: path.to_string_lossy().to_string(),

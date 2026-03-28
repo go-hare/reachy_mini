@@ -185,6 +185,24 @@
 - [x] Add the first robot side panel shell with MuJoCo and Reachy sections
 - [x] Reshape the project view into center workspace plus right-side robot panel
 - [x] Run focused verification for the three-pane robot workbench shell
+- [x] Inspect the broken Reachy live status import chain after the websocket card landed
+- [x] Write PRD/TDD for stabilizing the Reachy live status foundation
+- [x] Restore the shared reachy-daemon runtime helpers used by settings, context, and status hook
+- [x] Run focused verification for Reachy live status settings and panel regressions
+- [x] Inspect the daemon-side simulation status API for the MuJoCo panel
+- [x] Write PRD/TDD for connecting the MuJoCo live status panel
+- [x] Add failing regressions for MuJoCo panel live status states and settings autosave
+- [x] Replace the static MuJoCo placeholder with a daemon-backed live status panel
+- [x] Run focused verification for the MuJoCo live status panel pass
+- [x] Inspect how the MuJoCo panel can host a real embedded viewer without backend changes
+- [x] Write PRD/TDD for embedding the MuJoCo viewer shell
+- [x] Add failing regressions for MuJoCo viewer embedding and settings persistence
+- [x] Replace the MuJoCo status-only card top section with an embeddable viewer container
+- [x] Run focused verification for the MuJoCo viewer shell pass
+- [x] Inspect whether MuJoCo viewer should ship with a default local address
+- [x] Write PRD/TDD for prewiring the default MuJoCo viewer URL
+- [x] Update defaults and regressions for the prewired local MuJoCo viewer URL
+- [x] Run focused verification for the default MuJoCo viewer URL pass
 
 # Review
 
@@ -245,6 +263,48 @@
   - `src/components/__tests__/App.projectSelection.chatDefault.test.tsx`
   - `src/components/__tests__/App.projectHeader.identity.test.tsx`
   - `bun x tsc --noEmit` still fails because the repo already has broad pre-existing TypeScript issues across older tests and unrelated components; this shell change did not introduce a new standalone compiler error in the touched files.
+- Reachy live status foundation pass:
+  - `src/lib/__tests__/reachy-daemon.test.ts`
+  - `src/components/__tests__/RobotSidePanel.reachyStatus.test.tsx`
+  - `src/components/settings/__tests__/SettingsModal.robotStatus.autosave.test.tsx`
+  - `src/components/__tests__/App.robotWorkbench.shell.test.tsx`
+  - `src/components/__tests__/App.projectHeader.identity.test.tsx`
+  - `src/contexts/__tests__/settings-context-agent.test.tsx`
+  - `SettingsModal.robotStatus.autosave` still emits a pre-existing Radix warning about missing dialog description, but assertions pass.
+- MuJoCo live status panel pass:
+  - `src/components/__tests__/RobotSidePanel.mujocoStatus.test.tsx`
+  - `src/components/settings/__tests__/SettingsModal.mujocoStatus.autosave.test.tsx`
+  - `src/components/settings/__tests__/SettingsModal.robotStatus.autosave.test.tsx`
+  - `src/components/__tests__/RobotSidePanel.reachyStatus.test.tsx`
+  - `src/components/__tests__/App.robotWorkbench.shell.test.tsx`
+  - `src/components/__tests__/App.projectHeader.identity.test.tsx`
+  - `src/contexts/__tests__/settings-context-agent.test.tsx`
+  - `src/lib/__tests__/reachy-daemon.test.ts`
+  - Settings modal tests still emit the pre-existing Radix dialog description warning, but assertions pass.
+- MuJoCo viewer shell pass:
+  - `src/components/__tests__/RobotSidePanel.mujocoStatus.test.tsx`
+  - `src/components/settings/__tests__/SettingsModal.mujocoStatus.autosave.test.tsx`
+  - `src/lib/__tests__/reachy-daemon.test.ts`
+  - `src/components/settings/__tests__/SettingsModal.robotStatus.autosave.test.tsx`
+  - `src/components/__tests__/App.robotWorkbench.shell.test.tsx`
+  - `src/components/__tests__/RobotSidePanel.reachyStatus.test.tsx`
+  - `src/contexts/__tests__/settings-context-agent.test.tsx`
+  - `src/components/__tests__/App.projectHeader.identity.test.tsx`
+  - Settings modal tests still emit the pre-existing Radix dialog description warning, but assertions pass.
+- Default MuJoCo viewer URL pass:
+  - Default viewer URL is now prewired to `http://localhost:9001/viewer`.
+  - Missing `robot_settings.mujoco_viewer_url` falls back to the default URL in settings/context/panel flows.
+  - An explicitly cleared `mujoco_viewer_url` still normalizes to an empty string, so users can disable the embedded viewer.
+  - Focused verification passed:
+  - `src/lib/__tests__/reachy-daemon.test.ts`
+  - `src/components/settings/__tests__/SettingsModal.mujocoStatus.autosave.test.tsx`
+  - `src/components/__tests__/RobotSidePanel.mujocoStatus.test.tsx`
+  - `src/components/settings/__tests__/SettingsModal.robotStatus.autosave.test.tsx`
+  - `src/components/__tests__/RobotSidePanel.reachyStatus.test.tsx`
+  - `src/components/__tests__/App.robotWorkbench.shell.test.tsx`
+  - `src/contexts/__tests__/settings-context-agent.test.tsx`
+  - `src/components/__tests__/App.projectHeader.identity.test.tsx`
+  - Settings modal tests still emit the pre-existing Radix dialog description warning, but assertions pass.
 - Follow-up footer pass passed:
   - `src/components/chat/__tests__/ChatControlsBar.test.tsx`
   - `src/components/chat/__tests__/ChatInput.dynamicModes.test.tsx`

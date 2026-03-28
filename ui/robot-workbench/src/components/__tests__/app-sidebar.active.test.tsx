@@ -71,6 +71,7 @@ describe('AppSidebar active project', () => {
     expect(link).toHaveAttribute('data-active', 'true')
     expect(link.className).toContain('data-[active=true]:bg-sidebar-accent')
     expect(link.className).not.toContain('border-l-2')
+    expect(screen.queryByText('main')).toBeNull()
   })
 
   it('does not show spinner when no projects executing', async () => {

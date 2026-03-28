@@ -190,6 +190,9 @@ mod tests {
             .expect("read branch");
 
         assert!(output.status.success());
-        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "feature/header-actions");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "feature/header-actions"
+        );
     }
 }

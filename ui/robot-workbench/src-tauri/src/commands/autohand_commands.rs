@@ -61,10 +61,20 @@ fn read_config_file(path: &Path) -> Result<Option<serde_json::Value>, String> {
     if !path.exists() {
         return Ok(None);
     }
-    let raw = std::fs::read_to_string(path)
-        .map_err(|e| format!("Failed to read autohand config at {}: {}", path.display(), e))?;
-    let val: serde_json::Value = serde_json::from_str(&raw)
-        .map_err(|e| format!("Failed to parse autohand config at {}: {}", path.display(), e))?;
+    let raw = std::fs::read_to_string(path).map_err(|e| {
+        format!(
+            "Failed to read autohand config at {}: {}",
+            path.display(),
+            e
+        )
+    })?;
+    let val: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
+        format!(
+            "Failed to parse autohand config at {}: {}",
+            path.display(),
+            e
+        )
+    })?;
     Ok(Some(val))
 }
 
@@ -144,7 +154,9 @@ pub fn load_autohand_config_with_global(
     let hooks = match hooks_service::load_hooks_from_config(workspace) {
         Ok(h) if !h.is_empty() => h,
         _ => global_dir
-            .and_then(|dir| hooks_service::load_hooks_from_config_file(&dir.join("config.json")).ok())
+            .and_then(|dir| {
+                hooks_service::load_hooks_from_config_file(&dir.join("config.json")).ok()
+            })
             .unwrap_or_default(),
     };
     config.hooks = hooks;
@@ -167,7 +179,10 @@ pub fn load_autohand_config_internal(working_dir: &str) -> Result<AutohandConfig
 /// Save autohand configuration back to `.autohand/config.json`.
 ///
 /// Preserves any other top-level keys already present in the file.
-pub fn save_autohand_config_internal(working_dir: &str, config: &AutohandConfig) -> Result<(), String> {
+pub fn save_autohand_config_internal(
+    working_dir: &str,
+    config: &AutohandConfig,
+) -> Result<(), String> {
     let workspace = Path::new(working_dir);
     let config_dir = workspace.join(".autohand");
     let config_path = config_dir.join("config.json");
@@ -179,8 +194,7 @@ pub fn save_autohand_config_internal(working_dir: &str, config: &AutohandConfig)
     let mut root: serde_json::Value = if config_path.exists() {
         let raw = std::fs::read_to_string(&config_path)
             .map_err(|e| format!("Failed to read autohand config: {}", e))?;
-        serde_json::from_str(&raw)
-            .map_err(|e| format!("Failed to parse autohand config: {}", e))?
+        serde_json::from_str(&raw).map_err(|e| format!("Failed to parse autohand config: {}", e))?
     } else {
         serde_json::json!({})
     };
@@ -275,20 +289,14 @@ pub async fn get_autohand_hooks(working_dir: String) -> Result<Vec<HookDefinitio
 
 /// Save (upsert) a single hook definition.
 #[tauri::command]
-pub async fn save_autohand_hook(
-    working_dir: String,
-    hook: HookDefinition,
-) -> Result<(), String> {
+pub async fn save_autohand_hook(working_dir: String, hook: HookDefinition) -> Result<(), String> {
     let workspace = Path::new(&working_dir);
     hooks_service::save_hook_to_config(workspace, &hook).map_err(|e| e.to_string())
 }
 
 /// Delete a hook definition by its ID.
 #[tauri::command]
-pub async fn delete_autohand_hook(
-    working_dir: String,
-    hook_id: String,
-) -> Result<(), String> {
+pub async fn delete_autohand_hook(working_dir: String, hook_id: String) -> Result<(), String> {
     let workspace = Path::new(&working_dir);
     hooks_service::delete_hook_from_config(workspace, &hook_id).map_err(|e| e.to_string())
 }
@@ -310,9 +318,7 @@ pub async fn toggle_autohand_hook(
 
 /// Retrieve all MCP server configurations for a workspace.
 #[tauri::command]
-pub async fn get_autohand_mcp_servers(
-    working_dir: String,
-) -> Result<Vec<McpServerConfig>, String> {
+pub async fn get_autohand_mcp_servers(working_dir: String) -> Result<Vec<McpServerConfig>, String> {
     let config = load_autohand_config_internal(&working_dir)?;
     Ok(config.mcp.map(|m| m.servers).unwrap_or_default())
 }
@@ -364,18 +370,14 @@ pub async fn respond_autohand_permission(
         .ok_or_else(|| format!("No active session with id '{}'", session_id))?;
 
     match &handle.client {
-        AutohandClient::Rpc(client) => {
-            client
-                .respond_permission(&request_id, approved)
-                .await
-                .map_err(|e| e.to_string())
-        }
-        AutohandClient::Acp(client) => {
-            client
-                .respond_permission(&request_id, approved)
-                .await
-                .map_err(|e| e.to_string())
-        }
+        AutohandClient::Rpc(client) => client
+            .respond_permission(&request_id, approved)
+            .await
+            .map_err(|e| e.to_string()),
+        AutohandClient::Acp(client) => client
+            .respond_permission(&request_id, approved)
+            .await
+            .map_err(|e| e.to_string()),
     }
 }
 
@@ -504,10 +506,7 @@ pub async fn execute_autohand_command(
 /// Shut down an active autohand session and remove it from the session map.
 #[tauri::command]
 pub async fn terminate_autohand_session(session_id: String) -> Result<(), String> {
-    let handle = AUTOHAND_SESSIONS
-        .lock()
-        .await
-        .remove(&session_id);
+    let handle = AUTOHAND_SESSIONS.lock().await.remove(&session_id);
 
     match handle {
         Some(h) => match h.client {

@@ -588,8 +588,7 @@ pub(crate) async fn load_sessions_index(path: &std::path::Path) -> Result<Sessio
         let data = async_fs::read_to_string(path)
             .await
             .map_err(|e| format!("Failed to read sessions index: {}", e))?;
-        serde_json::from_str(&data)
-            .map_err(|e| format!("Failed to parse sessions index: {}", e))
+        serde_json::from_str(&data).map_err(|e| format!("Failed to parse sessions index: {}", e))
     } else {
         Ok(SessionsIndex {
             sessions: vec![],
@@ -600,7 +599,10 @@ pub(crate) async fn load_sessions_index(path: &std::path::Path) -> Result<Sessio
 }
 
 /// Save the sessions index to disk
-pub(crate) async fn save_sessions_index(path: &std::path::Path, index: &SessionsIndex) -> Result<(), String> {
+pub(crate) async fn save_sessions_index(
+    path: &std::path::Path,
+    index: &SessionsIndex,
+) -> Result<(), String> {
     let json = serde_json::to_string_pretty(index)
         .map_err(|e| format!("Failed to serialize sessions index: {}", e))?;
     async_fs::write(path, json)
@@ -614,7 +616,9 @@ pub async fn archive_session(project_path: &str, session_id: &str) -> Result<(),
     let index_path = dir.join("sessions_index.json");
     let mut index = load_sessions_index(&index_path).await?;
 
-    let session = index.sessions.iter_mut()
+    let session = index
+        .sessions
+        .iter_mut()
         .find(|s| s.id == session_id)
         .ok_or_else(|| format!("Session {} not found", session_id))?;
     session.archived = true;
@@ -630,7 +634,9 @@ pub async fn unarchive_session(project_path: &str, session_id: &str) -> Result<(
     let index_path = dir.join("sessions_index.json");
     let mut index = load_sessions_index(&index_path).await?;
 
-    let session = index.sessions.iter_mut()
+    let session = index
+        .sessions
+        .iter_mut()
         .find(|s| s.id == session_id)
         .ok_or_else(|| format!("Session {} not found", session_id))?;
     session.archived = false;
@@ -641,12 +647,18 @@ pub async fn unarchive_session(project_path: &str, session_id: &str) -> Result<(
 }
 
 /// Set custom_title on a session in the index.
-pub async fn rename_session(project_path: &str, session_id: &str, title: &str) -> Result<(), String> {
+pub async fn rename_session(
+    project_path: &str,
+    session_id: &str,
+    title: &str,
+) -> Result<(), String> {
     let dir = ensure_commander_directory(project_path).await?;
     let index_path = dir.join("sessions_index.json");
     let mut index = load_sessions_index(&index_path).await?;
 
-    let session = index.sessions.iter_mut()
+    let session = index
+        .sessions
+        .iter_mut()
         .find(|s| s.id == session_id)
         .ok_or_else(|| format!("Session {} not found", session_id))?;
     session.custom_title = Some(title.to_string());
@@ -657,12 +669,18 @@ pub async fn rename_session(project_path: &str, session_id: &str, title: &str) -
 }
 
 /// Update the auto-generated summary (used by compact action).
-pub async fn update_summary(project_path: &str, session_id: &str, summary: &str) -> Result<(), String> {
+pub async fn update_summary(
+    project_path: &str,
+    session_id: &str,
+    summary: &str,
+) -> Result<(), String> {
     let dir = ensure_commander_directory(project_path).await?;
     let index_path = dir.join("sessions_index.json");
     let mut index = load_sessions_index(&index_path).await?;
 
-    let session = index.sessions.iter_mut()
+    let session = index
+        .sessions
+        .iter_mut()
         .find(|s| s.id == session_id)
         .ok_or_else(|| format!("Session {} not found", session_id))?;
     session.summary = summary.to_string();
@@ -685,7 +703,9 @@ pub async fn fork_session(project_path: &str, session_id: &str) -> Result<String
     // Load index to get original session metadata
     let index_path = dir.join("sessions_index.json");
     let mut index = load_sessions_index(&index_path).await?;
-    let original = index.sessions.iter()
+    let original = index
+        .sessions
+        .iter()
         .find(|s| s.id == session_id)
         .ok_or_else(|| format!("Session {} not found", session_id))?
         .clone();
@@ -700,9 +720,14 @@ pub async fn fork_session(project_path: &str, session_id: &str) -> Result<String
         agent: original.agent,
         branch: original.branch,
         message_count: original.message_count,
-        summary: format!("Fork of: {}", original.custom_title.as_deref()
-            .or(original.ai_summary.as_deref())
-            .unwrap_or(&original.summary)),
+        summary: format!(
+            "Fork of: {}",
+            original
+                .custom_title
+                .as_deref()
+                .or(original.ai_summary.as_deref())
+                .unwrap_or(&original.summary)
+        ),
         archived: false,
         custom_title: None,
         ai_summary: None,

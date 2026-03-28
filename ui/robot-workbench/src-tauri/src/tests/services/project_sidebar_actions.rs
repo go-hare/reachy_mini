@@ -32,7 +32,8 @@ mod tests {
 
     #[test]
     fn test_delete_project_directory_requires_existing_directory() {
-        let missing = project_service::delete_project_directory("/tmp/definitely-missing-project-path");
+        let missing =
+            project_service::delete_project_directory("/tmp/definitely-missing-project-path");
         assert!(missing.is_err());
     }
 

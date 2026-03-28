@@ -186,7 +186,8 @@ mod tests {
 
     #[test]
     fn test_autohand_error_messages() {
-        let not_installed = CommanderError::autohand("not_installed", "Autohand CLI not found in PATH");
+        let not_installed =
+            CommanderError::autohand("not_installed", "Autohand CLI not found in PATH");
         assert!(not_installed.user_message().contains("Autohand"));
 
         let timeout = CommanderError::autohand("timeout", "No response within 30 seconds");

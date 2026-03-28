@@ -310,7 +310,10 @@ class PlayEmotionTool(ReachyRuntimeTool):
 
     @property
     def description(self) -> str:
-        return "Play a recorded emotion from the Reachy Mini emotions library."
+        return (
+            "Play a recorded emotion from the Reachy Mini emotions library. "
+            "Use 'random' or omit the emotion to let the runtime choose one automatically."
+        )
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -319,21 +322,28 @@ class PlayEmotionTool(ReachyRuntimeTool):
             "properties": {
                 "emotion": {
                     "type": "string",
-                    "description": "Emotion name from the Reachy Mini emotions library.",
+                    "description": (
+                        "Emotion name from the Reachy Mini emotions library, "
+                        "or 'random' to choose one automatically."
+                    ),
                 },
             },
-            "required": ["emotion"],
+            "required": [],
         }
 
-    async def execute(self, emotion: str, **kwargs: Any) -> str:
+    async def execute(self, emotion: str = "random", **kwargs: Any) -> str:
         _ = kwargs
-        emotion_name = str(emotion or "").strip()
-        if not emotion_name:
-            return "Error: Emotion name is required"
-
         try:
             library = _load_recorded_moves(EMOTIONS_DATASET)
             available = library.list_moves()
+            if not available:
+                return "Error: No emotions are available"
+
+            emotion_name = str(emotion or "random").strip()
+            if not emotion_name or emotion_name == "random":
+                import random
+
+                emotion_name = random.choice(available)
             if emotion_name not in available:
                 return f"Error: Unknown emotion '{emotion_name}'. Available: {available}"
 

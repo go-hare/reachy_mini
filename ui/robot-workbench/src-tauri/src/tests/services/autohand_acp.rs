@@ -103,7 +103,8 @@ mod tests {
 
     #[test]
     fn test_parse_acp_ndjson_line() {
-        let line = r#"{"type":"tool_start","data":{"name":"read_file","args":{"path":"src/main.rs"}}}"#;
+        let line =
+            r#"{"type":"tool_start","data":{"name":"read_file","args":{"path":"src/main.rs"}}}"#;
         let parsed = parse_acp_line(line);
         assert!(parsed.is_ok());
         let value = parsed.unwrap();
@@ -141,7 +142,8 @@ mod tests {
 
     #[test]
     fn test_parse_acp_state_change_line() {
-        let line = r#"{"type":"state_change","data":{"status":"processing","context_percent":42.5}}"#;
+        let line =
+            r#"{"type":"state_change","data":{"status":"processing","context_percent":42.5}}"#;
         let parsed = parse_acp_line(line);
         assert!(parsed.is_ok());
         let value = parsed.unwrap();
@@ -155,7 +157,8 @@ mod tests {
 
     #[test]
     fn test_classify_acp_message_tool_start() {
-        let line = r#"{"type":"tool_start","data":{"name":"read_file","args":{"path":"src/main.rs"}}}"#;
+        let line =
+            r#"{"type":"tool_start","data":{"name":"read_file","args":{"path":"src/main.rs"}}}"#;
         let msg = classify_acp_message(line);
         assert!(msg.is_ok());
         match msg.unwrap() {

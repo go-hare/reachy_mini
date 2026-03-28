@@ -133,10 +133,7 @@ pub enum ProtocolEvent {
         context_percent: Option<f64>,
     },
     /// A protocol-level error occurred.
-    Error {
-        session_id: String,
-        message: String,
-    },
+    Error { session_id: String, message: String },
     /// Session lifecycle notification.
     SessionEvent {
         session_id: String,

@@ -2,23 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
-
-from reachy_mini.companion.models import CompanionIntent, SurfaceExpression
-from reachy_mini.companion.orchestrator import build_companion_surface
 
 if TYPE_CHECKING:
     from reachy_mini.affect import AffectState, EmotionSignal
-
-
-@dataclass(slots=True, frozen=True)
-class CompanionSurfaceBundle:
-    """Surface package returned for one replying turn."""
-
-    intent: CompanionIntent
-    expression: SurfaceExpression
-    state: dict[str, Any]
 
 
 def build_listening_surface_state(
@@ -75,48 +62,15 @@ def build_idle_surface_state(
     return state
 
 
-def build_turn_surface_bundle(
-    *,
-    thread_id: str,
-    user_text: str,
-    kernel_output: str,
-    affect_state: "AffectState | None" = None,
-    emotion_signal: "EmotionSignal | None" = None,
-) -> CompanionSurfaceBundle:
-    """Build intent, expression, and replying state for one turn."""
-
-    intent, expression = build_companion_surface(
-        user_text=user_text,
-        kernel_output=kernel_output,
-        affect_state=affect_state,
-        emotion_signal=emotion_signal,
-    )
-    return CompanionSurfaceBundle(
-        intent=intent,
-        expression=expression,
-        state=build_companion_phase_surface_state(
-            thread_id=thread_id,
-            phase="replying",
-            companion_intent=intent,
-            surface_expression=expression,
-            affect_state=affect_state,
-            emotion_signal=emotion_signal,
-        ),
-    )
-
-
 def build_companion_phase_surface_state(
     *,
     thread_id: str,
     phase: str,
-    companion_intent: CompanionIntent,
-    surface_expression: SurfaceExpression,
     affect_state: "AffectState | None" = None,
     emotion_signal: "EmotionSignal | None" = None,
 ) -> dict[str, Any]:
     """Build one minimal runtime-facing state for a companion phase."""
 
-    _ = companion_intent, surface_expression
     normalized_phase = str(phase or "").strip().lower() or "idle"
     state = {
         "thread_id": thread_id,

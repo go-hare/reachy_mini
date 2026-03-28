@@ -176,7 +176,6 @@ impl EnhancedChatMessage {
             },
         }
     }
-
 }
 
 impl ChatSession {
@@ -209,7 +208,10 @@ impl ChatSession {
             agent: idx.agent_id.clone(),
             branch: None,
             message_count: idx.message_count as usize,
-            summary: idx.summary.clone().unwrap_or_else(|| format!("{} messages", idx.message_count)),
+            summary: idx
+                .summary
+                .clone()
+                .unwrap_or_else(|| format!("{} messages", idx.message_count)),
             archived: false,
             custom_title: None,
             ai_summary: None,
@@ -240,7 +242,6 @@ impl ChatSession {
         let time_gap_minutes = (message.timestamp - self.end_time) / 60;
         message.agent == self.agent && time_gap_minutes <= timeout_minutes
     }
-
 }
 
 /// Extract file mentions from message content

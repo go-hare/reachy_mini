@@ -33,6 +33,6 @@ mod tests {
             "max_concurrent_sessions": 3
         }"#;
         let settings: AllAgentSettings = serde_json::from_str(json).unwrap();
-        assert!(settings.autohand.enabled);  // default value
+        assert!(settings.autohand.enabled); // default value
     }
 }

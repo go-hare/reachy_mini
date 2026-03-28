@@ -110,8 +110,29 @@ mod tests {
             robot_settings
                 .get("live_status_enabled")
                 .and_then(|v| v.as_bool()),
-            Some(true),
-            "live status should default to enabled for the robot workbench"
+            Some(false),
+            "live status should default to disabled for the robot workbench"
+        );
+        assert_eq!(
+            robot_settings
+                .get("mujoco_live_status_enabled")
+                .and_then(|v| v.as_bool()),
+            Some(false),
+            "MuJoCo polling should default to disabled"
+        );
+        assert_eq!(
+            robot_settings
+                .get("mujoco_viewer_url")
+                .and_then(|v| v.as_str()),
+            Some(""),
+            "the MuJoCo viewer url should default to empty until a web viewer exists"
+        );
+        assert_eq!(
+            robot_settings
+                .get("mujoco_viewer_launch_command")
+                .and_then(|v| v.as_str()),
+            Some("conda run -n reachy python -m your_web_viewer --host 127.0.0.1 --port 9001"),
+            "the MuJoCo viewer launch command should default to the reachy conda template until a real viewer entry exists"
         );
         assert_eq!(
             robot_settings
@@ -137,6 +158,25 @@ mod tests {
             daemon_url,
             Some("http://localhost:8000"),
             "blank daemon URLs should normalize back to the standard default"
+        );
+    }
+
+    #[test]
+    fn mujoco_viewer_launch_command_is_trimmed() {
+        let mut raw = serde_json::to_value(AppSettings::default()).expect("serialize defaults");
+        raw["robot_settings"]["mujoco_viewer_launch_command"] =
+            Value::String("  conda run -n reachy python -m viewer  ".to_string());
+        let value = round_trip(raw);
+
+        let launch_command = value
+            .get("robot_settings")
+            .and_then(|v| v.get("mujoco_viewer_launch_command"))
+            .and_then(|v| v.as_str());
+
+        assert_eq!(
+            launch_command,
+            Some("conda run -n reachy python -m viewer"),
+            "viewer launch commands should be trimmed but otherwise preserved verbatim"
         );
     }
 }

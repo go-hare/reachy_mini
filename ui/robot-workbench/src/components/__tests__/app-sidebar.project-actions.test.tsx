@@ -69,13 +69,6 @@ describe('AppSidebar project navigation', () => {
             { id: 'cursor', label: 'Cursor', installed: true },
             { id: 'zed', label: 'Zed', installed: false },
           ]
-        case 'get_git_branches':
-          return ['main', 'feature/sidebar', 'workspace/sidebar']
-        case 'get_project_git_worktrees':
-          return [
-            { path: '/tmp/my-project', branch: 'refs/heads/main', is_main: true },
-            { path: '/tmp/my-project/.commander/sidebar', branch: 'refs/heads/workspace/sidebar', is_main: false },
-          ]
         case 'delete_project':
           return null
         case 'create_project_git_branch':
@@ -150,36 +143,23 @@ describe('AppSidebar project navigation', () => {
     expect(screen.getByRole('button', { name: /copy project name/i })).toBeInTheDocument()
   })
 
-  it('expands a project row and renders project branches and worktrees', async () => {
-    const handleBranchSelect = vi.fn()
-    const handleWorktreeSelect = vi.fn()
+  it('opens the project row without rendering sidebar branch or worktree groups', async () => {
+    const handleProjectSelect = vi.fn()
     renderSidebar({
-      onProjectBranchSelect: handleBranchSelect,
-      onProjectWorktreeSelect: handleWorktreeSelect,
+      onProjectSelect: handleProjectSelect,
     } as any)
 
     fireEvent.click(screen.getByRole('link', { name: /my-project/i }))
 
-    expect(await screen.findByText('Branches')).toBeInTheDocument()
-    expect(screen.getByText('Worktrees')).toBeInTheDocument()
-    expect(await screen.findByText('feature/sidebar')).toBeInTheDocument()
-    expect(screen.getAllByText('workspace/sidebar')).toHaveLength(2)
-
-    fireEvent.click(screen.getByRole('button', { name: /^feature\/sidebar$/i }))
     await waitFor(() => {
-      expect(handleBranchSelect).toHaveBeenCalledWith(
-        expect.objectContaining({ path: '/tmp/my-project' }),
-        'feature/sidebar'
+      expect(handleProjectSelect).toHaveBeenCalledWith(
+        expect.objectContaining({ path: '/tmp/my-project' })
       )
     })
 
-    fireEvent.click(screen.getAllByRole('button', { name: /workspace\/sidebar/i })[0])
-    await waitFor(() => {
-      expect(handleWorktreeSelect).toHaveBeenCalledWith(
-        expect.objectContaining({ path: '/tmp/my-project' }),
-        expect.objectContaining({ path: '/tmp/my-project/.commander/sidebar' })
-      )
-    })
-    expect(handleBranchSelect).toHaveBeenCalledTimes(1)
+    expect(screen.queryByText('Branches')).toBeNull()
+    expect(screen.queryByText('Worktrees')).toBeNull()
+    expect(invokeMock).not.toHaveBeenCalledWith('get_git_branches', expect.anything())
+    expect(invokeMock).not.toHaveBeenCalledWith('get_project_git_worktrees', expect.anything())
   })
 })

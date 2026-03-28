@@ -1,5 +1,7 @@
 use crate::models::indexer::{DailyAgentStats, IndexedSession};
-use crate::services::indexer::scanner::{AgentScanner, DiscoveredFile, ParseResult, truncate_summary};
+use crate::services::indexer::scanner::{
+    truncate_summary, AgentScanner, DiscoveredFile, ParseResult,
+};
 use async_trait::async_trait;
 use std::path::PathBuf;
 
@@ -9,9 +11,7 @@ pub struct ClaudeScanner {
 
 impl ClaudeScanner {
     pub fn new() -> Self {
-        let home = dirs::home_dir()
-            .unwrap_or_default()
-            .join(".claude");
+        let home = dirs::home_dir().unwrap_or_default().join(".claude");
         Self { home }
     }
 }
@@ -43,7 +43,11 @@ impl AgentScanner for ClaudeScanner {
             if let Ok(meta) = std::fs::metadata(&stats_path) {
                 let mtime = meta
                     .modified()
-                    .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64)
+                    .map(|t| {
+                        t.duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs() as i64
+                    })
                     .unwrap_or(0);
                 files.push(DiscoveredFile {
                     path: stats_path.to_string_lossy().to_string(),
@@ -72,7 +76,8 @@ impl AgentScanner for ClaudeScanner {
                                         .map(|t| {
                                             t.duration_since(std::time::UNIX_EPOCH)
                                                 .unwrap_or_default()
-                                                .as_secs() as i64
+                                                .as_secs()
+                                                as i64
                                         })
                                         .unwrap_or(0);
                                     files.push(DiscoveredFile {
@@ -95,7 +100,10 @@ impl AgentScanner for ClaudeScanner {
         let path_buf = PathBuf::from(path);
 
         // stats-cache.json is handled via parse_aggregate_stats
-        if path_buf.file_name().map_or(false, |n| n == "stats-cache.json") {
+        if path_buf
+            .file_name()
+            .map_or(false, |n| n == "stats-cache.json")
+        {
             return Ok(ParseResult { sessions: vec![] });
         }
 
@@ -106,7 +114,11 @@ impl AgentScanner for ClaudeScanner {
 
         let file_mtime = std::fs::metadata(path)
             .and_then(|m| m.modified())
-            .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64)
+            .map(|t| {
+                t.duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64
+            })
             .unwrap_or(0);
 
         // Extract session info from JSONL
@@ -134,9 +146,7 @@ impl AgentScanner for ClaudeScanner {
                 }
 
                 // Extract first user message as summary
-                if summary.is_none()
-                    && (msg_type == Some("human") || msg_type == Some("user"))
-                {
+                if summary.is_none() && (msg_type == Some("human") || msg_type == Some("user")) {
                     // Content may be string or array of {type:"text", text:"..."} blocks
                     let content_val = val
                         .get("message")
@@ -145,18 +155,17 @@ impl AgentScanner for ClaudeScanner {
                     if let Some(cv) = content_val {
                         let text = match cv {
                             serde_json::Value::String(s) => s.clone(),
-                            serde_json::Value::Array(arr) => {
-                                arr.iter()
-                                    .filter_map(|b| {
-                                        if b["type"].as_str() == Some("text") {
-                                            b["text"].as_str().map(String::from)
-                                        } else {
-                                            None
-                                        }
-                                    })
-                                    .next()
-                                    .unwrap_or_default()
-                            }
+                            serde_json::Value::Array(arr) => arr
+                                .iter()
+                                .filter_map(|b| {
+                                    if b["type"].as_str() == Some("text") {
+                                        b["text"].as_str().map(String::from)
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .next()
+                                .unwrap_or_default(),
                             _ => String::new(),
                         };
                         if !text.is_empty() {
@@ -236,8 +245,14 @@ impl AgentScanner for ClaudeScanner {
 
         for entry in daily {
             let date = entry.get("date")?.as_str()?;
-            let message_count = entry.get("messageCount").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-            let session_count = entry.get("sessionCount").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            let message_count = entry
+                .get("messageCount")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
+            let session_count = entry
+                .get("sessionCount")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
 
             stats.push(DailyAgentStats {
                 date: date.to_string(),

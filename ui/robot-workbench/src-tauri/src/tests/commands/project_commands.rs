@@ -6,7 +6,6 @@ mod tests {
     use serial_test::serial;
     use tempfile::TempDir;
 
-
     #[tokio::test]
     #[serial] // Ensure tests don't interfere with each other's storage
     async fn test_add_project_to_recent_valid_project() {

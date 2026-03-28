@@ -15,23 +15,19 @@ pub fn load_hooks_from_config(workspace: &Path) -> Result<Vec<HookDefinition>, C
 }
 
 /// Load all hook definitions from a specific config file path.
-pub fn load_hooks_from_config_file(config_path: &Path) -> Result<Vec<HookDefinition>, CommanderError> {
-
+pub fn load_hooks_from_config_file(
+    config_path: &Path,
+) -> Result<Vec<HookDefinition>, CommanderError> {
     if !config_path.exists() {
         return Ok(Vec::new());
     }
 
     let raw = std::fs::read_to_string(&config_path).map_err(|e| {
-        CommanderError::file_system(
-            "read",
-            config_path.display().to_string(),
-            e.to_string(),
-        )
+        CommanderError::file_system("read", config_path.display().to_string(), e.to_string())
     })?;
 
-    let root: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
-        CommanderError::serialization("config.json", e.to_string())
-    })?;
+    let root: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| CommanderError::serialization("config.json", e.to_string()))?;
 
     let definitions = root
         .get("hooks")
@@ -39,10 +35,8 @@ pub fn load_hooks_from_config_file(config_path: &Path) -> Result<Vec<HookDefinit
         .cloned()
         .unwrap_or_else(|| serde_json::json!([]));
 
-    let hooks: Vec<HookDefinition> =
-        serde_json::from_value(definitions).map_err(|e| {
-            CommanderError::serialization("HookDefinition", e.to_string())
-        })?;
+    let hooks: Vec<HookDefinition> = serde_json::from_value(definitions)
+        .map_err(|e| CommanderError::serialization("HookDefinition", e.to_string()))?;
 
     Ok(hooks)
 }
@@ -53,10 +47,7 @@ pub fn load_hooks_from_config_file(config_path: &Path) -> Result<Vec<HookDefinit
 /// new hook is appended to the definitions list.
 ///
 /// Other fields in `config.json` are preserved.
-pub fn save_hook_to_config(
-    workspace: &Path,
-    hook: &HookDefinition,
-) -> Result<(), CommanderError> {
+pub fn save_hook_to_config(workspace: &Path, hook: &HookDefinition) -> Result<(), CommanderError> {
     let mut hooks = load_hooks_from_config(workspace)?;
 
     // Upsert: replace if existing, append if new
@@ -72,10 +63,7 @@ pub fn save_hook_to_config(
 /// Delete a hook definition by its ID.
 ///
 /// Returns `Ok(())` even when the ID is not found (idempotent delete).
-pub fn delete_hook_from_config(
-    workspace: &Path,
-    hook_id: &str,
-) -> Result<(), CommanderError> {
+pub fn delete_hook_from_config(workspace: &Path, hook_id: &str) -> Result<(), CommanderError> {
     let mut hooks = load_hooks_from_config(workspace)?;
     hooks.retain(|h| h.id != hook_id);
     write_hooks_to_config(workspace, &hooks)
@@ -109,10 +97,7 @@ pub fn toggle_hook_in_config(
 
 /// Write the full hooks list back to `config.json`, preserving any other
 /// top-level keys that already exist in the file.
-fn write_hooks_to_config(
-    workspace: &Path,
-    hooks: &[HookDefinition],
-) -> Result<(), CommanderError> {
+fn write_hooks_to_config(workspace: &Path, hooks: &[HookDefinition]) -> Result<(), CommanderError> {
     let config_dir = workspace.join(".autohand");
     let config_path = config_dir.join("config.json");
 
@@ -128,23 +113,17 @@ fn write_hooks_to_config(
     // Read existing config (or start fresh)
     let mut root: serde_json::Value = if config_path.exists() {
         let raw = std::fs::read_to_string(&config_path).map_err(|e| {
-            CommanderError::file_system(
-                "read",
-                config_path.display().to_string(),
-                e.to_string(),
-            )
+            CommanderError::file_system("read", config_path.display().to_string(), e.to_string())
         })?;
-        serde_json::from_str(&raw).map_err(|e| {
-            CommanderError::serialization("config.json", e.to_string())
-        })?
+        serde_json::from_str(&raw)
+            .map_err(|e| CommanderError::serialization("config.json", e.to_string()))?
     } else {
         serde_json::json!({})
     };
 
     // Serialize hook definitions
-    let hooks_value = serde_json::to_value(hooks).map_err(|e| {
-        CommanderError::serialization("HookDefinition", e.to_string())
-    })?;
+    let hooks_value = serde_json::to_value(hooks)
+        .map_err(|e| CommanderError::serialization("HookDefinition", e.to_string()))?;
 
     // Ensure the `hooks` object exists, then set `definitions`
     let hooks_obj = root
@@ -169,16 +148,11 @@ fn write_hooks_to_config(
         .insert("definitions".to_string(), hooks_value);
 
     // Write back
-    let pretty = serde_json::to_string_pretty(&root).map_err(|e| {
-        CommanderError::serialization("config.json", e.to_string())
-    })?;
+    let pretty = serde_json::to_string_pretty(&root)
+        .map_err(|e| CommanderError::serialization("config.json", e.to_string()))?;
 
     std::fs::write(&config_path, pretty).map_err(|e| {
-        CommanderError::file_system(
-            "write",
-            config_path.display().to_string(),
-            e.to_string(),
-        )
+        CommanderError::file_system("write", config_path.display().to_string(), e.to_string())
     })?;
 
     Ok(())

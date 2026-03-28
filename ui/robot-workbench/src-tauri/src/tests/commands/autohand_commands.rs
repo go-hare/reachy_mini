@@ -379,10 +379,9 @@ mod tests {
         let ws_dir = tmp.path().to_str().unwrap();
 
         // Initially no servers
-        let config = crate::commands::autohand_commands::load_autohand_config_with_global(
-            ws_dir, None,
-        )
-        .unwrap();
+        let config =
+            crate::commands::autohand_commands::load_autohand_config_with_global(ws_dir, None)
+                .unwrap();
         assert!(config.mcp.is_none());
 
         // Write a config with mcp servers via save
@@ -400,26 +399,21 @@ mod tests {
             }],
         });
 
-        crate::commands::autohand_commands::save_autohand_config_internal(
-            ws_dir,
-            &config_with_mcp,
-        )
-        .unwrap();
+        crate::commands::autohand_commands::save_autohand_config_internal(ws_dir, &config_with_mcp)
+            .unwrap();
 
         // Reload and verify
-        let reloaded = crate::commands::autohand_commands::load_autohand_config_with_global(
-            ws_dir, None,
-        )
-        .unwrap();
+        let reloaded =
+            crate::commands::autohand_commands::load_autohand_config_with_global(ws_dir, None)
+                .unwrap();
         let servers = reloaded.mcp.unwrap().servers;
         assert_eq!(servers.len(), 1);
         assert_eq!(servers[0].name, "test-srv");
 
         // Add a second server by saving config again
-        let mut updated = crate::commands::autohand_commands::load_autohand_config_with_global(
-            ws_dir, None,
-        )
-        .unwrap();
+        let mut updated =
+            crate::commands::autohand_commands::load_autohand_config_with_global(ws_dir, None)
+                .unwrap();
         let mcp = updated.mcp.get_or_insert_with(McpConfig::default);
         mcp.servers.push(McpServerConfig {
             name: "second-srv".to_string(),
@@ -434,27 +428,24 @@ mod tests {
         crate::commands::autohand_commands::save_autohand_config_internal(ws_dir, &updated)
             .unwrap();
 
-        let reloaded = crate::commands::autohand_commands::load_autohand_config_with_global(
-            ws_dir, None,
-        )
-        .unwrap();
+        let reloaded =
+            crate::commands::autohand_commands::load_autohand_config_with_global(ws_dir, None)
+                .unwrap();
         assert_eq!(reloaded.mcp.unwrap().servers.len(), 2);
 
         // Delete by retaining only non-matching
-        let mut to_delete = crate::commands::autohand_commands::load_autohand_config_with_global(
-            ws_dir, None,
-        )
-        .unwrap();
+        let mut to_delete =
+            crate::commands::autohand_commands::load_autohand_config_with_global(ws_dir, None)
+                .unwrap();
         if let Some(ref mut mcp) = to_delete.mcp {
             mcp.servers.retain(|s| s.name != "test-srv");
         }
         crate::commands::autohand_commands::save_autohand_config_internal(ws_dir, &to_delete)
             .unwrap();
 
-        let reloaded = crate::commands::autohand_commands::load_autohand_config_with_global(
-            ws_dir, None,
-        )
-        .unwrap();
+        let reloaded =
+            crate::commands::autohand_commands::load_autohand_config_with_global(ws_dir, None)
+                .unwrap();
         let servers = reloaded.mcp.unwrap().servers;
         assert_eq!(servers.len(), 1);
         assert_eq!(servers[0].name, "second-srv");
@@ -484,7 +475,8 @@ mod tests {
 
         crate::commands::autohand_commands::save_autohand_config_internal(ws_dir, &config).unwrap();
 
-        let raw = std::fs::read_to_string(tmp.path().join(".autohand").join("config.json")).unwrap();
+        let raw =
+            std::fs::read_to_string(tmp.path().join(".autohand").join("config.json")).unwrap();
         let json: serde_json::Value = serde_json::from_str(&raw).unwrap();
         let provider_block = json.get("openrouter").unwrap();
         assert_eq!(

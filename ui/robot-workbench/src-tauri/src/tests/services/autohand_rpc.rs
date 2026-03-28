@@ -44,7 +44,8 @@ mod tests {
 
     #[test]
     fn test_parse_rpc_line_notification() {
-        let line = r#"{"jsonrpc":"2.0","method":"agent/messageUpdate","params":{"content":"hello"}}"#;
+        let line =
+            r#"{"jsonrpc":"2.0","method":"agent/messageUpdate","params":{"content":"hello"}}"#;
         let parsed = parse_rpc_line(line);
         assert!(parsed.is_ok());
         match parsed.unwrap() {

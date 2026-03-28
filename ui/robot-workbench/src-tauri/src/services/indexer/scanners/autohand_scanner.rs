@@ -1,5 +1,7 @@
 use crate::models::indexer::IndexedSession;
-use crate::services::indexer::scanner::{AgentScanner, DiscoveredFile, ParseResult, truncate_summary};
+use crate::services::indexer::scanner::{
+    truncate_summary, AgentScanner, DiscoveredFile, ParseResult,
+};
 use async_trait::async_trait;
 use std::path::PathBuf;
 
@@ -9,9 +11,7 @@ pub struct AutohandScanner {
 
 impl AutohandScanner {
     pub fn new() -> Self {
-        let home = dirs::home_dir()
-            .unwrap_or_default()
-            .join(".autohand");
+        let home = dirs::home_dir().unwrap_or_default().join(".autohand");
         Self { home }
     }
 }
@@ -104,10 +104,7 @@ impl AgentScanner for AutohandScanner {
             .and_then(|v| v.as_str())
             .map(String::from);
 
-        let model = val
-            .get("model")
-            .and_then(|v| v.as_str())
-            .map(String::from);
+        let model = val.get("model").and_then(|v| v.as_str()).map(String::from);
 
         let message_count = val
             .get("messageCount")
@@ -123,7 +120,11 @@ impl AgentScanner for AutohandScanner {
 
         let file_mtime = std::fs::metadata(path)
             .and_then(|m| m.modified())
-            .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64)
+            .map(|t| {
+                t.duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64
+            })
             .unwrap_or(0);
 
         // Extract first user message as summary from conversation.jsonl

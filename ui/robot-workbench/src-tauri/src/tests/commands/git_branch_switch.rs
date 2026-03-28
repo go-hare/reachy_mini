@@ -7,15 +7,49 @@ mod tests {
     use crate::commands::git_commands;
 
     fn init_git_repo(dir: &std::path::Path) {
-        assert!(StdCommand::new("git").arg("init").current_dir(dir).status().unwrap().success());
-        let _ = StdCommand::new("git").args(["config","user.name","Test"]).current_dir(dir).status();
-        let _ = StdCommand::new("git").args(["config","user.email","test@example.com"]).current_dir(dir).status();
+        assert!(StdCommand::new("git")
+            .arg("init")
+            .current_dir(dir)
+            .status()
+            .unwrap()
+            .success());
+        let _ = StdCommand::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(dir)
+            .status();
+        let _ = StdCommand::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(dir)
+            .status();
         fs::write(dir.join("README.md"), "# test\n").unwrap();
-        assert!(StdCommand::new("git").args(["add","."]).current_dir(dir).status().unwrap().success());
-        assert!(StdCommand::new("git").args(["commit","-m","init"]).current_dir(dir).status().unwrap().success());
-        let _ = StdCommand::new("git").args(["branch","-M","main"]).current_dir(dir).status();
-        assert!(StdCommand::new("git").args(["checkout","-b","feature/sidebar"]).current_dir(dir).status().unwrap().success());
-        assert!(StdCommand::new("git").args(["checkout","main"]).current_dir(dir).status().unwrap().success());
+        assert!(StdCommand::new("git")
+            .args(["add", "."])
+            .current_dir(dir)
+            .status()
+            .unwrap()
+            .success());
+        assert!(StdCommand::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(dir)
+            .status()
+            .unwrap()
+            .success());
+        let _ = StdCommand::new("git")
+            .args(["branch", "-M", "main"])
+            .current_dir(dir)
+            .status();
+        assert!(StdCommand::new("git")
+            .args(["checkout", "-b", "feature/sidebar"])
+            .current_dir(dir)
+            .status()
+            .unwrap()
+            .success());
+        assert!(StdCommand::new("git")
+            .args(["checkout", "main"])
+            .current_dir(dir)
+            .status()
+            .unwrap()
+            .success());
     }
 
     #[tokio::test]
@@ -39,7 +73,10 @@ mod tests {
             .expect("read branch");
 
         assert!(output.status.success());
-        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "feature/sidebar");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "feature/sidebar"
+        );
     }
 
     #[tokio::test]
@@ -63,6 +100,9 @@ mod tests {
             .expect("read branch");
 
         assert!(output.status.success());
-        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "feature/header-actions");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "feature/header-actions"
+        );
     }
 }

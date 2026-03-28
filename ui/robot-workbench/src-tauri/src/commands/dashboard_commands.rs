@@ -16,7 +16,9 @@ pub async fn get_dashboard_stats(
         .store("recent-projects.json")
         .map_err(|e| format!("Failed to access store: {}", e))?;
 
-    let projects_val = store.get("projects").unwrap_or(serde_json::Value::Array(vec![]));
+    let projects_val = store
+        .get("projects")
+        .unwrap_or(serde_json::Value::Array(vec![]));
     let project_paths: Vec<String> = match projects_val {
         serde_json::Value::Array(arr) => arr
             .iter()

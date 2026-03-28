@@ -1,6 +1,4 @@
-use crate::models::indexer::{
-    AgentRecord, DailyAgentStats, IndexedSession, ScanRecord,
-};
+use crate::models::indexer::{AgentRecord, DailyAgentStats, IndexedSession, ScanRecord};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 use std::sync::Mutex;
@@ -12,7 +10,8 @@ pub struct IndexDb {
 impl IndexDb {
     pub fn open(db_path: &Path) -> Result<Self, String> {
         if let Some(parent) = db_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create db dir: {}", e))?;
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create db dir: {}", e))?;
         }
         let conn =
             Connection::open(db_path).map_err(|e| format!("Failed to open database: {}", e))?;
@@ -89,9 +88,7 @@ impl IndexDb {
         .map_err(|e| format!("Failed to set schema version: {}", e))?;
 
         // Migration: add summary column if missing (v2)
-        let has_summary: bool = conn
-            .prepare("SELECT summary FROM sessions LIMIT 0")
-            .is_ok();
+        let has_summary: bool = conn.prepare("SELECT summary FROM sessions LIMIT 0").is_ok();
         if !has_summary {
             conn.execute_batch("ALTER TABLE sessions ADD COLUMN summary TEXT;")
                 .map_err(|e| format!("Failed to add summary column: {}", e))?;
@@ -175,17 +172,27 @@ impl IndexDb {
     }
 
     /// Remove sessions whose source_file no longer exists (cleanup deleted files)
-    pub fn remove_orphaned_sessions(&self, agent_id: &str, active_files: &[String]) -> Result<u64, String> {
+    pub fn remove_orphaned_sessions(
+        &self,
+        agent_id: &str,
+        active_files: &[String],
+    ) -> Result<u64, String> {
         let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
         if active_files.is_empty() {
             return Ok(0);
         }
-        let placeholders: String = active_files.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let placeholders: String = active_files
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
         let sql = format!(
             "DELETE FROM sessions WHERE agent_id = ?1 AND source_file NOT IN ({})",
             placeholders
         );
-        let mut stmt = conn.prepare(&sql).map_err(|e| format!("Prepare error: {}", e))?;
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| format!("Prepare error: {}", e))?;
         let mut param_idx = 1;
         stmt.raw_bind_parameter(param_idx, agent_id)
             .map_err(|e| format!("Bind error: {}", e))?;
@@ -194,7 +201,9 @@ impl IndexDb {
             stmt.raw_bind_parameter(param_idx, file)
                 .map_err(|e| format!("Bind error: {}", e))?;
         }
-        let deleted = stmt.raw_execute().map_err(|e| format!("Delete error: {}", e))?;
+        let deleted = stmt
+            .raw_execute()
+            .map_err(|e| format!("Delete error: {}", e))?;
         Ok(deleted as u64)
     }
 
@@ -220,22 +229,25 @@ impl IndexDb {
             .map_err(|e| format!("Prepare error: {}", e))?;
 
         let rows = stmt
-            .query_map(params![project_path, agent_filter, limit as i64, offset as i64], |row| {
-                Ok(IndexedSession {
-                    id: row.get(0)?,
-                    agent_id: row.get(1)?,
-                    original_id: row.get(2)?,
-                    source_agent: row.get(3)?,
-                    session_start: row.get(4)?,
-                    session_end: row.get(5)?,
-                    project_path: row.get(6)?,
-                    model: row.get(7)?,
-                    message_count: row.get(8)?,
-                    source_file: row.get(9)?,
-                    source_file_mtime: row.get(10)?,
-                    summary: row.get(11)?,
-                })
-            })
+            .query_map(
+                params![project_path, agent_filter, limit as i64, offset as i64],
+                |row| {
+                    Ok(IndexedSession {
+                        id: row.get(0)?,
+                        agent_id: row.get(1)?,
+                        original_id: row.get(2)?,
+                        source_agent: row.get(3)?,
+                        session_start: row.get(4)?,
+                        session_end: row.get(5)?,
+                        project_path: row.get(6)?,
+                        model: row.get(7)?,
+                        message_count: row.get(8)?,
+                        source_file: row.get(9)?,
+                        source_file_mtime: row.get(10)?,
+                        summary: row.get(11)?,
+                    })
+                },
+            )
             .map_err(|e| format!("Query error: {}", e))?;
 
         let mut results = Vec::new();
@@ -270,7 +282,11 @@ impl IndexDb {
 
     // --- Scan metadata operations ---
 
-    pub fn get_scan_record(&self, source_file: &str, agent_id: &str) -> Result<Option<ScanRecord>, String> {
+    pub fn get_scan_record(
+        &self,
+        source_file: &str,
+        agent_id: &str,
+    ) -> Result<Option<ScanRecord>, String> {
         let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
         let result = conn
             .query_row(
@@ -310,17 +326,27 @@ impl IndexDb {
         Ok(())
     }
 
-    pub fn remove_scan_records_for_agent(&self, agent_id: &str, active_files: &[String]) -> Result<(), String> {
+    pub fn remove_scan_records_for_agent(
+        &self,
+        agent_id: &str,
+        active_files: &[String],
+    ) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
         if active_files.is_empty() {
             return Ok(());
         }
-        let placeholders: String = active_files.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let placeholders: String = active_files
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
         let sql = format!(
             "DELETE FROM scan_metadata WHERE agent_id = ?1 AND source_file NOT IN ({})",
             placeholders
         );
-        let mut stmt = conn.prepare(&sql).map_err(|e| format!("Prepare error: {}", e))?;
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| format!("Prepare error: {}", e))?;
         let mut param_idx = 1;
         stmt.raw_bind_parameter(param_idx, agent_id)
             .map_err(|e| format!("Bind error: {}", e))?;
@@ -329,7 +355,8 @@ impl IndexDb {
             stmt.raw_bind_parameter(param_idx, file)
                 .map_err(|e| format!("Bind error: {}", e))?;
         }
-        stmt.raw_execute().map_err(|e| format!("Delete error: {}", e))?;
+        stmt.raw_execute()
+            .map_err(|e| format!("Delete error: {}", e))?;
         Ok(())
     }
 
@@ -386,7 +413,10 @@ impl IndexDb {
     }
 
     /// Get daily activity for the last N days, aggregated from daily_stats + sessions
-    pub fn get_daily_activity(&self, days: u32) -> Result<Vec<crate::models::dashboard::DailyActivity>, String> {
+    pub fn get_daily_activity(
+        &self,
+        days: u32,
+    ) -> Result<Vec<crate::models::dashboard::DailyActivity>, String> {
         let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
 
         // Get the start date
@@ -404,7 +434,8 @@ impl IndexDb {
             )
             .map_err(|e| format!("Prepare error: {}", e))?;
 
-        let mut day_map: std::collections::HashMap<String, (usize, u64)> = std::collections::HashMap::new();
+        let mut day_map: std::collections::HashMap<String, (usize, u64)> =
+            std::collections::HashMap::new();
 
         // Fill all days with zeros
         let mut d = start;
@@ -442,11 +473,7 @@ impl IndexDb {
             )
             .map_err(|e| format!("Prepare error: {}", e))?;
 
-        let start_ts = start
-            .and_hms_opt(0, 0, 0)
-            .unwrap()
-            .and_utc()
-            .timestamp();
+        let start_ts = start.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp();
 
         let rows2 = stmt2
             .query_map(params![start_ts, start_str], |row| {
@@ -462,11 +489,13 @@ impl IndexDb {
 
         let mut result: Vec<crate::models::dashboard::DailyActivity> = day_map
             .into_iter()
-            .map(|(date, (count, tokens))| crate::models::dashboard::DailyActivity {
-                date,
-                message_count: count,
-                token_count: tokens,
-            })
+            .map(
+                |(date, (count, tokens))| crate::models::dashboard::DailyActivity {
+                    date,
+                    message_count: count,
+                    token_count: tokens,
+                },
+            )
             .collect();
         result.sort_by(|a, b| a.date.cmp(&b.date));
         Ok(result)
@@ -658,17 +687,25 @@ mod tests {
         assert_eq!(all.len(), 4);
 
         // Query by project path
-        let myapp = db.get_sessions_for_project(Some("/projects/myapp"), None, 100, 0).unwrap();
+        let myapp = db
+            .get_sessions_for_project(Some("/projects/myapp"), None, 100, 0)
+            .unwrap();
         assert_eq!(myapp.len(), 3);
-        assert!(myapp.iter().all(|s| s.project_path.as_deref() == Some("/projects/myapp")));
+        assert!(myapp
+            .iter()
+            .all(|s| s.project_path.as_deref() == Some("/projects/myapp")));
 
         // Query by agent
-        let codex_sessions = db.get_sessions_for_project(None, Some("codex"), 100, 0).unwrap();
+        let codex_sessions = db
+            .get_sessions_for_project(None, Some("codex"), 100, 0)
+            .unwrap();
         assert_eq!(codex_sessions.len(), 1);
         assert_eq!(codex_sessions[0].agent_id, "codex");
 
         // Query by both
-        let claude_myapp = db.get_sessions_for_project(Some("/projects/myapp"), Some("claude"), 100, 0).unwrap();
+        let claude_myapp = db
+            .get_sessions_for_project(Some("/projects/myapp"), Some("claude"), 100, 0)
+            .unwrap();
         assert_eq!(claude_myapp.len(), 3);
     }
 
@@ -694,27 +731,35 @@ mod tests {
         }
 
         // Limit 2
-        let page1 = db.get_sessions_for_project(Some("/projects/test"), None, 2, 0).unwrap();
+        let page1 = db
+            .get_sessions_for_project(Some("/projects/test"), None, 2, 0)
+            .unwrap();
         assert_eq!(page1.len(), 2);
         // They should be sorted by session_start DESC, so the first one has the highest timestamp
         assert!(page1[0].session_start > page1[1].session_start);
 
         // Offset 2, limit 2
-        let page2 = db.get_sessions_for_project(Some("/projects/test"), None, 2, 2).unwrap();
+        let page2 = db
+            .get_sessions_for_project(Some("/projects/test"), None, 2, 2)
+            .unwrap();
         assert_eq!(page2.len(), 2);
 
         // No overlap between pages
         assert!(page1[1].session_start > page2[0].session_start);
 
         // Offset beyond data
-        let empty = db.get_sessions_for_project(Some("/projects/test"), None, 2, 10).unwrap();
+        let empty = db
+            .get_sessions_for_project(Some("/projects/test"), None, 2, 10)
+            .unwrap();
         assert!(empty.is_empty());
     }
 
     #[test]
     fn test_get_sessions_for_project_empty() {
         let (db, _dir) = test_db();
-        let result = db.get_sessions_for_project(Some("/no/such/project"), None, 100, 0).unwrap();
+        let result = db
+            .get_sessions_for_project(Some("/no/such/project"), None, 100, 0)
+            .unwrap();
         assert!(result.is_empty());
     }
 }

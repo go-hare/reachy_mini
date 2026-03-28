@@ -55,6 +55,14 @@ const TRANSPORT_OPTIONS: Array<{ value: AgentTransportKind; label: string }> = [
   { value: "acp", label: "ACP" },
 ]
 
+function getBuiltInTransportOptions(profileId: string) {
+  return TRANSPORT_OPTIONS.filter((option) => {
+    if (option.value === "slash-commands") return false
+    if (profileId === "codex" && option.value === "acp") return false
+    return true
+  })
+}
+
 function normalizeAgentId(value: string) {
   return value
     .trim()
@@ -521,7 +529,12 @@ const SafeAgentSettings = ({
             const isEnabled = tempAgentSettings?.[profile.id] !== false
             const modelOptions = agentModels[profile.id] || []
             const isFetchingModels = fetchingAgentModels[profile.id] || false
-            const effectiveTransport = (settings as GenericAgentSettings & { transport?: AgentTransportKind }).transport || profile.transport
+            const configuredTransport = (settings as GenericAgentSettings & { transport?: AgentTransportKind }).transport
+            const effectiveTransport = (
+              profile.id === "codex" && configuredTransport === "acp"
+                ? "cli-flags"
+                : configuredTransport
+            ) || profile.transport
 
             return (
               <TabsContent key={profile.id} value={profile.id} className="mt-0 space-y-5">
@@ -538,7 +551,7 @@ const SafeAgentSettings = ({
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          {TRANSPORT_OPTIONS.filter(o => o.value !== 'slash-commands').map((option) => (
+                          {getBuiltInTransportOptions(profile.id).map((option) => (
                             <SelectItem key={option.value} value={option.value}>
                               {option.label}
                             </SelectItem>

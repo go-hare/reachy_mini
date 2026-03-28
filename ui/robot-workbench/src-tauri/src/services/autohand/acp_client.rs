@@ -8,9 +8,9 @@ use tokio::sync::Mutex;
 use crate::error::CommanderError;
 use crate::models::ai_agent::StreamChunk;
 use crate::models::autohand::{
-    AutohandConfig, AutohandMessagePayload, AutohandPermissionPayload,
-    AutohandState, AutohandStatePayload, AutohandStatus, AutohandToolEventPayload,
-    PermissionRequest, ToolEvent, ToolPhase,
+    AutohandConfig, AutohandMessagePayload, AutohandPermissionPayload, AutohandState,
+    AutohandStatePayload, AutohandStatus, AutohandToolEventPayload, PermissionRequest, ToolEvent,
+    ToolPhase,
 };
 use crate::services::autohand::protocol::AutohandProtocol;
 use crate::services::autohand::rpc_client::write_headless_config_with_mode;
@@ -28,10 +28,7 @@ pub enum AcpMessage {
     /// A text message from the assistant or user.
     Message { role: String, content: String },
     /// A tool execution has started.
-    ToolStart {
-        name: String,
-        args: Option<Value>,
-    },
+    ToolStart { name: String, args: Option<Value> },
     /// Incremental update during tool execution.
     ToolUpdate {
         name: String,
@@ -51,7 +48,10 @@ pub enum AcpMessage {
         description: String,
     },
     /// Agent session state has changed.
-    StateChange { status: String, context_percent: Option<f64> },
+    StateChange {
+        status: String,
+        context_percent: Option<f64>,
+    },
     /// An unrecognized message type.
     Unknown,
 }
@@ -71,8 +71,9 @@ pub fn resolve_tool_kind(tool_name: &str) -> &'static str {
         "read_file" | "read_image" | "get_file_info" => "read",
 
         // Search operations
-        "grep_search" | "glob_search" | "search_files" | "find_definition"
-        | "find_references" => "search",
+        "grep_search" | "glob_search" | "search_files" | "find_definition" | "find_references" => {
+            "search"
+        }
 
         // Edit / write operations
         "write_file" | "edit_file" | "multi_edit_file" | "create_file" => "edit",
@@ -113,9 +114,8 @@ pub fn parse_acp_line(line: &str) -> Result<Value, CommanderError> {
         ));
     }
 
-    serde_json::from_str(trimmed).map_err(|e| {
-        CommanderError::autohand("parse_acp_line", format!("invalid JSON: {}", e))
-    })
+    serde_json::from_str(trimmed)
+        .map_err(|e| CommanderError::autohand("parse_acp_line", format!("invalid JSON: {}", e)))
 }
 
 /// Parse and classify a single ndJSON line into a typed `AcpMessage`.
@@ -125,10 +125,7 @@ pub fn parse_acp_line(line: &str) -> Result<Value, CommanderError> {
 pub fn classify_acp_message(line: &str) -> Result<AcpMessage, CommanderError> {
     let value = parse_acp_line(line)?;
 
-    let msg_type = value
-        .get("type")
-        .and_then(|t| t.as_str())
-        .unwrap_or("");
+    let msg_type = value.get("type").and_then(|t| t.as_str()).unwrap_or("");
 
     let data = value.get("data").cloned().unwrap_or(Value::Null);
 
@@ -161,7 +158,10 @@ pub fn classify_acp_message(line: &str) -> Result<AcpMessage, CommanderError> {
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown")
                 .to_string();
-            let output = data.get("output").and_then(|v| v.as_str()).map(String::from);
+            let output = data
+                .get("output")
+                .and_then(|v| v.as_str())
+                .map(String::from);
             Ok(AcpMessage::ToolUpdate { name, output })
         }
         "tool_end" => {
@@ -170,8 +170,14 @@ pub fn classify_acp_message(line: &str) -> Result<AcpMessage, CommanderError> {
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown")
                 .to_string();
-            let output = data.get("output").and_then(|v| v.as_str()).map(String::from);
-            let success = data.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
+            let output = data
+                .get("output")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let success = data
+                .get("success")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             let duration_ms = data.get("duration_ms").and_then(|v| v.as_u64());
             Ok(AcpMessage::ToolEnd {
                 name,
@@ -226,7 +232,11 @@ pub fn classify_acp_message(line: &str) -> Result<AcpMessage, CommanderError> {
 ///
 /// This is ACP-specific and always passes `--mode acp`. For RPC mode, use
 /// `rpc_client::build_spawn_args` instead.
-pub fn build_acp_spawn_args(working_dir: &str, config: &AutohandConfig, config_path: Option<&std::path::Path>) -> Vec<String> {
+pub fn build_acp_spawn_args(
+    working_dir: &str,
+    config: &AutohandConfig,
+    config_path: Option<&std::path::Path>,
+) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
 
     // Always use ACP mode
@@ -342,15 +352,11 @@ impl AutohandAcpClient {
         stdin
             .write_all(line.as_bytes())
             .await
-            .map_err(|e| {
-                CommanderError::autohand("write_line", format!("write failed: {}", e))
-            })?;
+            .map_err(|e| CommanderError::autohand("write_line", format!("write failed: {}", e)))?;
         stdin
             .flush()
             .await
-            .map_err(|e| {
-                CommanderError::autohand("write_line", format!("flush failed: {}", e))
-            })?;
+            .map_err(|e| CommanderError::autohand("write_line", format!("flush failed: {}", e)))?;
         Ok(())
     }
 
@@ -365,17 +371,12 @@ impl AutohandAcpClient {
     ) -> Result<(), CommanderError> {
         use tauri::Emitter;
 
-        let stdout = self
-            .stdout_handle
-            .lock()
-            .await
-            .take()
-            .ok_or_else(|| {
-                CommanderError::autohand(
-                    "start_with_event_dispatch",
-                    "stdout not available -- was start() called?",
-                )
-            })?;
+        let stdout = self.stdout_handle.lock().await.take().ok_or_else(|| {
+            CommanderError::autohand(
+                "start_with_event_dispatch",
+                "stdout not available -- was start() called?",
+            )
+        })?;
 
         let stderr = self.stderr_handle.lock().await.take();
 
@@ -656,8 +657,7 @@ impl AutohandProtocol for AutohandAcpClient {
         *self.stdout_handle.lock().await = Some(stdout);
         *self.stderr_handle.lock().await = Some(stderr);
         *self.child.lock().await = Some(child);
-        self.alive
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.alive.store(true, std::sync::atomic::Ordering::SeqCst);
 
         Ok(())
     }
@@ -697,9 +697,7 @@ impl AutohandProtocol for AutohandAcpClient {
 
     async fn shutdown(&self) -> Result<(), CommanderError> {
         // Try to send a graceful shutdown command, then kill the process.
-        let _ = self
-            .write_line(&build_acp_command_line("shutdown"))
-            .await;
+        let _ = self.write_line(&build_acp_command_line("shutdown")).await;
 
         let mut guard = self.child.lock().await;
         if let Some(ref mut child) = *guard {
@@ -709,8 +707,7 @@ impl AutohandProtocol for AutohandAcpClient {
         *self.stdin_writer.lock().await = None;
         *self.stdout_handle.lock().await = None;
         *self.stderr_handle.lock().await = None;
-        self.alive
-            .store(false, std::sync::atomic::Ordering::SeqCst);
+        self.alive.store(false, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
 

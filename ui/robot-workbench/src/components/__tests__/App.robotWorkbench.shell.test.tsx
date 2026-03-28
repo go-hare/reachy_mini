@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import App from '@/App'
 
 const project = {
@@ -73,6 +73,11 @@ const defaultSettings = {
   has_completed_onboarding: true,
 }
 
+async function clickRecentProject() {
+  const projectButtons = await screen.findAllByTitle('/projects/sample')
+  fireEvent.click(projectButtons[0])
+}
+
 if (typeof window !== 'undefined' && !window.matchMedia) {
   Object.defineProperty(window, 'matchMedia', {
     writable: true,
@@ -86,6 +91,8 @@ if (typeof window !== 'undefined' && !window.matchMedia) {
 
 if (typeof document !== 'undefined') describe('App robot workbench shell', () => {
   beforeEach(() => {
+    window.localStorage.clear()
+
     const invoke = tauriCore.invoke as unknown as ReturnType<typeof vi.fn>
     invoke.mockReset()
     invoke.mockImplementation(async (cmd: string) => {
@@ -132,13 +139,59 @@ if (typeof document !== 'undefined') describe('App robot workbench shell', () =>
   it('renders the robot side panel after opening a project', async () => {
     render(<App />)
 
-    fireEvent.click(await screen.findByTitle('/projects/sample'))
+    await clickRecentProject()
 
     expect(await screen.findByTestId('chat-interface')).toBeInTheDocument()
     expect(await screen.findByTestId('robot-side-panel')).toBeInTheDocument()
+    expect(screen.getByTestId('robot-side-panel-scroll')).toBeInTheDocument()
+    expect(screen.getByTestId('robot-side-panel-collapse')).toBeInTheDocument()
+    expect(screen.getByTestId('robot-side-panel-collapse').className).toContain('top-1/2')
+    expect(screen.getByTestId('robot-side-panel-collapse').className).toContain('left-0')
     expect(screen.getByTestId('mujoco-panel')).toBeInTheDocument()
     expect(screen.getByTestId('reachy-status-panel')).toBeInTheDocument()
     expect(screen.getByText('MuJoCo')).toBeInTheDocument()
     expect(screen.getByText('Reachy Status')).toBeInTheDocument()
+  })
+
+  it('collapses the robot side panel into a right rail and expands it again', async () => {
+    render(<App />)
+
+    await clickRecentProject()
+
+    fireEvent.click(await screen.findByTestId('robot-side-panel-collapse'))
+
+    expect(screen.queryByTestId('robot-side-panel')).toBeNull()
+    expect(screen.getByTestId('robot-side-panel-collapsed')).toBeInTheDocument()
+    expect(screen.getByTestId('robot-side-panel-expand')).toBeInTheDocument()
+    expect(screen.getByTestId('robot-side-panel-expand').className).toContain('top-1/2')
+    expect(screen.getByTestId('robot-side-panel-expand').className).toContain('left-0')
+
+    fireEvent.click(screen.getByTestId('robot-side-panel-expand'))
+
+    expect(await screen.findByTestId('robot-side-panel')).toBeInTheDocument()
+  })
+
+  it('resizes the robot workbench panel from the left edge drag handle', async () => {
+    render(<App />)
+
+    await clickRecentProject()
+
+    const panel = await screen.findByTestId('robot-side-panel')
+    const handle = screen.getByTestId('robot-side-panel-resize-handle')
+
+    expect(panel).toHaveStyle({ width: '360px' })
+
+    fireEvent.mouseDown(handle, { clientX: 900 })
+
+    await waitFor(() => {
+      expect(document.body.style.cursor).toBe('col-resize')
+    })
+
+    fireEvent.mouseMove(document, { clientX: 820 })
+    fireEvent.mouseUp(document)
+
+    await waitFor(() => {
+      expect(panel).toHaveStyle({ width: '440px' })
+    })
   })
 })

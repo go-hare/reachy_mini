@@ -72,6 +72,16 @@ class UserSpeechStartedEvent(BaseModel):
     text: str = ""
 
 
+class UserSpeechPartialEvent(BaseModel):
+    """One browser partial speech-transcript event over WebSocket."""
+
+    type: Literal["user_speech_partial"]
+    thread_id: str = "app:main"
+    session_id: str | None = None
+    user_id: str = "user"
+    text: str = Field(min_length=1)
+
+
 class UserSpeechStoppedEvent(BaseModel):
     """One browser speech-stop lifecycle event over WebSocket."""
 
@@ -467,7 +477,13 @@ class ReachyMiniApp:
                     if packet.type == "front_final_done":
                         final_reply = str(packet.text or "").strip()
                     elif packet.type == "front_decision" and packet.payload is not None:
-                        front_decision = dict(packet.payload)
+                        packet_decision = dict(packet.payload)
+                        if (
+                            front_decision is None
+                            or str(packet_decision.get("signal_name", "") or "") == "user_turn"
+                            or str(front_decision.get("signal_name", "") or "") != "user_turn"
+                        ):
+                            front_decision = packet_decision
                     elif packet.type == "front_tool_result" and packet.payload is not None:
                         front_tool_results.append(dict(packet.payload))
                     elif packet.type == "turn_error":
@@ -542,10 +558,16 @@ class ReachyMiniApp:
                 asyncio.create_task(self._dispatch_user_text_turn(event, outbound_queue))
                 continue
 
-            if event_type in {"user_speech_started", "user_speech_stopped"}:
+            if event_type in {
+                "user_speech_started",
+                "user_speech_partial",
+                "user_speech_stopped",
+            }:
                 try:
                     if event_type == "user_speech_started":
                         speech_event = UserSpeechStartedEvent.model_validate(payload)
+                    elif event_type == "user_speech_partial":
+                        speech_event = UserSpeechPartialEvent.model_validate(payload)
                     else:
                         speech_event = UserSpeechStoppedEvent.model_validate(payload)
                 except ValidationError as exc:
@@ -558,9 +580,7 @@ class ReachyMiniApp:
                     continue
 
                 tracked_thread_ids.add(str(speech_event.thread_id or "app:main"))
-                asyncio.create_task(
-                    self._dispatch_user_speech_event(speech_event, outbound_queue)
-                )
+                await self._dispatch_user_speech_event(speech_event, outbound_queue)
                 continue
 
             else:
@@ -647,7 +667,7 @@ class ReachyMiniApp:
 
     async def _dispatch_user_speech_event(
         self,
-        event: UserSpeechStartedEvent | UserSpeechStoppedEvent,
+        event: UserSpeechStartedEvent | UserSpeechPartialEvent | UserSpeechStoppedEvent,
         outbound_queue: asyncio.Queue[dict[str, Any]],
     ) -> None:
         """Dispatch one speech lifecycle event onto the resident runtime."""
@@ -763,6 +783,16 @@ class ReachyMiniApp:
 
         if event_type == "user_speech_started":
             await runtime.handle_user_speech_started(
+                thread_id=thread_id,
+                session_id=session_id,
+                user_id=user_id,
+                user_text=user_text,
+                surface_state_handler=surface_state_handler,
+            )
+            return
+
+        if event_type == "user_speech_partial":
+            await runtime.handle_user_speech_partial(
                 thread_id=thread_id,
                 session_id=session_id,
                 user_id=user_id,

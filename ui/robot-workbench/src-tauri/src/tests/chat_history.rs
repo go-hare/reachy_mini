@@ -287,7 +287,9 @@ mod tests {
             .unwrap();
 
         // Verify it exists
-        let before_delete = load_chat_sessions(&project_path, None, None, None).await.unwrap();
+        let before_delete = load_chat_sessions(&project_path, None, None, None)
+            .await
+            .unwrap();
         assert_eq!(before_delete.len(), 1);
 
         // Delete session
@@ -295,7 +297,9 @@ mod tests {
         assert!(delete_result.is_ok(), "Should delete session successfully");
 
         // Verify it's gone
-        let after_delete = load_chat_sessions(&project_path, None, None, None).await.unwrap();
+        let after_delete = load_chat_sessions(&project_path, None, None, None)
+            .await
+            .unwrap();
         assert_eq!(after_delete.len(), 0, "Session should be deleted");
 
         // Verify session file is also deleted
@@ -383,7 +387,9 @@ mod tests {
         assert!(result.is_ok(), "Should migrate legacy data successfully");
 
         // Verify migration created sessions
-        let sessions = load_chat_sessions(&project_path, None, None, None).await.unwrap();
+        let sessions = load_chat_sessions(&project_path, None, None, None)
+            .await
+            .unwrap();
         assert_eq!(
             sessions.len(),
             1,

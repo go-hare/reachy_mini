@@ -16,7 +16,10 @@ pub async fn store_auth_token(
     // Store in Tauri secure store
     let store = app.store(STORE_FILE).map_err(|e| e.to_string())?;
     store.set(KEY_TOKEN, serde_json::json!(token));
-    store.set(KEY_USER, serde_json::to_value(&user).map_err(|e| e.to_string())?);
+    store.set(
+        KEY_USER,
+        serde_json::to_value(&user).map_err(|e| e.to_string())?,
+    );
     store.save().map_err(|e| e.to_string())?;
 
     // Also save to ~/.autohand/sessions/ for CLI sharing
@@ -53,8 +56,7 @@ pub async fn get_auth_user(app: tauri::AppHandle) -> Result<Option<AuthUser>, St
     let user_val = store.get(KEY_USER);
     match user_val {
         Some(val) => {
-            let user: AuthUser =
-                serde_json::from_value(val.clone()).map_err(|e| e.to_string())?;
+            let user: AuthUser = serde_json::from_value(val.clone()).map_err(|e| e.to_string())?;
             Ok(Some(user))
         }
         None => {

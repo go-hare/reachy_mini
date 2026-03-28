@@ -7,7 +7,17 @@
 // Core Settings Types
 // ============================
 
-export type SettingsTab = 'general' | 'appearance' | 'code' | 'chat' | 'prompts' | 'agents' | 'llms' | 'subagents' | 'autohand' | 'docs';
+export type SettingsTab =
+  | "general"
+  | "appearance"
+  | "code"
+  | "chat"
+  | "prompts"
+  | "agents"
+  | "llms"
+  | "subagents"
+  | "autohand"
+  | "docs";
 
 export interface SettingsModalProps {
   isOpen: boolean;
@@ -30,17 +40,25 @@ export interface AppSettings {
   show_welcome_recent_projects?: boolean;
   // Maximum number of chat messages retained per session
   max_chat_history?: number;
-  code_settings?: { theme: string; font_size: number; auto_collapse_sidebar?: boolean; show_file_explorer?: boolean };
+  code_settings?: {
+    theme: string;
+    font_size: number;
+    auto_collapse_sidebar?: boolean;
+    show_file_explorer?: boolean;
+  };
   dashboard_time_range?: number;
   time_saved_multiplier?: number;
   show_dashboard_activity?: boolean;
   dashboard_color_palette?: string;
-  dashboard_chart_type?: 'scatter' | 'knowledge-base';
+  dashboard_chart_type?: "scatter" | "knowledge-base";
   show_onboarding_on_start?: boolean;
   docs_auto_sync?: boolean;
-  chat_history_style?: 'palette' | 'sidebar' | 'strip';
+  chat_history_style?: "palette" | "sidebar" | "strip";
   robot_settings?: {
     live_status_enabled?: boolean;
+    mujoco_live_status_enabled?: boolean;
+    mujoco_viewer_url?: string;
+    mujoco_viewer_launch_command?: string;
     daemon_base_url?: string;
   };
 }
@@ -51,14 +69,14 @@ export interface AppSettings {
 
 export interface AgentConfig {
   model: string;
-  output_format: 'markdown' | 'json' | 'plain' | 'code';
+  output_format: "markdown" | "json" | "plain" | "code";
   session_timeout_minutes: number;
   max_tokens: number | null;
   temperature: number | null;
   sandbox_mode: boolean;
   auto_approval: boolean;
   debug_mode: boolean;
-  transport?: 'cli-flags' | 'json-rpc' | 'acp';
+  transport?: "cli-flags" | "json-rpc" | "acp";
 }
 
 export interface AllAgentSettings {
@@ -68,7 +86,7 @@ export interface AllAgentSettings {
   gemini?: AgentConfig;
   autohand?: AgentConfig;
   ollama?: AgentConfig;
-  custom_agents?: import('@/components/settings/agent-registry').CustomAgentDefinition[];
+  custom_agents?: import("@/components/settings/agent-registry").CustomAgentDefinition[];
 }
 
 export interface BasicAgentSettings {
@@ -76,7 +94,7 @@ export interface BasicAgentSettings {
 }
 
 // Type for Record<string, boolean> used in the main modal
-export type AgentSettingsRecord = Record<string, boolean>
+export type AgentSettingsRecord = Record<string, boolean>;
 
 export interface AgentInfo {
   id: string;
@@ -88,17 +106,17 @@ export interface AgentInfo {
 // LLM Settings Types (re-exported from existing types)
 // ============================
 
-import type { 
+import type {
   LLMModel as ExistingLLMModel,
   LLMProvider as ExistingLLMProvider,
   LLMSettings as ExistingLLMSettings,
-  ProviderStatus as ExistingProviderStatus
-} from './llm'
+  ProviderStatus as ExistingProviderStatus,
+} from "./llm";
 
-export type LLMModel = ExistingLLMModel
-export type LLMProvider = ExistingLLMProvider
-export type LLMSettings = ExistingLLMSettings
-export type ProviderStatus = ExistingProviderStatus
+export type LLMModel = ExistingLLMModel;
+export type LLMProvider = ExistingLLMProvider;
+export type LLMSettings = ExistingLLMSettings;
+export type ProviderStatus = ExistingProviderStatus;
 
 // ============================
 // Chat Settings Types
@@ -119,22 +137,22 @@ export interface SettingsState {
   defaultProjectsFolder: string;
   showConsoleOutput: boolean;
   fileMentionsEnabled: boolean;
-  
+
   // Temporary states for unsaved changes
   tempDefaultProjectsFolder: string;
   tempShowConsoleOutput: boolean;
   tempFileMentionsEnabled: boolean;
-  
+
   // Agent settings
   agentSettings: BasicAgentSettings;
   tempAgentSettings: BasicAgentSettings;
   allAgentSettings: AllAgentSettings | null;
   tempAllAgentSettings: AllAgentSettings | null;
-  
+
   // UI state
   hasUnsavedChanges: boolean;
   showUnsavedChangesDialog: boolean;
-  
+
   // Loading states
   agentSettingsLoading: boolean;
   // Error states
@@ -152,8 +170,6 @@ export interface GeneralSettingsProps {
   saving: boolean;
   // Welcome screen recent projects toggle (temporary for unsaved changes)
   tempShowWelcomeRecentProjects?: boolean;
-  // Suggest AGENTS.md creation when missing (temporary for unsaved changes)
-  tempSuggestCreateAgentsMd?: boolean;
   onFolderChange: (folder: string) => void;
   onSelectFolder: () => Promise<void>;
   onConsoleOutputChange: (enabled: boolean) => void;
@@ -161,8 +177,6 @@ export interface GeneralSettingsProps {
   onClearRecentProjects: () => Promise<void>;
   // Welcome screen toggle change handler
   onShowWelcomeRecentProjectsChange?: (enabled: boolean) => void;
-  // Suggest creation toggle change handler
-  onSuggestCreateAgentsMdChange?: (enabled: boolean) => void;
   // Show onboarding on every app start
   tempShowOnboardingOnStart?: boolean;
   onShowOnboardingOnStartChange?: (enabled: boolean) => void;
@@ -170,6 +184,15 @@ export interface GeneralSettingsProps {
   onMaxConcurrentSessionsChange?: (value: number) => void;
   tempReachyLiveStatusEnabled?: boolean;
   onReachyLiveStatusEnabledChange?: (enabled: boolean) => void;
+  tempMujocoLiveStatusEnabled?: boolean;
+  onMujocoLiveStatusEnabledChange?: (enabled: boolean) => void;
+  tempMujocoViewerUrl?: string;
+  onMujocoViewerUrlChange?: (value: string) => void;
+  onApplyMujocoViewerPreset?: () => void;
+  onClearMujocoViewerUrl?: () => void;
+  tempMujocoViewerLaunchCommand?: string;
+  onMujocoViewerLaunchCommandChange?: (value: string) => void;
+  onApplyMujocoViewerLaunchCommandPreset?: () => void;
   tempReachyDaemonBaseUrl?: string;
   onReachyDaemonBaseUrlChange?: (value: string) => void;
 }
@@ -185,8 +208,8 @@ export interface AppearanceSettingsProps {
   tempShowDashboardActivity?: boolean;
   onShowDashboardActivityChange?: (enabled: boolean) => void;
   // Dashboard chart type
-  tempDashboardChartType?: 'scatter' | 'knowledge-base';
-  onDashboardChartTypeChange?: (type: 'scatter' | 'knowledge-base') => void;
+  tempDashboardChartType?: "scatter" | "knowledge-base";
+  onDashboardChartTypeChange?: (type: "scatter" | "knowledge-base") => void;
   // Code viewer theme
   tempCodeTheme?: string;
   onCodeThemeChange?: (theme: string) => void;
@@ -194,15 +217,15 @@ export interface AppearanceSettingsProps {
   tempCodeFontSize?: number;
   onCodeFontSizeChange?: (size: number) => void;
   // Chat history style
-  tempChatHistoryStyle?: 'palette' | 'sidebar' | 'strip';
-  onChatHistoryStyleChange?: (style: 'palette' | 'sidebar' | 'strip') => void;
+  tempChatHistoryStyle?: "palette" | "sidebar" | "strip";
+  onChatHistoryStyleChange?: (style: "palette" | "sidebar" | "strip") => void;
 }
 
 export interface ChatSettingsProps {
   tempFileMentionsEnabled: boolean;
   onFileMentionsChange: (enabled: boolean) => void;
-  tempChatSendShortcut?: 'enter' | 'mod+enter';
-  onChatSendShortcutChange?: (shortcut: 'enter' | 'mod+enter') => void;
+  tempChatSendShortcut?: "enter" | "mod+enter";
+  onChatSendShortcutChange?: (shortcut: "enter" | "mod+enter") => void;
   tempMaxChatHistory?: number;
   onMaxChatHistoryChange?: (limit: number) => void;
   tempDefaultCliAgent: string;
@@ -221,12 +244,18 @@ export interface AgentSettingsProps {
   onToggleAgent: (agentId: string, enabled: boolean) => void;
   onUpdateAgentSetting: (agentId: string, key: string, value: any) => void;
   onFetchAgentModels: (agentId: string) => Promise<void>;
-  onCreateCustomAgent: (agent: import('@/components/settings/agent-registry').CustomAgentDefinition) => void;
+  onCreateCustomAgent: (
+    agent: import("@/components/settings/agent-registry").CustomAgentDefinition,
+  ) => void;
   onUpdateCustomAgent: (
     agentId: string,
     updater:
-      | Partial<import('@/components/settings/agent-registry').CustomAgentDefinition>
-      | ((agent: import('@/components/settings/agent-registry').CustomAgentDefinition) => import('@/components/settings/agent-registry').CustomAgentDefinition)
+      | Partial<
+          import("@/components/settings/agent-registry").CustomAgentDefinition
+        >
+      | ((
+          agent: import("@/components/settings/agent-registry").CustomAgentDefinition,
+        ) => import("@/components/settings/agent-registry").CustomAgentDefinition),
   ) => void;
   onDeleteCustomAgent: (agentId: string) => void;
   workingDir?: string | null;
@@ -240,7 +269,10 @@ export interface LLMSettingsProps {
   error: string | null;
   tempApiKeys: Record<string, string>;
   fetchingModels: Record<string, boolean>;
-  onUpdateProvider: (providerId: string, updates: Partial<LLMProvider>) => Promise<void>;
+  onUpdateProvider: (
+    providerId: string,
+    updates: Partial<LLMProvider>,
+  ) => Promise<void>;
   onSetActiveProvider: (providerId: string) => void;
   onFetchModels: (providerId: string) => Promise<void>;
   onRefreshStatuses: () => Promise<void>;

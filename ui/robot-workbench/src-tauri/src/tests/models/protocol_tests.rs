@@ -1,6 +1,8 @@
 #[cfg(test)]
 mod tests {
-    use crate::models::protocol::{ProtocolMode, ProtocolError, ProtocolEvent, SessionEventKind, ToolKind};
+    use crate::models::protocol::{
+        ProtocolError, ProtocolEvent, ProtocolMode, SessionEventKind, ToolKind,
+    };
 
     #[test]
     fn protocol_mode_serializes_to_lowercase() {
@@ -28,7 +30,10 @@ mod tests {
         assert!(msg.contains("process_died"));
 
         // Test AgentError struct variant carries code through
-        let err = ProtocolError::AgentError { code: 42, message: "bad".into() };
+        let err = ProtocolError::AgentError {
+            code: 42,
+            message: "bad".into(),
+        };
         let ce: CommanderError = err.into();
         match &ce {
             CommanderError::Protocol { kind, code, .. } => {

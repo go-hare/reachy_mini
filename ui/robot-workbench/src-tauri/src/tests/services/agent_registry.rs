@@ -42,9 +42,15 @@ mod tests {
         let registry = normalize_legacy_agent_registry(&enablement, &legacy);
 
         assert_eq!(registry.max_concurrent_sessions, 12);
-        assert_eq!(registry.agents["claude"].settings.model.as_deref(), Some("claude-sonnet"));
+        assert_eq!(
+            registry.agents["claude"].settings.model.as_deref(),
+            Some("claude-sonnet")
+        );
         assert_eq!(registry.agents["codex"].enabled, false);
-        assert_eq!(registry.agents["ollama"].settings.model.as_deref(), Some("llama3.2"));
+        assert_eq!(
+            registry.agents["ollama"].settings.model.as_deref(),
+            Some("llama3.2")
+        );
         assert!(registry.agents.contains_key("autohand"));
     }
 
@@ -81,6 +87,9 @@ mod tests {
         assert_eq!(parsed.custom_agents[0].id, "dev-rpc");
         assert_eq!(parsed.custom_agents[0].transport, "json-rpc");
         assert_eq!(parsed.custom_agents[0].protocol.as_deref(), Some("rpc"));
-        assert_eq!(parsed.custom_agents[0].settings.model.as_deref(), Some("dev-model"));
+        assert_eq!(
+            parsed.custom_agents[0].settings.model.as_deref(),
+            Some("dev-model")
+        );
     }
 }

@@ -31,34 +31,33 @@ describe('ChatInput', () => {
 
   it('shows default placeholder in normal mode', () => {
     render(<ChatInput {...baseProps} />)
-    expect(screen.getByRole('textbox')).toHaveAttribute('placeholder', expect.stringContaining('defaults to Claude Code CLI'))
+    expect(screen.getByRole('textbox')).toHaveAttribute('placeholder', 'Send a message')
   })
 
   it('shows plan placeholder in plan mode', () => {
     render(<ChatInput {...baseProps} planModeEnabled={true} />)
-    expect(screen.getByRole('textbox')).toHaveAttribute('placeholder', expect.stringContaining('Describe what you want to accomplish'))
+    expect(screen.getByRole('textbox')).toHaveAttribute('placeholder', 'Describe your plan')
   })
 
-  it('renders project context helper', () => {
+  it('does not render the project helper footer', () => {
     render(<ChatInput {...baseProps} />)
-    expect(screen.getByText(/Working in:\s*demo/i)).toBeInTheDocument()
+    expect(screen.queryByText(/Working in:\s*demo/i)).toBeNull()
   })
 
-  it('keeps helper guidance and shortcuts in a wrapped footer section', () => {
+  it('does not render helper guidance or shortcut pills', () => {
     const { container } = render(<ChatInput {...baseProps} />)
-    expect(screen.getByText(/Cmd\+Enter to send/i)).toBeInTheDocument()
-    expect(screen.getByText('/agent prompt')).toBeInTheDocument()
+    expect(screen.queryByText(/Cmd\+Enter to send/i)).toBeNull()
+    expect(screen.queryByText('/agent prompt')).toBeNull()
 
     const helperSection = container.querySelector('[data-testid="chat-input-helper"]')
-    expect(helperSection).toHaveClass('flex-col')
-    expect(helperSection).toHaveClass('sm:flex-row')
+    expect(helperSection).toBeNull()
   })
 
-  it('reflects provided default agent label in placeholder', () => {
+  it('keeps the normal placeholder stable regardless of default agent label', () => {
     const { rerender } = render(<ChatInput {...(baseProps as any)} defaultAgentLabel="Codex" />)
     const input = screen.getByRole('textbox')
-    expect(input).toHaveAttribute('placeholder', expect.stringContaining('Codex'))
+    expect(input).toHaveAttribute('placeholder', 'Send a message')
     rerender(<ChatInput {...(baseProps as any)} defaultAgentLabel="Ollama" />)
-    expect(screen.getByRole('textbox')).toHaveAttribute('placeholder', expect.stringContaining('Ollama'))
+    expect(screen.getByRole('textbox')).toHaveAttribute('placeholder', 'Send a message')
   })
 })

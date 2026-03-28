@@ -25,6 +25,10 @@ document.addEventListener("DOMContentLoaded", () => {
     let recognitionInterimText = "";
     let recognitionError = "";
     let speechLifecycleActive = false;
+    let lastPartialSentText = "";
+    let lastStoppedText = "";
+    let speechCaptureEnded = false;
+    let turnCompleted = false;
 
     function compactText(text) {
         return String(text || "")
@@ -172,16 +176,16 @@ document.addEventListener("DOMContentLoaded", () => {
     function formatSurfaceStatus(state) {
         const phase = String(state?.phase || "");
         if (phase === "listening") {
-            return "Front 已接到消息，正在投递内核...";
+            return "Front 正在接收你的输入...";
         }
         if (phase === "listening_wait") {
-            return "已听到你的语音，Front 正在等最终文本并准备投递内核...";
+            return "已收到语音，正在等待最终文本...";
         }
         if (phase === "replying") {
-            return "内核处理中，Front 正在组织最终回复...";
+            return "Front 正在处理这一轮并组织回复...";
         }
         if (phase === "settling") {
-            return "最终回复已生成，Runtime 正在收尾...";
+            return "回复内容已经生成，正在做最后收尾...";
         }
         if (phase === "idle") {
             return "Runtime ready";
@@ -229,19 +233,47 @@ document.addEventListener("DOMContentLoaded", () => {
             text: compactText(text),
         });
         speechLifecycleActive = delivered;
+        if (delivered) {
+            lastStoppedText = "";
+        }
         return delivered;
     }
 
-    function emitUserSpeechStopped(text = "") {
+    function emitUserSpeechPartial(text = "") {
+        const normalized = compactText(text);
+        if (!normalized || speechCaptureEnded) {
+            return false;
+        }
         if (!speechLifecycleActive) {
+            emitUserSpeechStarted(normalized);
+        }
+        if (!speechLifecycleActive || lastPartialSentText === normalized) {
+            return speechLifecycleActive;
+        }
+        const delivered = sendSocketEvent({
+            type: "user_speech_partial",
+            thread_id: THREAD_ID,
+            text: normalized,
+        });
+        if (delivered) {
+            lastPartialSentText = normalized;
+        }
+        return delivered;
+    }
+
+    function emitUserSpeechStopped(text = "", options = {}) {
+        const normalized = compactText(text);
+        const allowRepeat = Boolean(options.allowRepeat);
+        if (!speechLifecycleActive && (!allowRepeat || lastStoppedText === normalized)) {
             return false;
         }
         sendSocketEvent({
             type: "user_speech_stopped",
             thread_id: THREAD_ID,
-            text: compactText(text),
+            text: normalized,
         });
         speechLifecycleActive = false;
+        lastStoppedText = normalized;
         return true;
     }
 
@@ -262,13 +294,14 @@ document.addEventListener("DOMContentLoaded", () => {
             return false;
         }
 
+        turnCompleted = false;
         appendMessage("user", message);
         if (!options.fromSpeech) {
             messageInput.value = "";
         }
         syncComposerState();
         setStatus(
-            options.statusText || "消息已投递，等待 Front 首轮回复；你也可以继续发送。",
+            options.statusText || "消息已送达，Front 正在处理；你也可以继续发送。",
             true
         );
 
@@ -282,10 +315,13 @@ document.addEventListener("DOMContentLoaded", () => {
 
     async function finalizeRecognitionSession() {
         const transcript = currentRecognitionText();
-        if (transcript && !speechLifecycleActive) {
+        if (transcript && !speechCaptureEnded && !speechLifecycleActive) {
             emitUserSpeechStarted(transcript);
         }
-        emitUserSpeechStopped(transcript);
+        const shouldRepeatStopped = Boolean(
+            speechCaptureEnded && transcript && transcript !== lastStoppedText
+        );
+        emitUserSpeechStopped(transcript, { allowRepeat: shouldRepeatStopped });
 
         recognitionActive = false;
         setSpeechPreview("");
@@ -295,11 +331,14 @@ document.addEventListener("DOMContentLoaded", () => {
         recognitionFinalText = "";
         recognitionInterimText = "";
         recognitionError = "";
+        lastPartialSentText = "";
+        lastStoppedText = "";
+        speechCaptureEnded = false;
 
         if (transcript) {
             const submitted = submitUserText(transcript, {
                 fromSpeech: true,
-                statusText: "语音已转成文本，等待 Front 首轮回复；你也可以继续发送。",
+                statusText: "语音已转成文本，Front 正在处理；你也可以继续发送。",
             });
             setMicStatus(
                 submitted ? "本轮语音已转成文本并送入 runtime。" : "语音已识别，但当前连接还没恢复。",
@@ -335,17 +374,25 @@ document.addEventListener("DOMContentLoaded", () => {
 
         instance.addEventListener("start", () => {
             recognitionError = "";
+            speechCaptureEnded = false;
+            lastPartialSentText = "";
+            lastStoppedText = "";
             setMicStatus("麦克风已开启，请开始说话。", "listening");
             setSpeechPreview("");
         });
 
         instance.addEventListener("speechstart", () => {
+            speechCaptureEnded = false;
+            turnCompleted = false;
             emitUserSpeechStarted(currentRecognitionText());
-            setStatus("检测到你开始说话，Runtime 已进入 listening。", true);
+            setStatus("检测到你开始说话，正在接收语音。", true);
             setMicStatus("正在听你说话...", "listening");
         });
 
         instance.addEventListener("speechend", () => {
+            speechCaptureEnded = true;
+            emitUserSpeechStopped(currentRecognitionText());
+            setStatus("检测到你停止说话，正在等待最终文本。", true);
             setMicStatus("已停止收音，正在整理文字...", "processing");
         });
 
@@ -372,7 +419,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
             const previewText = currentRecognitionText();
             if (previewText) {
-                emitUserSpeechStarted(previewText);
+                if (!speechCaptureEnded) {
+                    emitUserSpeechStarted(previewText);
+                    emitUserSpeechPartial(previewText);
+                }
                 setSpeechPreview(previewText);
                 setMicStatus(
                     recognitionInterimText
@@ -425,6 +475,9 @@ document.addEventListener("DOMContentLoaded", () => {
         recognitionInterimText = "";
         recognitionError = "";
         speechLifecycleActive = false;
+        lastPartialSentText = "";
+        lastStoppedText = "";
+        speechCaptureEnded = false;
         setSpeechPreview("");
         syncComposerState();
         setMicStatus("正在请求浏览器麦克风...", "processing");
@@ -468,36 +521,45 @@ document.addEventListener("DOMContentLoaded", () => {
         }
 
         if (eventType === "surface_state") {
+            const phase = String(payload?.state?.phase || "");
+            if (turnCompleted && (phase === "settling" || phase === "idle")) {
+                return;
+            }
             setStatus(formatSurfaceStatus(payload.state), runtimeReady);
             return;
         }
 
         if (eventType === "front_hint_chunk") {
+            turnCompleted = false;
             updateStageBubble(payload.turn_id, "hint", payload.text, "append");
-            setStatus("Front 已先回应，内核继续处理中，你也可以继续发送。", true);
+            setStatus("Front 已先回应，后续处理还在继续，你也可以继续发送。", true);
             return;
         }
 
         if (eventType === "front_hint_done") {
+            turnCompleted = false;
             updateStageBubble(payload.turn_id, "hint", payload.text, "replace");
-            setStatus("Front 已先回应，内核继续处理中，你也可以继续发送。", true);
+            setStatus("Front 已先回应，后续处理还在继续，你也可以继续发送。", true);
             return;
         }
 
         if (eventType === "front_final_chunk") {
+            turnCompleted = false;
             updateStageBubble(payload.turn_id, "final", payload.text, "append");
-            setStatus("Front 正在输出最终回复，你也可以继续发送。", true);
+            setStatus("Front 正在输出这一轮的最终回复，你也可以继续发送。", true);
             return;
         }
 
         if (eventType === "front_final_done") {
+            turnCompleted = true;
             updateStageBubble(payload.turn_id, "final", payload.text, "replace");
-            setStatus("Runtime ready", true);
+            setStatus("这轮回复已经完成，你也可以继续发送。", true);
             finishTurn();
             return;
         }
 
         if (eventType === "turn_error") {
+            turnCompleted = false;
             appendMessage("assistant", `请求失败：${payload.error || "unknown error"}`);
             setStatus("Runtime error", false);
             finishTurn();
@@ -539,6 +601,7 @@ document.addEventListener("DOMContentLoaded", () => {
             socket = null;
             socketReady = false;
             runtimeReady = false;
+            turnCompleted = false;
             syncComposerState();
             setStatus("WebSocket disconnected, retrying...", false);
             if (recognitionActive) {

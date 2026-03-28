@@ -2,12 +2,12 @@
 
 from types import SimpleNamespace
 
+from reachy_mini.companion import build_companion_intent, build_surface_expression
 from reachy_mini.companion.runtime_surface import (
     build_companion_phase_surface_state,
     build_idle_surface_state,
     build_listening_surface_state,
     build_listening_wait_surface_state,
-    build_turn_surface_bundle,
 )
 
 
@@ -75,43 +75,32 @@ def test_build_listening_wait_surface_state_returns_non_listening_hold() -> None
     assert state["recommended_hold_ms"] == 600
 
 
-def test_build_turn_surface_bundle_builds_replying_state_from_companion_rules() -> None:
-    """Replying turn bundle should return intent, expression, and replying state together."""
+def test_companion_intent_and_expression_stay_lightweight() -> None:
+    """Intent and expression helpers should stay lightweight and direct."""
 
-    bundle = build_turn_surface_bundle(
-        thread_id="app:main",
+    intent = build_companion_intent(
         user_text="帮我看看日志",
         kernel_output="需要先查看日志文件",
         affect_state=_fake_affect_state(),
         emotion_signal=_fake_emotion_signal(),
     )
+    expression = build_surface_expression(intent, affect_state=_fake_affect_state())
 
-    assert bundle.intent.mode == "comfort"
-    assert bundle.expression.text_style == "soft_wrap"
-    assert bundle.state["phase"] == "replying"
-    assert bundle.state["emotion_support_need"] == "comfort"
+    assert intent.mode == "comfort"
+    assert expression.text_style == "soft_wrap"
+    assert expression.expression == "gentle_caring"
 
 
 def test_build_companion_phase_surface_state_overrides_settling_and_idle_motion() -> None:
     """Settling and idle phases should only affect the runtime hold."""
 
-    bundle = build_turn_surface_bundle(
-        thread_id="app:main",
-        user_text="帮我看看日志",
-        kernel_output="需要先查看日志文件",
-    )
-
     settling = build_companion_phase_surface_state(
         thread_id="app:main",
         phase="settling",
-        companion_intent=bundle.intent,
-        surface_expression=bundle.expression,
     )
     idle = build_companion_phase_surface_state(
         thread_id="app:main",
         phase="idle",
-        companion_intent=bundle.intent,
-        surface_expression=bundle.expression,
     )
 
     assert settling["phase"] == "settling"

@@ -75,10 +75,7 @@ pub async fn trigger_reindex(db: Arc<IndexDb>) -> Result<(), String> {
 
 /// Scan all agents in parallel using tokio tasks, then write results to db sequentially.
 /// This avoids holding the db lock across async boundaries while maximizing I/O parallelism.
-async fn run_parallel_scan(
-    db: &IndexDb,
-    scanners: &[Box<dyn AgentScanner>],
-) -> Result<(), String> {
+async fn run_parallel_scan(db: &IndexDb, scanners: &[Box<dyn AgentScanner>]) -> Result<(), String> {
     for scanner in scanners {
         if !scanner.is_available() {
             continue;
@@ -167,8 +164,7 @@ async fn run_parallel_scan(
                         for session in &result.sessions {
                             // Deduplication for autohand imports
                             if let Some(ref src_agent) = session.source_agent {
-                                if let Ok(true) =
-                                    db.session_exists(src_agent, &session.original_id)
+                                if let Ok(true) = db.session_exists(src_agent, &session.original_id)
                                 {
                                     continue;
                                 }

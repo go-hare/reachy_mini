@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor, fireEvent, within } from '@testing-library/react'
+import { render, screen, fireEvent, within } from '@testing-library/react'
 import App from '@/App'
 
 const project = {
@@ -177,7 +177,7 @@ if (typeof document !== 'undefined') describe('App project identity header', () 
     })
   })
 
-  it('replaces breadcrumbs with a project identity bar and right-side model, status, and actions', async () => {
+  it('replaces breadcrumbs with a flatter project identity bar and shared actions', async () => {
     render(<App />)
 
     fireEvent.click(await screen.findByTitle('/projects/sample/.commander/feature-alpha'))
@@ -186,13 +186,9 @@ if (typeof document !== 'undefined') describe('App project identity header', () 
     expect(header).toBeInTheDocument()
     expect(screen.queryByRole('navigation', { name: /breadcrumb/i })).not.toBeInTheDocument()
     expect(within(header).getByText('Sample Project')).toBeInTheDocument()
-    expect(within(header).getByText('feature-alpha')).toBeInTheDocument()
-    expect(within(header).getByText(/workspace feature-alpha/i)).toBeInTheDocument()
     expect(within(header).getByText('~/sample/.commander/feature-alpha')).toBeInTheDocument()
-    expect(within(header).getByTestId('project-header-model')).toHaveTextContent('Model')
-    expect(within(header).getByTestId('project-header-model')).toHaveTextContent('gpt-5.4')
-    expect(within(header).getByTestId('project-header-status')).toHaveTextContent('Status')
-    expect(within(header).getByTestId('project-header-status')).toHaveTextContent('Ready')
+    expect(within(header).queryByTestId('project-header-model')).toBeNull()
+    expect(within(header).queryByTestId('project-header-status')).toBeNull()
     expect(within(header).getByRole('button', { name: /copy project path/i })).toBeInTheDocument()
     const headerActionsButton = within(header).getByRole('button', { name: /project actions for sample project/i })
     expect(headerActionsButton).toBeInTheDocument()
@@ -203,15 +199,9 @@ if (typeof document !== 'undefined') describe('App project identity header', () 
     expect(screen.queryByRole('menuitem', { name: /new branch/i })).toBeNull()
     expect(screen.queryByRole('menuitem', { name: /new worktree/i })).toBeNull()
     expect(screen.queryByRole('menuitem', { name: /delete project/i })).toBeNull()
-
-    await waitFor(() => {
-      expect((tauriCore.invoke as unknown as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith('get_project_git_worktrees', {
-        projectPath: '/projects/sample/.commander/feature-alpha',
-      })
-    })
   })
 
-  it('shows a running status badge when the active project has executing sessions', async () => {
+  it('keeps the header minimal even when the active project has executing sessions', async () => {
     chatExecutionState.sessionIds = ['session-1']
 
     render(<App />)
@@ -219,9 +209,7 @@ if (typeof document !== 'undefined') describe('App project identity header', () 
     fireEvent.click(await screen.findByTitle('/projects/sample/.commander/feature-alpha'))
 
     const header = await screen.findByTestId('project-identity-header')
-
-    await waitFor(() => {
-      expect(within(header).getByTestId('project-header-status')).toHaveTextContent('Running')
-    })
+    expect(within(header).queryByTestId('project-header-status')).toBeNull()
+    expect(within(header).queryByTestId('project-header-model')).toBeNull()
   })
 })

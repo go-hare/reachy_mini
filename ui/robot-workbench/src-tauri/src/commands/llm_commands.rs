@@ -407,24 +407,78 @@ struct AgentCandidate {
 
 /// Curated list of known coding CLI agents (beyond Commander's built-ins).
 const AGENT_CANDIDATES: &[AgentCandidate] = &[
-    AgentCandidate { binary: "aider",     display_name: "Aider" },
-    AgentCandidate { binary: "goose",     display_name: "Goose" },
-    AgentCandidate { binary: "amp",       display_name: "Amp" },
-    AgentCandidate { binary: "cline",     display_name: "Cline" },
-    AgentCandidate { binary: "plandex",   display_name: "Plandex" },
-    AgentCandidate { binary: "mentat",    display_name: "Mentat" },
-    AgentCandidate { binary: "tabby",     display_name: "Tabby" },
-    AgentCandidate { binary: "continue",  display_name: "Continue" },
-    AgentCandidate { binary: "cursor",    display_name: "Cursor" },
-    AgentCandidate { binary: "copilot",   display_name: "GitHub Copilot" },
-    AgentCandidate { binary: "devin",     display_name: "Devin" },
-    AgentCandidate { binary: "sweep",     display_name: "Sweep" },
-    AgentCandidate { binary: "gpt-engineer", display_name: "GPT Engineer" },
-    AgentCandidate { binary: "roo",       display_name: "Roo Code" },
-    AgentCandidate { binary: "oi",        display_name: "Open Interpreter" },
-    AgentCandidate { binary: "interpreter", display_name: "Open Interpreter" },
-    AgentCandidate { binary: "kodu",      display_name: "Kodu" },
-    AgentCandidate { binary: "aide",      display_name: "Aide" },
+    AgentCandidate {
+        binary: "aider",
+        display_name: "Aider",
+    },
+    AgentCandidate {
+        binary: "goose",
+        display_name: "Goose",
+    },
+    AgentCandidate {
+        binary: "amp",
+        display_name: "Amp",
+    },
+    AgentCandidate {
+        binary: "cline",
+        display_name: "Cline",
+    },
+    AgentCandidate {
+        binary: "plandex",
+        display_name: "Plandex",
+    },
+    AgentCandidate {
+        binary: "mentat",
+        display_name: "Mentat",
+    },
+    AgentCandidate {
+        binary: "tabby",
+        display_name: "Tabby",
+    },
+    AgentCandidate {
+        binary: "continue",
+        display_name: "Continue",
+    },
+    AgentCandidate {
+        binary: "cursor",
+        display_name: "Cursor",
+    },
+    AgentCandidate {
+        binary: "copilot",
+        display_name: "GitHub Copilot",
+    },
+    AgentCandidate {
+        binary: "devin",
+        display_name: "Devin",
+    },
+    AgentCandidate {
+        binary: "sweep",
+        display_name: "Sweep",
+    },
+    AgentCandidate {
+        binary: "gpt-engineer",
+        display_name: "GPT Engineer",
+    },
+    AgentCandidate {
+        binary: "roo",
+        display_name: "Roo Code",
+    },
+    AgentCandidate {
+        binary: "oi",
+        display_name: "Open Interpreter",
+    },
+    AgentCandidate {
+        binary: "interpreter",
+        display_name: "Open Interpreter",
+    },
+    AgentCandidate {
+        binary: "kodu",
+        display_name: "Kodu",
+    },
+    AgentCandidate {
+        binary: "aide",
+        display_name: "Aide",
+    },
 ];
 
 /// Built-in agent IDs that should be excluded from detection results.
@@ -479,24 +533,21 @@ pub async fn detect_cli_agents(app: tauri::AppHandle) -> Result<Vec<DetectedAgen
         };
 
         // Check --help output for RPC/ACP keywords
-        let (supports_rpc, supports_acp) = match Command::new(candidate.binary)
-            .arg("--help")
-            .output()
-            .await
-        {
-            Ok(output) => {
-                let text = String::from_utf8_lossy(&output.stdout).to_lowercase();
-                let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
-                let combined = format!("{} {}", text, stderr);
-                let has_rpc = combined.contains("rpc")
-                    || combined.contains("json-rpc")
-                    || combined.contains("jsonrpc");
-                let has_acp = combined.contains("acp")
-                    || combined.contains("agent communication protocol");
-                (has_rpc, has_acp)
-            }
-            _ => (false, false),
-        };
+        let (supports_rpc, supports_acp) =
+            match Command::new(candidate.binary).arg("--help").output().await {
+                Ok(output) => {
+                    let text = String::from_utf8_lossy(&output.stdout).to_lowercase();
+                    let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
+                    let combined = format!("{} {}", text, stderr);
+                    let has_rpc = combined.contains("rpc")
+                        || combined.contains("json-rpc")
+                        || combined.contains("jsonrpc");
+                    let has_acp = combined.contains("acp")
+                        || combined.contains("agent communication protocol");
+                    (has_rpc, has_acp)
+                }
+                _ => (false, false),
+            };
 
         detected.push(DetectedAgent {
             binary: candidate.binary.to_string(),

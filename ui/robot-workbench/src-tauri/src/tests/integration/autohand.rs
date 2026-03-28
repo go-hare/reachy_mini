@@ -7,13 +7,16 @@
 #[cfg(test)]
 mod tests {
     use crate::models::autohand::*;
-    use crate::services::autohand::rpc_client::*;
     use crate::services::autohand::acp_client::*;
+    use crate::services::autohand::rpc_client::*;
 
     #[test]
     fn test_rpc_full_prompt_flow() {
         // Build a prompt request using the correct autohand-prefixed method
-        let req = build_rpc_request("autohand.prompt", Some(build_prompt_params("Fix the bug", None)));
+        let req = build_rpc_request(
+            "autohand.prompt",
+            Some(build_prompt_params("Fix the bug", None)),
+        );
         let line = serialize_rpc_to_line(&req);
 
         // Verify it's valid JSON with correct method name

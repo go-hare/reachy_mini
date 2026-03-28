@@ -50,9 +50,6 @@
     ],
     "resources": [
       "cli/commander"
-    ],
-    "externalBin": [
-      "binaries/codex-acp"
     ]
   }
 }

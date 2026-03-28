@@ -34,17 +34,15 @@ fn md_cache_dir() -> Result<PathBuf, String> {
 pub async fn sync_docs() -> Result<DocsSyncResult, String> {
     let dir = cache_dir()?;
     let pages_dir = md_cache_dir()?;
-    std::fs::create_dir_all(&pages_dir)
-        .map_err(|e| format!("Failed to create docs cache: {e}"))?;
+    std::fs::create_dir_all(&pages_dir).map_err(|e| format!("Failed to create docs cache: {e}"))?;
 
     let client = build_client()?;
 
     // 1. Download search index
     let index = fetch_search_index(&client).await?;
-    let index_json = serde_json::to_string_pretty(&index)
-        .map_err(|e| format!("Serialize index: {e}"))?;
-    std::fs::write(dir.join(INDEX_FILE), &index_json)
-        .map_err(|e| format!("Write index: {e}"))?;
+    let index_json =
+        serde_json::to_string_pretty(&index).map_err(|e| format!("Serialize index: {e}"))?;
+    std::fs::write(dir.join(INDEX_FILE), &index_json).map_err(|e| format!("Write index: {e}"))?;
 
     // 2. Collect unique page URLs and download each markdown file
     let unique_pages = collect_unique_pages(&index);
@@ -116,8 +114,9 @@ pub async fn get_doc(slug: &str) -> Result<DocContent, String> {
     // Fallback: read from local cache
     let pages_dir = md_cache_dir()?;
     let file_path = url_to_cache_path(&pages_dir, &url_path);
-    let markdown = std::fs::read_to_string(&file_path)
-        .map_err(|_| "Doc not available. Check your connection or sync docs in Settings.".to_string())?;
+    let markdown = std::fs::read_to_string(&file_path).map_err(|_| {
+        "Doc not available. Check your connection or sync docs in Settings.".to_string()
+    })?;
 
     let (title, _source) = extract_frontmatter(&markdown);
     let category = category_from_slug(slug);
@@ -211,8 +210,8 @@ async fn load_search_index() -> Result<Vec<SearchIndexEntry>, String> {
             // Cache it silently
             if let Ok(dir) = cache_dir() {
                 let _ = std::fs::create_dir_all(&dir);
-                let _ = serde_json::to_string(&index)
-                    .map(|s| std::fs::write(dir.join(INDEX_FILE), s));
+                let _ =
+                    serde_json::to_string(&index).map(|s| std::fs::write(dir.join(INDEX_FILE), s));
             }
             return Ok(index);
         }
@@ -221,8 +220,9 @@ async fn load_search_index() -> Result<Vec<SearchIndexEntry>, String> {
     // Fall back to cached
     let dir = cache_dir()?;
     let path = dir.join(INDEX_FILE);
-    let text = std::fs::read_to_string(&path)
-        .map_err(|_| "No search index available. Check your connection or sync docs in Settings.".to_string())?;
+    let text = std::fs::read_to_string(&path).map_err(|_| {
+        "No search index available. Check your connection or sync docs in Settings.".to_string()
+    })?;
     serde_json::from_str(&text).map_err(|e| format!("Parse cached index: {e}"))
 }
 
@@ -407,8 +407,7 @@ fn write_meta(dir: &PathBuf) -> Result<(), String> {
         .unwrap_or_default()
         .as_millis() as u64;
     let meta = serde_json::json!({ "last_synced": now });
-    std::fs::write(dir.join(META_FILE), meta.to_string())
-        .map_err(|e| format!("Write meta: {e}"))
+    std::fs::write(dir.join(META_FILE), meta.to_string()).map_err(|e| format!("Write meta: {e}"))
 }
 
 fn count_md_files(dir: &PathBuf, count: &mut u32, size: &mut u64) {

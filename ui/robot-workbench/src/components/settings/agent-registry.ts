@@ -96,11 +96,10 @@ export const BUILTIN_AGENT_PROFILES: BuiltInAgentProfile[] = [
     id: 'codex',
     label: 'Codex',
     shortLabel: 'Codex',
-    description: 'Supports ACP via codex-acp and CLI flags via standard codex.',
+    description: 'Configured through the standard Codex CLI flags.',
     command: 'codex',
-    transport: 'acp',
-    promptMode: 'protocol',
-    protocol: 'acp',
+    transport: 'cli-flags',
+    promptMode: 'flag',
     capabilities: {
       model: {
         source: '--model',

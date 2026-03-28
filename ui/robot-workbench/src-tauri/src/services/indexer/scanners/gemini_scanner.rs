@@ -9,9 +9,7 @@ pub struct GeminiScanner {
 
 impl GeminiScanner {
     pub fn new() -> Self {
-        let home = dirs::home_dir()
-            .unwrap_or_default()
-            .join(".gemini");
+        let home = dirs::home_dir().unwrap_or_default().join(".gemini");
         Self { home }
     }
 }
@@ -74,7 +72,11 @@ impl AgentScanner for GeminiScanner {
         let path_buf = PathBuf::from(path);
         let file_mtime = std::fs::metadata(path)
             .and_then(|m| m.modified())
-            .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64)
+            .map(|t| {
+                t.duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64
+            })
             .unwrap_or(0);
 
         let original_id = path_buf

@@ -13,19 +13,71 @@ pub struct ProjectApplicationSpec {
 }
 
 const PROJECT_APPLICATION_SPECS: &[ProjectApplicationSpec] = &[
-    ProjectApplicationSpec { id: "cursor", label: "Cursor", bundle_name: "Cursor.app" },
-    ProjectApplicationSpec { id: "antigravity", label: "Antigravity", bundle_name: "Antigravity.app" },
-    ProjectApplicationSpec { id: "zed", label: "Zed", bundle_name: "Zed.app" },
-    ProjectApplicationSpec { id: "sublime-text", label: "Sublime Text", bundle_name: "Sublime Text.app" },
-    ProjectApplicationSpec { id: "xcode", label: "Xcode", bundle_name: "Xcode.app" },
-    ProjectApplicationSpec { id: "iterm", label: "iTerm", bundle_name: "iTerm.app" },
-    ProjectApplicationSpec { id: "warp", label: "Warp", bundle_name: "Warp.app" },
-    ProjectApplicationSpec { id: "terminal", label: "Terminal", bundle_name: "Terminal.app" },
-    ProjectApplicationSpec { id: "ghostty", label: "Ghostty", bundle_name: "Ghostty.app" },
-    ProjectApplicationSpec { id: "vs-code", label: "VS Code", bundle_name: "Visual Studio Code.app" },
-    ProjectApplicationSpec { id: "jetbrains", label: "JetBrains", bundle_name: "JetBrains Toolbox.app" },
-    ProjectApplicationSpec { id: "windsurf", label: "Windsurf", bundle_name: "Windsurf.app" },
-    ProjectApplicationSpec { id: "trae",     label: "Trae",     bundle_name: "Trae.app" },
+    ProjectApplicationSpec {
+        id: "cursor",
+        label: "Cursor",
+        bundle_name: "Cursor.app",
+    },
+    ProjectApplicationSpec {
+        id: "antigravity",
+        label: "Antigravity",
+        bundle_name: "Antigravity.app",
+    },
+    ProjectApplicationSpec {
+        id: "zed",
+        label: "Zed",
+        bundle_name: "Zed.app",
+    },
+    ProjectApplicationSpec {
+        id: "sublime-text",
+        label: "Sublime Text",
+        bundle_name: "Sublime Text.app",
+    },
+    ProjectApplicationSpec {
+        id: "xcode",
+        label: "Xcode",
+        bundle_name: "Xcode.app",
+    },
+    ProjectApplicationSpec {
+        id: "iterm",
+        label: "iTerm",
+        bundle_name: "iTerm.app",
+    },
+    ProjectApplicationSpec {
+        id: "warp",
+        label: "Warp",
+        bundle_name: "Warp.app",
+    },
+    ProjectApplicationSpec {
+        id: "terminal",
+        label: "Terminal",
+        bundle_name: "Terminal.app",
+    },
+    ProjectApplicationSpec {
+        id: "ghostty",
+        label: "Ghostty",
+        bundle_name: "Ghostty.app",
+    },
+    ProjectApplicationSpec {
+        id: "vs-code",
+        label: "VS Code",
+        bundle_name: "Visual Studio Code.app",
+    },
+    ProjectApplicationSpec {
+        id: "jetbrains",
+        label: "JetBrains",
+        bundle_name: "JetBrains Toolbox.app",
+    },
+    ProjectApplicationSpec {
+        id: "windsurf",
+        label: "Windsurf",
+        bundle_name: "Windsurf.app",
+    },
+    ProjectApplicationSpec {
+        id: "trae",
+        label: "Trae",
+        bundle_name: "Trae.app",
+    },
 ];
 
 /// Pure helper: upsert a recent project into list with MRU ordering and cap
@@ -223,7 +275,10 @@ pub fn open_project_with_application(
     #[cfg(not(target_os = "macos"))]
     {
         let _ = spec;
-        Err("Opening a project with a specific application is not supported on this platform".to_string())
+        Err(
+            "Opening a project with a specific application is not supported on this platform"
+                .to_string(),
+        )
     }
 }
 

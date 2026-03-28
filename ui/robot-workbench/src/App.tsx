@@ -23,42 +23,23 @@ import { ProjectIdentityHeader } from "@/components/project-identity-header"
 import { ProjectChooserModal } from "@/components/ProjectChooserModal"
 import { DashboardView } from "@/components/dashboard/DashboardView"
 import { DocsViewer } from "@/components/DocsViewer"
-import { RobotSidePanel } from "@/components/workbench/RobotSidePanel"
+import { RobotWorkbenchDock } from "@/components/workbench/RobotSidePanel"
 import { useRecentProjects, RecentProject } from "@/hooks/use-recent-projects"
 import { useSettings } from "@/contexts/settings-context"
 import type { MenuEventPayload } from "@/types/menu"
-import type { AllAgentSettings } from "@/types/settings"
-import { getAgentDisplayById, normalizeDefaultAgentId } from "@/components/chat/agents"
-
-
 interface ProjectViewProps {
   project: RecentProject
   selectedAgent?: string
   activeTab: string
   onTabChange: (tab: string) => void
   onExecutingChange?: (projectPath: string, sessionIds: string[]) => void
-  pendingChatPrompt?: string | null
-  onPendingChatPromptConsumed?: () => void
   loadedSession?: { messages: Array<{ id: string; role: string; content: string; timestamp: number; agent: string }>; sessionId: string } | null
   onLoadedSessionConsumed?: () => void
 }
 
-function buildHeaderModelSummary(
-  allAgentSettings: AllAgentSettings | null,
-  defaultAgentId?: string
-) {
-  const normalizedAgentId = normalizeDefaultAgentId(defaultAgentId)
-  const agentLabel = getAgentDisplayById(normalizedAgentId)
-  const agentConfig = allAgentSettings?.[normalizedAgentId]
-  const modelValue =
-    agentConfig && typeof agentConfig === 'object' && 'model' in agentConfig && typeof agentConfig.model === 'string'
-      ? agentConfig.model.trim()
-      : ''
+function ProjectView({ project, selectedAgent, activeTab, onTabChange, onExecutingChange, loadedSession, onLoadedSessionConsumed }: ProjectViewProps) {
+  const [robotPanelCollapsed, setRobotPanelCollapsed] = React.useState(false)
 
-  return modelValue ? `${agentLabel} · ${modelValue}` : `${agentLabel} · Not set`
-}
-
-function ProjectView({ project, selectedAgent, activeTab, onTabChange, onExecutingChange, pendingChatPrompt, onPendingChatPromptConsumed, loadedSession, onLoadedSessionConsumed }: ProjectViewProps) {
   const handleTabChange = React.useCallback((value: string) => {
     onTabChange(value)
   }, [onTabChange])
@@ -73,10 +54,8 @@ function ProjectView({ project, selectedAgent, activeTab, onTabChange, onExecuti
               selectedAgent={selectedAgent}
               project={project}
               onExecutingChange={onExecutingChange}
-              pendingPrompt={pendingChatPrompt}
               loadedSession={loadedSession}
               onLoadedSessionConsumed={onLoadedSessionConsumed}
-              onPendingPromptConsumed={onPendingChatPromptConsumed}
             />
           </TabsContent>
 
@@ -89,7 +68,12 @@ function ProjectView({ project, selectedAgent, activeTab, onTabChange, onExecuti
           </TabsContent>
         </Tabs>
       </div>
-      <RobotSidePanel projectName={project.name} />
+      <RobotWorkbenchDock
+        projectName={project.name}
+        projectPath={project.path}
+        collapsed={robotPanelCollapsed}
+        onToggle={() => setRobotPanelCollapsed((current) => !current)}
+      />
     </div>
   )
 }
@@ -165,7 +149,6 @@ function AppContent() {
   const [welcomePhrase, setWelcomePhrase] = useState<string>("")
   const [dashboardDays, setDashboardDays] = useState(30)
   const { showSuccess, showError, showToast } = useToast()
-  const [pendingChatPrompt, setPendingChatPrompt] = useState<string | null>(null)
   const [activeDocSlug, setActiveDocSlug] = useState<string | null>(null)
   const [chatSidebarOpen, setChatSidebarOpen] = useState(false)
   const [loadedSession, setLoadedSession] = useState<{ messages: Array<{ id: string; role: string; content: string; timestamp: number; agent: string }>; sessionId: string } | null>(null)
@@ -173,7 +156,6 @@ function AppContent() {
   const openSettingsTimeoutRef = useRef<number | null>(null)
   const { projects: allRecentProjects } = useRecentProjects()
   const [homeDir, setHomeDir] = useState<string>("")
-  const [headerAgentSettings, setHeaderAgentSettings] = useState<AllAgentSettings | null>(null)
 
   const WELCOME_PHRASES = [
     'Command any AI coding CLI agent from one screen',
@@ -288,29 +270,6 @@ function AppContent() {
     })
   }, [openProjectPath, showError])
 
-  const handleProjectBranchSelect = React.useCallback(async (project: RecentProject, branch: string) => {
-    try {
-      await invoke('switch_project_git_branch', { projectPath: project.path, branch })
-      await openProjectPath(project.path, { refreshProjectsList: false })
-    } catch (error) {
-      console.error('❌ Failed to switch branch:', error)
-      const detail = typeof error === 'string' ? error : error instanceof Error ? error.message : ''
-      const errorMessage = detail || `Failed to switch to ${branch}`
-      showError(errorMessage, 'Branch Switch Error')
-    }
-  }, [openProjectPath, showError])
-
-  const handleProjectWorktreeSelect = React.useCallback(async (_project: RecentProject, worktree: { path: string }) => {
-    try {
-      await openProjectPath(worktree.path, { refreshProjectsList: false })
-    } catch (error) {
-      console.error('❌ Failed to open worktree:', error)
-      const detail = typeof error === 'string' ? error : error instanceof Error ? error.message : ''
-      const errorMessage = detail || `Failed to open worktree at ${worktree.path}`
-      showError(errorMessage, 'Worktree Switch Error')
-    }
-  }, [openProjectPath, showError])
-
   const handleProjectBranchCreated = React.useCallback(async (project: RecentProject, branch: string) => {
     // Optimistic update — the backend already switched branches via `git checkout -b`.
     // Just update the current project state; the sidebar's ref-cache refresh handles the tree.
@@ -360,40 +319,6 @@ function AppContent() {
     setCurrentProject(null)
     setActiveTab('chat') // Reset to chat tab when going back to welcome
   }
-
-  useEffect(() => {
-    let cancelled = false
-
-    const loadHeaderAgentSettings = async () => {
-      try {
-        const runtimeSettings = await invoke<AllAgentSettings>('load_all_agent_settings')
-        if (!cancelled) {
-          setHeaderAgentSettings(runtimeSettings)
-        }
-      } catch (error) {
-        if (!cancelled) {
-          console.warn('Failed to load header agent settings:', error)
-          setHeaderAgentSettings(null)
-        }
-      }
-    }
-
-    void loadHeaderAgentSettings()
-
-    return () => {
-      cancelled = true
-    }
-  }, [isSettingsOpen, settings.default_cli_agent])
-
-  const headerModelSummary = React.useMemo(
-    () => buildHeaderModelSummary(headerAgentSettings, settings.default_cli_agent),
-    [headerAgentSettings, settings.default_cli_agent]
-  )
-
-  const headerRuntimeStatus = React.useMemo<'Ready' | 'Running'>(() => {
-    if (!currentProject) return 'Ready'
-    return executingProjectPaths.has(currentProject.path) ? 'Running' : 'Ready'
-  }, [currentProject, executingProjectPaths])
 
   const copyProjectPath = async () => {
     if (!currentProject) return
@@ -460,47 +385,6 @@ function AppContent() {
       invoke<string>('get_user_home_directory').then(setHomeDir).catch(() => {})
     }).catch(() => {})
   }, [])
-
-  // Suggest creating AGENTS.md when missing
-  useEffect(() => {
-    const run = async () => {
-      if (!currentProject) return
-      try {
-        const { invoke } = await import('@tauri-apps/api/core')
-        const base = currentProject.path
-        const agents = await invoke<any>('get_file_info', { filePath: `${base}/AGENTS.md` }).catch(() => null)
-        const claude = await invoke<any>('get_file_info', { filePath: `${base}/CLAUDE.md` }).catch(() => null)
-        const gemini = await invoke<any>('get_file_info', { filePath: `${base}/GEMINI.md` }).catch(() => null)
-        const shouldSuggest = settings.suggest_create_agents_md ?? true
-        if (!agents && !claude && !gemini && shouldSuggest) {
-          showToast({
-            title: 'No AGENTS.md found',
-            message: 'This project has no AGENTS.md, CLAUDE.md, or GEMINI.md. Want us to craft one tailored to your codebase?',
-            type: 'info',
-            duration: 0, // persistent — let the user close manually
-            actionLabel: 'Generate',
-            onAction: () => {
-              setActiveTab('chat')
-              setPendingChatPrompt(
-                `Analyze this project at ${base} and create an AGENTS.md file in the project root. ` +
-                `Inspect the directory structure, detect the language(s), framework(s), package manager (package.json, Cargo.toml, pyproject.toml, etc.), ` +
-                `test runner, and existing conventions. Then write a comprehensive AGENTS.md that includes:\n\n` +
-                `1. Project overview — what the project does, its architecture layers\n` +
-                `2. Tech stack — languages, frameworks, build tools, and package manager detected\n` +
-                `3. Coding conventions — naming, file organization, import style observed in the codebase\n` +
-                `4. Development workflow — how to build, test, and run the project\n` +
-                `5. TDD expectations — test-first approach, where tests live, how to run them\n` +
-                `6. Git practices — commit style, branch naming, PR expectations\n` +
-                `7. Architecture boundaries — which directories hold models, services, commands, etc.\n\n` +
-                `Make the file specific to THIS project, not a generic template. Reference actual directories and files you find. Write it to ${base}/AGENTS.md.`
-              )
-            }
-          })
-        }
-      } catch {}
-    }
-    run()
-  }, [currentProject, settings.suggest_create_agents_md])
 
   const shortPath = (p: string) => {
     if (!homeDir) return p
@@ -665,8 +549,6 @@ function AppContent() {
           onAddProjectClick={() => setIsProjectChooserOpen(true)}
           onProjectDeleted={handleProjectDeleted}
           executingProjectPaths={executingProjectPaths}
-          onProjectBranchSelect={handleProjectBranchSelect}
-          onProjectWorktreeSelect={handleProjectWorktreeSelect}
           onProjectBranchCreated={handleProjectBranchCreated}
           onProjectWorktreeCreated={handleProjectWorktreeCreated}
           onDocSelect={(slug) => setActiveDocSlug(slug)}
@@ -694,8 +576,6 @@ function AppContent() {
                 onCopyPath={copyProjectPath}
                 activeTab={activeTab}
                 onTabChange={setActiveTab}
-                modelSummary={headerModelSummary}
-                runtimeStatus={headerRuntimeStatus}
               />
             ) : (
               <div className="min-w-0 flex-1">
@@ -716,8 +596,6 @@ function AppContent() {
               activeTab={activeTab}
               onTabChange={setActiveTab}
               onExecutingChange={handleExecutingChange}
-              pendingChatPrompt={pendingChatPrompt}
-              onPendingChatPromptConsumed={() => setPendingChatPrompt(null)}
               loadedSession={loadedSession}
               onLoadedSessionConsumed={() => setLoadedSession(null)}
             />

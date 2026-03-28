@@ -54,8 +54,6 @@ interface ChatInterfaceProps {
   selectedAgent?: string;
   project?: RecentProject;
   onExecutingChange?: (projectPath: string, sessionIds: string[]) => void;
-  pendingPrompt?: string | null;
-  onPendingPromptConsumed?: () => void;
   loadedSession?: LoadedSessionData | null;
   onLoadedSessionConsumed?: () => void;
 }
@@ -97,7 +95,7 @@ function normalizeProjectPath(rawPath?: string): string | undefined {
 }
 
 
-export function ChatInterface({ isOpen, selectedAgent, project, onExecutingChange, pendingPrompt, onPendingPromptConsumed, loadedSession, onLoadedSessionConsumed }: ChatInterfaceProps) {
+export function ChatInterface({ isOpen, selectedAgent, project, onExecutingChange, loadedSession, onLoadedSessionConsumed }: ChatInterfaceProps) {
   const normalizedProjectPath = React.useMemo(
     () => normalizeProjectPath(project?.path),
     [project?.path]
@@ -551,43 +549,6 @@ export function ChatInterface({ isOpen, selectedAgent, project, onExecutingChang
     // Delegate to shared plan generator to keep logic centralized
     return generatePlanShared(userInput, { invoke });
   };
-
-  // Handle externally-injected prompts (e.g., AGENTS.md generation from toast)
-  const pendingPromptConsumedRef = useRef(false);
-  useEffect(() => {
-    if (!pendingPrompt || !project || pendingPromptConsumedRef.current) return;
-    pendingPromptConsumedRef.current = true;
-    // Set the input and auto-send on next tick so the UI shows the prompt briefly
-    setInputValue(pendingPrompt);
-    onPendingPromptConsumed?.();
-    const timer = setTimeout(() => {
-      // Directly submit the prompt — we can't rely on inputValue state being
-      // updated yet, so we call the execution flow inline.
-      const agentDisplay = selectedAgent || configuredDefaultAgentDisplay;
-      const conversationId = activeConversationRef.current?.conversationId ?? generateId('conv');
-      const resumeSessionId = activeConversationRef.current?.agentSessionId
-        ?? activeConversationRef.current?.autohandSessionId
-        ?? undefined;
-      const turnId = generateId('turn');
-      if (!activeConversationRef.current) {
-        activeConversationRef.current = { conversationId };
-      }
-      const userMessage: ChatMessage = {
-        id: generateId('user'),
-        content: pendingPrompt,
-        role: 'user',
-        timestamp: Date.now(),
-        agent: agentDisplay,
-        conversationId,
-      };
-      setHistoryCompacted(false);
-      setMessages(prev => [...prev, userMessage]);
-      setInputValue('');
-
-      void execute(agentDisplay, pendingPrompt, executionMode, unsafeFull, turnId, conversationId, resumeSessionId);
-    }, 100);
-    return () => { clearTimeout(timer); pendingPromptConsumedRef.current = false; };
-  }, [pendingPrompt]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSendMessage = async () => {
     if (!inputValue.trim() || !project) return;

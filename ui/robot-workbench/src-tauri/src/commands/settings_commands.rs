@@ -6,6 +6,14 @@ use tauri_plugin_store::StoreExt;
 
 use crate::models::*;
 
+fn normalize_all_agent_settings(mut settings: AllAgentSettings) -> AllAgentSettings {
+    if matches!(settings.codex.transport.as_deref(), Some("acp")) {
+        settings.codex.transport = Some("cli-flags".to_string());
+    }
+
+    settings
+}
+
 fn ensure_root_object(root: &mut serde_json::Value) {
     if !root.is_object() {
         *root = serde_json::json!({});
@@ -211,6 +219,7 @@ pub async fn save_all_agent_settings(
     app: tauri::AppHandle,
     settings: AllAgentSettings,
 ) -> Result<(), String> {
+    let settings = normalize_all_agent_settings(settings);
     let store = app
         .store("all-agent-settings.json")
         .map_err(|e| format!("Failed to access store: {}", e))?;
@@ -237,11 +246,11 @@ pub async fn load_all_agent_settings(app: tauri::AppHandle) -> Result<AllAgentSe
         Some(value) => {
             let settings: AllAgentSettings = serde_json::from_value(value)
                 .map_err(|e| format!("Failed to deserialize settings: {}", e))?;
-            Ok(settings)
+            Ok(normalize_all_agent_settings(settings))
         }
         None => {
             // Return default settings
-            Ok(AllAgentSettings::default())
+            Ok(normalize_all_agent_settings(AllAgentSettings::default()))
         }
     }
 }

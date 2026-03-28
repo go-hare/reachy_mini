@@ -139,9 +139,7 @@ async fn parse_codex_messages(source_file: &str) -> Result<Vec<EnhancedChatMessa
             continue;
         }
 
-        let role = parsed["payload"]["item"]["role"]
-            .as_str()
-            .unwrap_or("");
+        let role = parsed["payload"]["item"]["role"].as_str().unwrap_or("");
         if role != "user" && role != "assistant" {
             continue;
         }

@@ -33,14 +33,20 @@ from reachy_mini.companion import (
     CompanionIntent,
     SurfaceExpression,
     build_affect_payload,
+    build_companion_intent,
     build_companion_phase_surface_state,
     build_emotion_payload,
     build_idle_surface_state,
     build_listening_surface_state,
     build_listening_wait_surface_state,
-    build_turn_surface_bundle,
+    build_surface_expression,
 )
-from reachy_mini.front.events import FrontSignal
+from reachy_mini.front.events import (
+    FrontSignal,
+    FrontToolCall,
+    FrontToolExecution,
+    FrontUserTurnResult,
+)
 from reachy_mini.front.service import FrontService
 
 if TYPE_CHECKING:
@@ -104,6 +110,10 @@ def _default_affect_model_path() -> Path:
 
 
 _DEFAULT_IDLE_TICK_INTERVAL_S = 15.0
+_SURFACED_FRONT_DECISION_SIGNAL_NAMES = {
+    "idle_tick",
+    "vision_attention_updated",
+}
 
 
 @dataclass(slots=True, frozen=True)
@@ -309,12 +319,30 @@ class RuntimeScheduler:
                 )
             )
             memory = self._build_front_memory_view(thread_id=thread_id, user_text=user_text)
-            front_reply = await self._emit_front_reply(
-                thread_id=thread_id,
-                turn_id=turn_id,
+            front_turn = await self.front.handle_user_turn(
                 user_text=user_text,
                 memory=memory,
                 emotion_signal=emotion_signal,
+                style=self.front_style,
+            )
+            if front_turn.completes_turn:
+                return await self._complete_front_owned_user_turn(
+                    thread_id=thread_id,
+                    user_id=user_id,
+                    turn_id=turn_id,
+                    user_text=user_text,
+                    affect_state=affect_state,
+                    emotion_signal=emotion_signal,
+                    surface_state_handler=surface_state_handler,
+                    final_reply_handler=final_reply_handler,
+                    front_turn=front_turn,
+                )
+            front_reply = str(front_turn.reply_text or "").strip()
+            await self._publish_text_done(
+                packet_type="front_hint_done",
+                thread_id=thread_id,
+                turn_id=turn_id,
+                text=front_reply,
             )
             await self._publish_initial_front_event(
                 thread_id=thread_id,
@@ -383,6 +411,58 @@ class RuntimeScheduler:
             user_text=user_text,
             surface_state=build_listening_surface_state(thread_id=thread_id),
             metadata={"phase": "listening"},
+            surface_state_handler=surface_state_handler,
+        )
+
+    async def handle_user_speech_partial(
+        self,
+        *,
+        thread_id: str,
+        session_id: str,
+        user_id: str,
+        user_text: str = "",
+        surface_state_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
+    ) -> None:
+        _ = session_id
+        _ = user_id
+        self._ensure_running()
+        self._raise_if_listener_failed()
+        self._cancel_idle_tick_task(thread_id)
+        self._record_thread_activity(thread_id)
+
+        was_user_speaking = self._thread_user_speaking.get(thread_id, False)
+        self._thread_user_speaking[thread_id] = True
+        if not was_user_speaking and self._active_turns.get(thread_id, 0) > 0:
+            self._thread_reply_audio_interrupted.add(thread_id)
+        if not was_user_speaking:
+            await self._interrupt_reply_audio_playback(thread_id)
+            self._reset_runtime_audio_motion()
+
+        resolved_user_text = str(user_text or "")
+        self._thread_idle_context[thread_id] = {
+            "turn_id": "",
+            "user_text": resolved_user_text,
+        }
+        await self._dispatch_front_signal(
+            FrontSignal(
+                name="user_speech_partial",
+                thread_id=thread_id,
+                user_text=resolved_user_text,
+                metadata={
+                    "phase": "listening",
+                    "partial": True,
+                },
+            )
+        )
+
+        current_phase = str(
+            self._thread_surface_state.get(thread_id, {}).get("phase", "") or ""
+        )
+        if current_phase == "listening":
+            return
+        await self._push_surface_state(
+            thread_id,
+            build_listening_surface_state(thread_id=thread_id),
             surface_state_handler=surface_state_handler,
         )
 
@@ -722,43 +802,183 @@ class RuntimeScheduler:
             return None
         return self.affect_runtime.evolve(user_text=user_text)
 
-    async def _emit_front_reply(
+    async def _complete_front_owned_user_turn(
         self,
         *,
         thread_id: str,
+        user_id: str,
         turn_id: str,
         user_text: str,
-        memory: MemoryView,
+        affect_state: AffectState | None,
         emotion_signal: EmotionSignal | None,
+        surface_state_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None,
+        final_reply_handler: Callable[[dict[str, Any]], Awaitable[bool] | bool | None]
+        | None,
+        front_turn: FrontUserTurnResult,
     ) -> str:
-        try:
-            hint = (
-                await self.front.reply(
-                    user_text=user_text,
-                    memory=memory,
-                    emotion_signal=emotion_signal,
-                    stream_handler=self._build_front_stream_handler(
-                        thread_id=thread_id,
-                        turn_id=turn_id,
-                        packet_type="front_hint_chunk",
-                    ),
-                    style=self.front_style,
-                )
-            ).strip()
-        except Exception as exc:
-            await self._publish_turn_error(
+        tool_calls_payload = [
+            {
+                "tool_name": str(tool_call.tool_name or "").strip(),
+                "arguments": dict(tool_call.arguments or {}),
+                "reason": str(tool_call.reason or ""),
+            }
+            for tool_call in list(front_turn.tool_calls or [])
+            if str(tool_call.tool_name or "").strip()
+        ]
+        decision_payload = {
+            "signal_name": "user_turn",
+            "turn_id": turn_id,
+            "reply_text": str(front_turn.reply_text or "").strip(),
+            "lifecycle_state": "replying",
+            "surface_patch": {
+                "phase": "replying",
+                "recommended_hold_ms": 0,
+                "source_signal": "user_turn",
+            },
+            "tool_calls": tool_calls_payload,
+            "debug_reason": str(front_turn.debug_reason or ""),
+        }
+        self._thread_front_decisions[thread_id] = dict(decision_payload)
+        self._publish_front_output(
+            FrontOutputPacket(
+                type="front_decision",
                 thread_id=thread_id,
                 turn_id=turn_id,
-                error=str(exc),
+                payload=dict(decision_payload),
             )
-            hint = ""
-        await self._publish_text_done(
-            packet_type="front_hint_done",
+        )
+        await self._push_surface_state(
+            thread_id,
+            build_companion_phase_surface_state(
+                thread_id=thread_id,
+                phase="replying",
+                affect_state=affect_state,
+                emotion_signal=emotion_signal,
+            ),
+            surface_state_handler=surface_state_handler,
+        )
+
+        tool_results = list(front_turn.tool_results or [])
+        await self._publish_front_tool_results(
             thread_id=thread_id,
             turn_id=turn_id,
-            text=hint,
+            signal_name="user_turn",
+            tool_results=tool_results,
         )
-        return hint
+        final_reply = str(front_turn.reply_text or "").strip()
+        if not final_reply:
+            try:
+                final_reply = self.front.render_user_turn_reply(
+                    user_text=user_text,
+                    tool_results=tool_results,
+                ).strip()
+            except Exception as exc:
+                await self._publish_turn_error(
+                    thread_id=thread_id,
+                    turn_id=turn_id,
+                    error=str(exc),
+                )
+                final_reply = ""
+
+        if not final_reply:
+            first_error = next(
+                (
+                    result.result.strip()
+                    for result in tool_results
+                    if not result.success and result.result.strip()
+                ),
+                "",
+            )
+            if first_error:
+                final_reply = first_error
+            elif tool_results and all(result.success for result in tool_results):
+                final_reply = "这一步我已经按你的要求处理好了。"
+            elif tool_results:
+                final_reply = "这一步我试了，不过没有完全成功。"
+
+        if final_reply.strip():
+            companion_intent = build_companion_intent(
+                user_text=user_text,
+                kernel_output=final_reply,
+                affect_state=affect_state,
+                emotion_signal=emotion_signal,
+            )
+            surface_expression = build_surface_expression(
+                companion_intent,
+                affect_state=affect_state,
+            )
+            await self._record_front_delivery(
+                thread_id=thread_id,
+                user_id=user_id,
+                turn_id=turn_id,
+                user_text=user_text,
+                front_reply=final_reply,
+                kernel_output="",
+                affect_state=affect_state,
+                emotion_signal=emotion_signal,
+                companion_intent=companion_intent,
+                surface_expression=surface_expression,
+                wait_for_record=False,
+                source="runtime_front_only",
+            )
+
+        await self._publish_text_done(
+            packet_type="front_final_done",
+            thread_id=thread_id,
+            turn_id=turn_id,
+            text=final_reply,
+        )
+        await self._invoke_final_reply_handler(
+            handler=final_reply_handler,
+            thread_id=thread_id,
+            turn_id=turn_id,
+            user_text=user_text,
+            text=final_reply,
+        )
+        if self._consume_reply_audio_interrupted(thread_id):
+            return final_reply
+        if self._thread_user_speaking.get(thread_id, False):
+            return final_reply
+
+        await self._dispatch_front_signal(
+            FrontSignal(
+                name="settling_entered",
+                thread_id=thread_id,
+                turn_id=turn_id,
+                user_text=user_text,
+                metadata={"phase": "settling"},
+            )
+        )
+        await self._push_surface_state(
+            thread_id,
+            build_companion_phase_surface_state(
+                thread_id=thread_id,
+                phase="settling",
+                affect_state=affect_state,
+                emotion_signal=emotion_signal,
+            ),
+            surface_state_handler=surface_state_handler,
+        )
+        await self._dispatch_front_signal(
+            FrontSignal(
+                name="idle_entered",
+                thread_id=thread_id,
+                turn_id=turn_id,
+                user_text=user_text,
+                metadata={"phase": "idle"},
+            )
+        )
+        await self._push_surface_state(
+            thread_id,
+            build_companion_phase_surface_state(
+                thread_id=thread_id,
+                phase="idle",
+                affect_state=affect_state,
+                emotion_signal=emotion_signal,
+            ),
+            surface_state_handler=surface_state_handler,
+        )
+        return final_reply
 
     def _build_front_memory_view(self, *, thread_id: str, user_text: str) -> MemoryView:
         memory_store = getattr(self.kernel, "memory_store", None)
@@ -813,9 +1033,29 @@ class RuntimeScheduler:
                 result = maybe_awaitable
             if result is not None:
                 tool_calls = self._extract_front_result_value(result, "tool_calls", []) or []
-                self._thread_front_decisions[signal.thread_id] = {
-                    "signal_name": str(self._extract_front_result_value(result, "signal_name", "") or ""),
-                    "turn_id": str(self._extract_front_result_value(result, "turn_id", "") or ""),
+                resolved_signal_name = str(
+                    self._extract_front_result_value(result, "signal_name", "") or signal.name
+                )
+                resolved_turn_id = str(
+                    self._extract_front_result_value(result, "turn_id", "") or signal.turn_id
+                )
+                normalized_tool_calls = [
+                    {
+                        "tool_name": str(
+                            self._extract_front_result_value(call, "tool_name", "") or ""
+                        ),
+                        "arguments": dict(
+                            self._extract_front_result_value(call, "arguments", {}) or {}
+                        ),
+                        "reason": str(
+                            self._extract_front_result_value(call, "reason", "") or ""
+                        ),
+                    }
+                    for call in list(tool_calls)
+                ]
+                decision_payload = {
+                    "signal_name": resolved_signal_name,
+                    "turn_id": resolved_turn_id,
                     "reply_text": str(self._extract_front_result_value(result, "reply_text", "") or ""),
                     "lifecycle_state": str(
                         self._extract_front_result_value(result, "lifecycle_state", "") or ""
@@ -823,53 +1063,44 @@ class RuntimeScheduler:
                     "surface_patch": dict(
                         self._extract_front_result_value(result, "surface_patch", {}) or {}
                     ),
-                    "tool_calls": [
-                        {
-                            "tool_name": str(self._extract_front_result_value(call, "tool_name", "") or ""),
-                            "arguments": dict(
-                                self._extract_front_result_value(call, "arguments", {}) or {}
-                            ),
-                            "reason": str(self._extract_front_result_value(call, "reason", "") or ""),
-                        }
-                        for call in list(tool_calls)
-                    ],
+                    "tool_calls": normalized_tool_calls,
                     "debug_reason": str(self._extract_front_result_value(result, "debug_reason", "") or ""),
                 }
-                self._publish_front_output(
-                    FrontOutputPacket(
-                        type="front_decision",
-                        thread_id=signal.thread_id,
-                        turn_id=str(self._extract_front_result_value(result, "turn_id", "") or signal.turn_id),
-                        payload=dict(self._thread_front_decisions[signal.thread_id]),
+                if self._should_surface_front_decision(
+                    signal_name=resolved_signal_name,
+                    reply_text=str(decision_payload["reply_text"] or ""),
+                    tool_calls=normalized_tool_calls,
+                ):
+                    self._thread_front_decisions[signal.thread_id] = dict(decision_payload)
+                    self._publish_front_output(
+                        FrontOutputPacket(
+                            type="front_decision",
+                            thread_id=signal.thread_id,
+                            turn_id=resolved_turn_id,
+                            payload=dict(decision_payload),
+                        )
                     )
-                )
                 await self._execute_front_tool_calls(
                     thread_id=signal.thread_id,
-                    turn_id=str(
-                        self._extract_front_result_value(result, "turn_id", "") or signal.turn_id
-                    ),
-                    signal_name=str(
-                        self._extract_front_result_value(result, "signal_name", "") or signal.name
-                    ),
-                    tool_calls=self._thread_front_decisions[signal.thread_id]["tool_calls"],
+                    turn_id=resolved_turn_id,
+                    signal_name=resolved_signal_name,
+                    tool_calls=normalized_tool_calls,
                 )
         except Exception:
             return
 
-    def _resolve_front_tool(self, tool_name: str) -> Any | None:
-        getter = getattr(self.front, "get_tool", None)
-        if callable(getter):
-            try:
-                tool = getter(tool_name)
-            except Exception:
-                tool = None
-            if tool is not None:
-                return tool
-
-        for tool in list(getattr(self.front, "tools", []) or []):
-            if str(getattr(tool, "name", "") or "").strip() == str(tool_name or "").strip():
-                return tool
-        return None
+    @staticmethod
+    def _should_surface_front_decision(
+        *,
+        signal_name: str,
+        reply_text: str,
+        tool_calls: list[dict[str, Any]],
+    ) -> bool:
+        if str(reply_text or "").strip():
+            return True
+        if not list(tool_calls or []):
+            return False
+        return str(signal_name or "").strip() in _SURFACED_FRONT_DECISION_SIGNAL_NAMES
 
     async def _execute_front_tool_calls(
         self,
@@ -878,60 +1109,93 @@ class RuntimeScheduler:
         turn_id: str,
         signal_name: str,
         tool_calls: list[dict[str, Any]],
-    ) -> None:
-        for tool_call in list(tool_calls or []):
-            tool_name = str(tool_call.get("tool_name", "") or "").strip()
-            arguments = dict(tool_call.get("arguments", {}) or {})
-            reason = str(tool_call.get("reason", "") or "")
-            success = False
-            result_text = ""
+    ) -> list[dict[str, Any]]:
+        executor = getattr(self.front, "execute_tool_calls", None)
+        if not callable(executor):
+            return []
 
-            tool = self._resolve_front_tool(tool_name)
-            if tool is None:
-                result_text = f"Error: front tool '{tool_name}' is not registered."
-            else:
-                try:
-                    validator = getattr(tool, "validate_params", None)
-                    if callable(validator):
-                        errors = list(validator(arguments) or [])
-                    else:
-                        errors = []
-                    if errors:
-                        result_text = (
-                            f"Error: Invalid parameters for front tool '{tool_name}': "
-                            + "; ".join(str(error) for error in errors)
-                        )
-                    else:
-                        executor = getattr(tool, "execute", None)
-                        if not callable(executor):
-                            result_text = f"Error: front tool '{tool_name}' has no execute() method."
-                        else:
-                            execution_result = executor(**arguments)
-                            if isawaitable(execution_result):
-                                execution_result = await execution_result
-                            result_text = str(execution_result or "")
-                            success = not result_text.startswith("Error")
-                except Exception as exc:
-                    result_text = (
-                        f"Error executing front tool '{tool_name}': "
-                        f"{type(exc).__name__}: {exc}"
-                    )
+        normalized_calls = [
+            FrontToolCall(
+                tool_name=str(tool_call.get("tool_name", "") or "").strip(),
+                arguments=dict(tool_call.get("arguments", {}) or {}),
+                reason=str(tool_call.get("reason", "") or ""),
+            )
+            for tool_call in list(tool_calls or [])
+            if str(tool_call.get("tool_name", "") or "").strip()
+        ]
+        execution_results = executor(normalized_calls)
+        if isawaitable(execution_results):
+            execution_results = await execution_results
 
+        published_results: list[dict[str, Any]] = []
+        for execution_result in list(execution_results or []):
+            payload = {
+                "signal_name": signal_name,
+                "tool_name": str(
+                    self._extract_front_result_value(execution_result, "tool_name", "") or ""
+                ),
+                "arguments": dict(
+                    self._extract_front_result_value(execution_result, "arguments", {}) or {}
+                ),
+                "reason": str(
+                    self._extract_front_result_value(execution_result, "reason", "") or ""
+                ),
+                "success": bool(
+                    self._extract_front_result_value(execution_result, "success", False)
+                ),
+                "result": str(
+                    self._extract_front_result_value(execution_result, "result", "") or ""
+                ),
+            }
+            published_results.append(payload)
             self._publish_front_output(
                 FrontOutputPacket(
                     type="front_tool_result",
                     thread_id=thread_id,
                     turn_id=turn_id,
-                    payload={
-                        "signal_name": signal_name,
-                        "tool_name": tool_name,
-                        "arguments": arguments,
-                        "reason": reason,
-                        "success": success,
-                        "result": result_text,
-                    },
+                    payload=payload,
                 )
             )
+        return published_results
+
+    async def _publish_front_tool_results(
+        self,
+        *,
+        thread_id: str,
+        turn_id: str,
+        signal_name: str,
+        tool_results: list[FrontToolExecution],
+    ) -> list[dict[str, Any]]:
+        published_results: list[dict[str, Any]] = []
+        for execution_result in list(tool_results or []):
+            payload = {
+                "signal_name": signal_name,
+                "tool_name": str(
+                    self._extract_front_result_value(execution_result, "tool_name", "") or ""
+                ),
+                "arguments": dict(
+                    self._extract_front_result_value(execution_result, "arguments", {}) or {}
+                ),
+                "reason": str(
+                    self._extract_front_result_value(execution_result, "reason", "") or ""
+                ),
+                "success": bool(
+                    self._extract_front_result_value(execution_result, "success", False)
+                ),
+                "result": str(
+                    self._extract_front_result_value(execution_result, "result", "") or ""
+                ),
+            }
+            published_results.append(payload)
+            self._publish_front_output(
+                FrontOutputPacket(
+                    type="front_tool_result",
+                    thread_id=thread_id,
+                    turn_id=turn_id,
+                    payload=payload,
+                )
+            )
+        return published_results
 
     async def _publish_text_done(
         self,
@@ -1067,15 +1331,16 @@ class RuntimeScheduler:
                 )
                 return
 
-            surface_bundle = build_turn_surface_bundle(
-                thread_id=thread_id,
+            companion_intent = build_companion_intent(
                 user_text=user_text,
                 kernel_output=kernel_output,
                 affect_state=delivery["affect_state"],
                 emotion_signal=delivery["emotion_signal"],
             )
-            companion_intent = surface_bundle.intent
-            surface_expression = surface_bundle.expression
+            surface_expression = build_surface_expression(
+                companion_intent,
+                affect_state=delivery["affect_state"],
+            )
             await self._dispatch_front_signal(
                 FrontSignal(
                     name="kernel_output_ready",
@@ -1090,7 +1355,12 @@ class RuntimeScheduler:
             )
             await self._push_surface_state(
                 thread_id,
-                dict(surface_bundle.state),
+                build_companion_phase_surface_state(
+                    thread_id=thread_id,
+                    phase="replying",
+                    affect_state=delivery["affect_state"],
+                    emotion_signal=delivery["emotion_signal"],
+                ),
                 surface_state_handler=delivery["surface_state_handler"],
             )
 
@@ -1131,8 +1401,6 @@ class RuntimeScheduler:
                     build_companion_phase_surface_state(
                         thread_id=thread_id,
                         phase="idle",
-                        companion_intent=companion_intent,
-                        surface_expression=surface_expression,
                         affect_state=delivery["affect_state"],
                         emotion_signal=delivery["emotion_signal"],
                     ),
@@ -1190,8 +1458,6 @@ class RuntimeScheduler:
                 build_companion_phase_surface_state(
                     thread_id=thread_id,
                     phase="settling",
-                    companion_intent=companion_intent,
-                    surface_expression=surface_expression,
                     affect_state=delivery["affect_state"],
                     emotion_signal=delivery["emotion_signal"],
                 ),
@@ -1211,8 +1477,6 @@ class RuntimeScheduler:
                 build_companion_phase_surface_state(
                     thread_id=thread_id,
                     phase="idle",
-                    companion_intent=companion_intent,
-                    surface_expression=surface_expression,
                     affect_state=delivery["affect_state"],
                     emotion_signal=delivery["emotion_signal"],
                 ),
@@ -1239,12 +1503,13 @@ class RuntimeScheduler:
         companion_intent: CompanionIntent,
         surface_expression: SurfaceExpression,
         wait_for_record: bool = True,
+        source: str = "runtime_scheduler",
     ) -> None:
         if not front_reply.strip():
             return
 
         metadata: dict[str, Any] = {
-            "source": "runtime_scheduler",
+            "source": source,
             "kernel_output": kernel_output,
             "mode": companion_intent.mode,
             "warmth": companion_intent.warmth,

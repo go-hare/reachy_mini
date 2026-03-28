@@ -33,7 +33,6 @@ export interface ChatInputProps {
   selectedOptionIndex: number
   onSelectOption: (option: AutocompleteOption) => void
 
-  // Context for helper text
   planModeEnabled: boolean
   projectName?: string
   selectedAgent?: string
@@ -68,17 +67,12 @@ function ChatInputInner(props: ChatInputProps) {
     onSelectOption,
     planModeEnabled,
     projectName,
-    selectedAgent,
-    getAgentModel,
     fileMentionsEnabled,
-    chatSendShortcut = 'mod+enter',
-    defaultAgentLabel,
     onNewSession,
     showNewSession,
   } = props
 
-  const resolvedDefaultAgentLabel = defaultAgentLabel ?? 'Claude Code CLI'
-  const defaultPlaceholder = `Send a message (defaults to ${resolvedDefaultAgentLabel}). Use /agent to target a specific CLI.`
+  const defaultPlaceholder = "Send a message"
 
   return (
     <div className="max-w-4xl mx-auto group">
@@ -158,7 +152,7 @@ function ChatInputInner(props: ChatInputProps) {
             onBlur={onBlur}
             placeholder={typedPlaceholder || (
               planModeEnabled
-                ? "Describe what you want to accomplish - I'll create a step-by-step plan..."
+                ? "Describe your plan"
                 : defaultPlaceholder
             )}
             className="pr-12 py-2.5 text-base"
@@ -178,53 +172,6 @@ function ChatInputInner(props: ChatInputProps) {
         <Button onClick={onSend} disabled={!inputValue.trim()} size="icon" className="h-10 w-10">
           <Send className="h-4 w-4" />
         </Button>
-      </div>
-
-      <div
-        data-testid="chat-input-helper"
-        className="mt-2 flex flex-col gap-2 text-xs text-muted-foreground sm:flex-row sm:items-start sm:justify-between"
-      >
-        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1.5">
-          {showAutocomplete ? (
-            <>
-              {chatSendShortcut === 'enter' ? (
-                <span>Enter sends • Tab selects • Esc closes</span>
-              ) : (
-                <span>Enter selects • Ctrl/Cmd+Enter sends</span>
-              )}
-              <span>↑↓ to navigate • Tab selects • Esc closes</span>
-            </>
-          ) : (
-            <>
-              {chatSendShortcut === 'enter' ? (
-                <span>Press Enter to send</span>
-              ) : (
-                <span>Cmd+Enter to send</span>
-              )}
-             
-              <span>↑↓ to navigate • Tab/Enter to select • Esc to close</span>
-            </>
-          )}
-          {projectName && (
-            <>
-              <span aria-hidden="true">•</span>
-              <span className="min-w-0 truncate">Working in: {projectName}</span>
-            </>
-          )}
-          {selectedAgent && getAgentModel(selectedAgent) && (
-            <>
-              <span aria-hidden="true">•</span>
-              <span className="min-w-0 truncate text-[hsl(var(--link))]">
-                {selectedAgent} using {getAgentModel(selectedAgent)}
-              </span>
-            </>
-          )}
-        </div>
-        <div className="flex flex-wrap items-center gap-2 self-start sm:justify-end">
-          <kbd className="px-1.5 py-0.5 text-xs bg-muted rounded">/agent prompt</kbd>
-          <kbd className="px-1.5 py-0.5 text-xs bg-muted rounded">help</kbd>
-          <kbd className="px-1.5 py-0.5 text-xs bg-muted rounded">@</kbd>
-        </div>
       </div>
     </div>
   )

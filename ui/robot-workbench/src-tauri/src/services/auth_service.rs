@@ -27,8 +27,8 @@ pub fn load_auth_from_file(sessions_dir: &Path) -> Result<Option<StoredAuth>, St
     let content =
         fs::read_to_string(&file_path).map_err(|e| format!("Failed to read auth file: {}", e))?;
 
-    let auth: StoredAuth = serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse auth file: {}", e))?;
+    let auth: StoredAuth =
+        serde_json::from_str(&content).map_err(|e| format!("Failed to parse auth file: {}", e))?;
 
     Ok(Some(auth))
 }
@@ -37,8 +37,7 @@ pub fn clear_auth_file(sessions_dir: &Path) -> Result<(), String> {
     let file_path = sessions_dir.join(AUTH_FILE_NAME);
 
     if file_path.exists() {
-        fs::remove_file(&file_path)
-            .map_err(|e| format!("Failed to remove auth file: {}", e))?;
+        fs::remove_file(&file_path).map_err(|e| format!("Failed to remove auth file: {}", e))?;
     }
 
     Ok(())

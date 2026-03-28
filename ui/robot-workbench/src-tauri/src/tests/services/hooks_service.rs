@@ -155,10 +155,7 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(parsed["provider"], "anthropic");
         assert_eq!(parsed["model"], "claude-opus-4");
-        assert_eq!(
-            parsed["hooks"]["definitions"].as_array().unwrap().len(),
-            1
-        );
+        assert_eq!(parsed["hooks"]["definitions"].as_array().unwrap().len(), 1);
     }
 
     #[test]

@@ -7,7 +7,6 @@ use std::sync::Arc;
 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager};
-use tokio::sync::Mutex as TokioMutex;
 
 // Import all modules
 mod commands;
@@ -50,34 +49,19 @@ fn create_native_menu(app: &tauri::App) -> Result<tauri::menu::Menu<tauri::Wry>,
     let app_submenu = SubmenuBuilder::new(app, "Commander")
         .item(&MenuItemBuilder::with_id("about", "About Commander").build(app)?)
         .separator()
-        .item(
-            &MenuItemBuilder::with_id("preferences", "Preferences...")
-                .build(app)?,
-        )
+        .item(&MenuItemBuilder::with_id("preferences", "Preferences...").build(app)?)
         .separator()
         .item(&PredefinedMenuItem::quit(app, Some("Quit Commander"))?)
         .build()?;
 
     // Create Projects submenu as a separate menu
     let projects_submenu = SubmenuBuilder::new(app, "Projects")
-        .item(
-            &MenuItemBuilder::with_id("new_project", "New Project")
-                .build(app)?,
-        )
+        .item(&MenuItemBuilder::with_id("new_project", "New Project").build(app)?)
         .separator()
-        .item(
-            &MenuItemBuilder::with_id("clone_project", "Clone Project")
-                .build(app)?,
-        )
-        .item(
-            &MenuItemBuilder::with_id("open_project", "Open Project...")
-                .build(app)?,
-        )
+        .item(&MenuItemBuilder::with_id("clone_project", "Clone Project").build(app)?)
+        .item(&MenuItemBuilder::with_id("open_project", "Open Project...").build(app)?)
         .separator()
-        .item(
-            &MenuItemBuilder::with_id("close_project", "Close Project")
-                .build(app)?,
-        )
+        .item(&MenuItemBuilder::with_id("close_project", "Close Project").build(app)?)
         .separator()
         .item(&MenuItemBuilder::with_id("delete_project", "Delete Current Project").build(app)?)
         .build()?;
@@ -104,8 +88,7 @@ fn create_native_menu(app: &tauri::App) -> Result<tauri::menu::Menu<tauri::Wry>,
 fn build_tray_menu(app: &tauri::AppHandle) -> Result<tauri::menu::Menu<tauri::Wry>, tauri::Error> {
     let show_item = MenuItemBuilder::with_id("show_commander", "Show Commander").build(app)?;
     let settings_item = MenuItemBuilder::with_id("tray_preferences", "Settings...").build(app)?;
-    let updates_item =
-        MenuItemBuilder::with_id("check_updates", "Check for Updates").build(app)?;
+    let updates_item = MenuItemBuilder::with_id("check_updates", "Check for Updates").build(app)?;
     let quit_item = MenuItemBuilder::with_id("tray_quit", "Quit Commander").build(app)?;
 
     let mut builder = MenuBuilder::new(app)
@@ -335,6 +318,13 @@ pub fn run() {
             execute_autohand_command,
             terminate_autohand_session,
             get_autohand_state,
+            get_robot_sim_daemon_status,
+            start_robot_sim_daemon,
+            stop_robot_sim_daemon,
+            get_mujoco_viewer_service_status,
+            start_mujoco_viewer_service,
+            stop_mujoco_viewer_service,
+            probe_mujoco_viewer_url,
             get_indexer_status,
             trigger_reindex,
             sync_autohand_docs,
@@ -345,10 +335,6 @@ pub fn run() {
             respond_permission
         ])
         .setup(|app| {
-            // Register protocol-aware session manager and protocol cache as managed state
-            app.manage(Arc::new(TokioMutex::new(crate::services::session_manager::SessionManager::new())));
-            app.manage(Arc::new(TokioMutex::new(crate::services::agent_status_service::ProtocolCache::new())));
-
             // Handle command line arguments for opening projects
             let args: Vec<String> = std::env::args().collect();
             println!("🔍 Command line args received: {:?}", args);
@@ -459,22 +445,26 @@ pub fn run() {
 
             // Initialize SQLite indexer database
             let app_data_dir = app.path().app_data_dir().map_err(|e| {
-                Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
-                    as Box<dyn std::error::Error>
+                Box::new(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    e.to_string(),
+                )) as Box<dyn std::error::Error>
             })?;
             let db_path = app_data_dir.join("commander_index.db");
-            let index_db = Arc::new(
-                services::indexer::db::IndexDb::open(&db_path).map_err(|e| {
+            let index_db =
+                Arc::new(services::indexer::db::IndexDb::open(&db_path).map_err(|e| {
                     Box::new(std::io::Error::new(std::io::ErrorKind::Other, e))
                         as Box<dyn std::error::Error>
-                })?,
-            );
+                })?);
             app.manage(index_db.clone());
+            app.manage(services::robot_daemon_service::RobotDaemonManager::default());
+            app.manage(services::robot_daemon_service::MujocoViewerServiceManager::default());
 
             // Spawn background indexer loop
             let indexer_app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                services::indexer::indexer_service::run_indexer_loop(index_db, indexer_app_handle).await;
+                services::indexer::indexer_service::run_indexer_loop(index_db, indexer_app_handle)
+                    .await;
             });
 
             Ok(())

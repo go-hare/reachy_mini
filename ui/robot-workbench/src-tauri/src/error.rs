@@ -74,10 +74,7 @@ pub enum CommanderError {
     Application { component: String, message: String },
 
     /// Autohand CLI integration errors
-    Autohand {
-        operation: String,
-        message: String,
-    },
+    Autohand { operation: String, message: String },
 
     /// Protocol communication errors (ACP / RPC)
     Protocol {
@@ -343,13 +340,16 @@ impl CommanderError {
             CommanderError::Autohand { operation, message } => {
                 format!("Autohand {}: {}", operation, message)
             }
-            CommanderError::Protocol { kind, code, message } => match code {
+            CommanderError::Protocol {
+                kind,
+                code,
+                message,
+            } => match code {
                 Some(c) => format!("Protocol error '{}' (code {}): {}", kind, c, message),
                 None => format!("Protocol error '{}': {}", kind, message),
             },
         }
     }
-
 }
 
 impl fmt::Display for CommanderError {

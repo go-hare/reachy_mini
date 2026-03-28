@@ -9,10 +9,10 @@ use uuid::Uuid;
 use crate::error::CommanderError;
 use crate::models::ai_agent::StreamChunk;
 use crate::models::autohand::{
-    AutohandConfig, AutohandMessagePayload, AutohandPermissionPayload, AutohandState,
-    AutohandStatePayload, AutohandStatus, AutohandToolEventPayload, AutohandHookEventPayload,
-    HookEvent, JsonRpcId, JsonRpcRequest, JsonRpcResponse, PermissionRequest, ProtocolMode,
-    ToolEvent, ToolPhase,
+    AutohandConfig, AutohandHookEventPayload, AutohandMessagePayload, AutohandPermissionPayload,
+    AutohandState, AutohandStatePayload, AutohandStatus, AutohandToolEventPayload, HookEvent,
+    JsonRpcId, JsonRpcRequest, JsonRpcResponse, PermissionRequest, ProtocolMode, ToolEvent,
+    ToolPhase,
 };
 use crate::services::autohand::protocol::AutohandProtocol;
 use crate::services::autohand::types::{rpc_methods, rpc_notifications};
@@ -67,9 +67,8 @@ pub fn serialize_rpc_to_line(req: &JsonRpcRequest) -> String {
 /// If the JSON object contains a `"method"` key it is treated as a
 /// notification; otherwise it is treated as a response.
 pub fn parse_rpc_line(line: &str) -> Result<RpcMessage, CommanderError> {
-    let value: Value = serde_json::from_str(line.trim()).map_err(|e| {
-        CommanderError::autohand("parse_rpc_line", format!("invalid JSON: {}", e))
-    })?;
+    let value: Value = serde_json::from_str(line.trim())
+        .map_err(|e| CommanderError::autohand("parse_rpc_line", format!("invalid JSON: {}", e)))?;
 
     if value.get("method").is_some() && value.get("id").is_none() {
         // Server notification (method present, no id).
@@ -83,20 +82,14 @@ pub fn parse_rpc_line(line: &str) -> Result<RpcMessage, CommanderError> {
     } else if value.get("method").is_none() {
         // Response (no method field).
         let resp: JsonRpcResponse = serde_json::from_value(value).map_err(|e| {
-            CommanderError::autohand(
-                "parse_rpc_line",
-                format!("failed to parse response: {}", e),
-            )
+            CommanderError::autohand("parse_rpc_line", format!("failed to parse response: {}", e))
         })?;
         Ok(RpcMessage::Response(resp))
     } else {
         // Has both method and id -- treat as a request (which for a server is
         // unusual, but we model it as a notification for simplicity).
         let req: JsonRpcRequest = serde_json::from_value(value).map_err(|e| {
-            CommanderError::autohand(
-                "parse_rpc_line",
-                format!("failed to parse request: {}", e),
-            )
+            CommanderError::autohand("parse_rpc_line", format!("failed to parse request: {}", e))
         })?;
         Ok(RpcMessage::Notification(req))
     }
@@ -137,10 +130,12 @@ pub fn build_permission_response_params(request_id: &str, approved: bool) -> Val
 /// dropdown to control the autohand CLI's permission mode.
 ///
 /// Returns the path to the temporary config file.
-pub fn write_headless_config_with_mode(working_dir: &str, permission_mode_override: Option<&str>) -> Result<std::path::PathBuf, CommanderError> {
+pub fn write_headless_config_with_mode(
+    working_dir: &str,
+    permission_mode_override: Option<&str>,
+) -> Result<std::path::PathBuf, CommanderError> {
     // Read the raw global config
-    let global_path = dirs::home_dir()
-        .map(|h| h.join(".autohand").join("config.json"));
+    let global_path = dirs::home_dir().map(|h| h.join(".autohand").join("config.json"));
     let ws_path = std::path::Path::new(working_dir)
         .join(".autohand")
         .join("config.json");
@@ -194,22 +189,35 @@ pub fn write_headless_config_with_mode(working_dir: &str, permission_mode_overri
     // Write to temp file
     let tmp_dir = std::env::temp_dir().join("commander-autohand");
     std::fs::create_dir_all(&tmp_dir).map_err(|e| {
-        CommanderError::autohand("write_headless_config", format!("failed to create temp dir: {}", e))
+        CommanderError::autohand(
+            "write_headless_config",
+            format!("failed to create temp dir: {}", e),
+        )
     })?;
     // Use a fixed filename so successive calls overwrite instead of accumulating.
     let tmp_path = tmp_dir.join("headless-config.json");
     let content = serde_json::to_string_pretty(&root).map_err(|e| {
-        CommanderError::autohand("write_headless_config", format!("failed to serialize config: {}", e))
+        CommanderError::autohand(
+            "write_headless_config",
+            format!("failed to serialize config: {}", e),
+        )
     })?;
     std::fs::write(&tmp_path, content).map_err(|e| {
-        CommanderError::autohand("write_headless_config", format!("failed to write temp config: {}", e))
+        CommanderError::autohand(
+            "write_headless_config",
+            format!("failed to write temp config: {}", e),
+        )
     })?;
 
     Ok(tmp_path)
 }
 
 /// Build the CLI arguments needed to spawn an autohand process in RPC/ACP mode.
-pub fn build_spawn_args(working_dir: &str, config: &AutohandConfig, config_path: Option<&std::path::Path>) -> Vec<String> {
+pub fn build_spawn_args(
+    working_dir: &str,
+    config: &AutohandConfig,
+    config_path: Option<&std::path::Path>,
+) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
 
     // Protocol mode
@@ -311,17 +319,12 @@ impl AutohandRpcClient {
     ) -> Result<(), CommanderError> {
         use tauri::Emitter;
 
-        let stdout = self
-            .stdout_handle
-            .lock()
-            .await
-            .take()
-            .ok_or_else(|| {
-                CommanderError::autohand(
-                    "start_with_event_dispatch",
-                    "stdout not available -- was start() called?",
-                )
-            })?;
+        let stdout = self.stdout_handle.lock().await.take().ok_or_else(|| {
+            CommanderError::autohand(
+                "start_with_event_dispatch",
+                "stdout not available -- was start() called?",
+            )
+        })?;
 
         let stderr = self.stderr_handle.lock().await.take();
 
@@ -361,13 +364,7 @@ impl AutohandRpcClient {
                         if notif.method == rpc_notifications::MESSAGE_UPDATE {
                             received_content = true;
                         }
-                        dispatch_rpc_notification(
-                            &app,
-                            &session_id,
-                            &notif,
-                            &last_state,
-                        )
-                        .await;
+                        dispatch_rpc_notification(&app, &session_id, &notif, &last_state).await;
                     }
                     Ok(RpcMessage::Response(resp)) => {
                         // If the response carries an error, surface it to the user.
@@ -741,7 +738,9 @@ async fn dispatch_rpc_notification(
         }
 
         // ---- agent lifecycle (no specific UI event, but could log) ----
-        rpc_notifications::AGENT_START | rpc_notifications::AGENT_END | rpc_notifications::TURN_START => {
+        rpc_notifications::AGENT_START
+        | rpc_notifications::AGENT_END
+        | rpc_notifications::TURN_START => {
             // These are informational; no dedicated Tauri event needed.
         }
 
@@ -777,24 +776,26 @@ impl AutohandProtocol for AutohandRpcClient {
                 CommanderError::autohand("start", format!("failed to spawn autohand: {}", e))
             })?;
 
-        let stdin = child.stdin.take().ok_or_else(|| {
-            CommanderError::autohand("start", "failed to capture stdin")
-        })?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| CommanderError::autohand("start", "failed to capture stdin"))?;
 
-        let stdout = child.stdout.take().ok_or_else(|| {
-            CommanderError::autohand("start", "failed to capture stdout")
-        })?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| CommanderError::autohand("start", "failed to capture stdout"))?;
 
-        let stderr = child.stderr.take().ok_or_else(|| {
-            CommanderError::autohand("start", "failed to capture stderr")
-        })?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| CommanderError::autohand("start", "failed to capture stderr"))?;
 
         *self.stdin_writer.lock().await = Some(stdin);
         *self.stdout_handle.lock().await = Some(stdout);
         *self.stderr_handle.lock().await = Some(stderr);
         *self.child.lock().await = Some(child);
-        self.alive
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.alive.store(true, std::sync::atomic::Ordering::SeqCst);
 
         Ok(())
     }
@@ -851,8 +852,7 @@ impl AutohandProtocol for AutohandRpcClient {
         *self.stdin_writer.lock().await = None;
         *self.stdout_handle.lock().await = None;
         *self.stderr_handle.lock().await = None;
-        self.alive
-            .store(false, std::sync::atomic::Ordering::SeqCst);
+        self.alive.store(false, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
 
