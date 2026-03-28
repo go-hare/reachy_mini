@@ -47,6 +47,44 @@ type UrdfRobotObject = THREE.Object3D & {
   joints?: Record<string, { setJointValue: (value: number) => void }>;
 };
 
+type ReachyKinematicsWasmModule = {
+  default: () => Promise<unknown>;
+  calculate_passive_joints: (
+    headJoints: Float64Array,
+    headPose: Float64Array,
+  ) => Float64Array;
+};
+
+type ReachyMatrixPose = {
+  m: number[];
+};
+
+let reachyKinematicsWasmModule: ReachyKinematicsWasmModule | null = null;
+let reachyKinematicsWasmPromise:
+  | Promise<ReachyKinematicsWasmModule>
+  | null = null;
+
+async function loadReachyKinematicsWasm() {
+  if (reachyKinematicsWasmModule) {
+    return reachyKinematicsWasmModule;
+  }
+
+  if (reachyKinematicsWasmPromise) {
+    return reachyKinematicsWasmPromise;
+  }
+
+  reachyKinematicsWasmPromise = import(
+    "@/lib/kinematics-wasm/reachy_mini_kinematics_wasm.js"
+  ).then(async (module) => {
+    const typedModule = module as ReachyKinematicsWasmModule;
+    await typedModule.default();
+    reachyKinematicsWasmModule = typedModule;
+    return typedModule;
+  });
+
+  return reachyKinematicsWasmPromise;
+}
+
 class RobotModelCache {
   private model: UrdfRobotObject | null = null;
   private loadPromise: Promise<UrdfRobotObject> | null = null;
@@ -62,30 +100,93 @@ class RobotModelCache {
 
     this.loadPromise = (async () => {
       const loader = new URDFLoader();
+      const stlFileMap = new Map<string, string>();
+
       loader.manager.setURLModifier((url) => {
         const filename = url.split("/").pop();
-        return new URL(
+        const localUrl = new URL(
           `../../assets/robot-3d/meshes/${filename}`,
           import.meta.url,
         ).href;
+        if (filename) {
+          stlFileMap.set(url, filename);
+          stlFileMap.set(localUrl, filename);
+        }
+        return localUrl;
       });
 
       const parsedModel = loader.parse(urdfFile) as UrdfRobotObject;
+
+      await new Promise<void>((resolve) => {
+        let resolved = false;
+        const finish = () => {
+          if (resolved) return;
+          resolved = true;
+          resolve();
+        };
+
+        const originalOnLoad = loader.manager.onLoad;
+        loader.manager.onLoad = () => {
+          originalOnLoad?.();
+          finish();
+        };
+
+        window.setTimeout(finish, 2_000);
+      });
+
       parsedModel.traverse((child) => {
         if (!(child instanceof THREE.Mesh)) return;
 
         child.castShadow = true;
         child.receiveShadow = true;
 
+        if (child.geometry.getAttribute("normal")) {
+          child.geometry.deleteAttribute("normal");
+        }
+        child.geometry.computeVertexNormals();
+
+        const sourceMaterial = Array.isArray(child.material)
+          ? child.material[0]
+          : child.material;
+        const sourceColor =
+          sourceMaterial instanceof THREE.Material &&
+          "color" in sourceMaterial &&
+          sourceMaterial.color instanceof THREE.Color
+            ? sourceMaterial.color
+            : null;
+
         const material = new THREE.MeshStandardMaterial({
-          color: (child.material as THREE.MeshStandardMaterial | undefined)?.color
-            ?.clone()
-            ?? new THREE.Color("#d9d9d9"),
-          metalness: 0.08,
-          roughness: 0.52,
+          color: sourceColor?.clone() ?? new THREE.Color("#f2f2f2"),
+          flatShading: true,
+          metalness: 0,
+          roughness: 0.72,
         });
 
+        const stlFileName = [
+          child.geometry.userData?.url,
+          child.geometry.userData?.sourceFile,
+          child.geometry.userData?.filename,
+          child.geometry.userData?.sourceURL,
+        ]
+          .map((value) =>
+            typeof value === "string"
+              ? stlFileMap.get(value) || value.split("/").pop()
+              : null,
+          )
+          .find((value): value is string => Boolean(value));
+
+        if (stlFileName) {
+          child.userData.stlFileName = stlFileName;
+        }
+
         child.material = material;
+        child.material.needsUpdate = true;
+      });
+
+      parsedModel.traverse((child) => {
+        if (!(child instanceof THREE.Object3D)) return;
+        child.updateMatrix();
+        child.updateMatrixWorld(true);
       });
 
       this.model = parsedModel;
@@ -97,6 +198,85 @@ class RobotModelCache {
 }
 
 const robotModelCache = new RobotModelCache();
+
+function isXYZRPYPose(
+  pose: unknown,
+): pose is {
+  x: number;
+  y: number;
+  z: number;
+  roll: number;
+  pitch: number;
+  yaw: number;
+} {
+  if (!pose || typeof pose !== "object" || Array.isArray(pose)) return false;
+
+  const candidate = pose as Record<string, unknown>;
+  return (
+    typeof candidate.x === "number" &&
+    typeof candidate.y === "number" &&
+    typeof candidate.z === "number" &&
+    typeof candidate.roll === "number" &&
+    typeof candidate.pitch === "number" &&
+    typeof candidate.yaw === "number"
+  );
+}
+
+function isMatrixPose(pose: unknown): pose is ReachyMatrixPose {
+  if (!pose || typeof pose !== "object" || Array.isArray(pose)) return false;
+
+  const candidate = pose as Record<string, unknown>;
+  return (
+    Array.isArray(candidate.m) &&
+    candidate.m.length === 16 &&
+    candidate.m.every((value) => typeof value === "number")
+  );
+}
+
+function toRowMajorPoseMatrix(pose: unknown): number[] | null {
+  if (Array.isArray(pose) && pose.length === 16) {
+    return pose.every((value) => typeof value === "number")
+      ? [...pose]
+      : null;
+  }
+
+  if (isMatrixPose(pose)) {
+    return [...pose.m];
+  }
+
+  if (!isXYZRPYPose(pose)) {
+    return null;
+  }
+
+  const quaternion = new THREE.Quaternion().setFromEuler(
+    new THREE.Euler(pose.roll, pose.pitch, pose.yaw, "XYZ"),
+  );
+  const matrix = new THREE.Matrix4().compose(
+    new THREE.Vector3(pose.x, pose.y, pose.z),
+    quaternion,
+    new THREE.Vector3(1, 1, 1),
+  );
+  const e = matrix.elements;
+
+  return [
+    e[0],
+    e[4],
+    e[8],
+    e[12],
+    e[1],
+    e[5],
+    e[9],
+    e[13],
+    e[2],
+    e[6],
+    e[10],
+    e[14],
+    e[3],
+    e[7],
+    e[11],
+    e[15],
+  ];
+}
 
 function updateJointIfPresent(
   robot: UrdfRobotObject,
@@ -171,7 +351,7 @@ function RobotModel({ snapshot }: { snapshot?: ReachyFullState | null }) {
   if (!robot) return null;
 
   return (
-    <group position={[0, -0.04, 0]} rotation={[0, -Math.PI / 2, 0]}>
+    <group position={[0, 0, 0]} rotation={[0, -Math.PI / 2, 0]}>
       <primitive object={robot} rotation={[-Math.PI / 2, 0, 0]} />
     </group>
   );
@@ -186,21 +366,6 @@ function getViewportBadgeLabel(
   return "Ready";
 }
 
-function getViewportHint(
-  connectionState: ReachyConnectionState,
-  runtimeRunning: boolean,
-) {
-  if (connectionState === "live") {
-    return "仿真状态已接入，3D 视图会跟着机器人姿态实时更新。";
-  }
-
-  if (runtimeRunning) {
-    return "仿真已启动，等待第一帧关节状态。";
-  }
-
-  return "点击上面的 Start Simulation，这里就会开始显示 3D 仿真姿态。";
-}
-
 export function ReachySimulationViewport({
   snapshot,
   connectionState,
@@ -212,14 +377,73 @@ export function ReachySimulationViewport({
 }) {
   const isJsdom =
     typeof navigator !== "undefined" && /jsdom/i.test(navigator.userAgent);
+  const [kinematicsWasm, setKinematicsWasm] =
+    useState<ReachyKinematicsWasmModule | null>(null);
   const badgeLabel = useMemo(
     () => getViewportBadgeLabel(connectionState, runtimeRunning),
     [connectionState, runtimeRunning],
   );
-  const hint = useMemo(
-    () => getViewportHint(connectionState, runtimeRunning),
-    [connectionState, runtimeRunning],
-  );
+  const resolvedPassiveJoints = useMemo(() => {
+    if (Array.isArray(snapshot?.passive_joints)) {
+      return snapshot.passive_joints;
+    }
+
+    if (!snapshot || !kinematicsWasm) {
+      return null;
+    }
+
+    const headJoints =
+      Array.isArray(snapshot.head_joints) && snapshot.head_joints.length >= 7
+        ? snapshot.head_joints.slice(0, 7)
+        : null;
+    const headPoseMatrix = toRowMajorPoseMatrix(snapshot.head_pose);
+
+    if (!headJoints || !headPoseMatrix) {
+      return null;
+    }
+
+    try {
+      const result = kinematicsWasm.calculate_passive_joints(
+        new Float64Array(headJoints),
+        new Float64Array(headPoseMatrix),
+      );
+      return result.length >= PASSIVE_JOINT_NAMES.length
+        ? Array.from(result)
+        : null;
+    } catch {
+      return null;
+    }
+  }, [kinematicsWasm, snapshot]);
+  const effectiveSnapshot = useMemo(() => {
+    if (!snapshot) return null;
+
+    return {
+      ...snapshot,
+      passive_joints: resolvedPassiveJoints,
+    };
+  }, [resolvedPassiveJoints, snapshot]);
+
+  useEffect(() => {
+    if (isJsdom) {
+      return;
+    }
+
+    let cancelled = false;
+
+    void loadReachyKinematicsWasm()
+      .then((module) => {
+        if (cancelled) return;
+        setKinematicsWasm(module);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setKinematicsWasm(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isJsdom]);
 
   if (isJsdom) {
     return (
@@ -266,16 +490,16 @@ export function ReachySimulationViewport({
           args={[1.2, 12, new THREE.Color("#3a3a3a"), new THREE.Color("#242424")]}
           position={[0, 0, 0]}
         />
-        <RobotModel snapshot={snapshot} />
+        <RobotModel snapshot={effectiveSnapshot} />
         <OrbitControls
           enablePan={false}
           enableZoom
           enableRotate
           enableDamping
           dampingFactor={0.06}
-          target={[0, 0.16, 0]}
-          minDistance={0.24}
-          maxDistance={0.8}
+          target={[0, 0.2, 0]}
+          minDistance={0.2}
+          maxDistance={0.6}
         />
       </Canvas>
 
@@ -284,9 +508,6 @@ export function ReachySimulationViewport({
       </div>
       <div className="pointer-events-none absolute bottom-3 left-3 rounded-full border border-[rgba(74,222,128,0.22)] bg-[rgba(17,17,17,0.78)] px-3 py-1 text-[11px] font-medium text-[#b7f5c5] backdrop-blur-sm">
         {badgeLabel}
-      </div>
-      <div className="pointer-events-none absolute bottom-3 right-3 max-w-[180px] rounded-2xl border border-white/10 bg-[rgba(17,17,17,0.72)] px-3 py-2 text-right text-[11px] leading-5 text-white/72 backdrop-blur-sm">
-        {hint}
       </div>
     </div>
   );

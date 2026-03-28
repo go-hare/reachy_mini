@@ -7,16 +7,8 @@ const settingsMock = vi.hoisted(() => ({
   useSettings: vi.fn(),
 }));
 
-const openerMock = vi.hoisted(() => ({
-  openUrl: vi.fn(async () => null),
-}));
-
-const viewerProbeMock = vi.hoisted(() => ({
-  result: {
-    ok: true,
-    status: 200,
-    error: null,
-  },
+const reachyStatusMock = vi.hoisted(() => ({
+  useReachyStatus: vi.fn(),
 }));
 
 const tauriCoreMock = vi.hoisted(() => ({
@@ -26,19 +18,6 @@ const tauriCoreMock = vi.hoisted(() => ({
         lifecycle: "stopped",
         pid: null,
         command: "reachy-mini-daemon --sim",
-        working_dir: "/projects/sample",
-        started_at: null,
-        exit_code: null,
-        last_error: null,
-        recent_logs: [],
-      };
-    }
-
-    if (cmd === "get_mujoco_viewer_service_status") {
-      return {
-        lifecycle: "stopped",
-        pid: null,
-        command: "",
         working_dir: "/projects/sample",
         started_at: null,
         exit_code: null,
@@ -60,21 +39,6 @@ const tauriCoreMock = vi.hoisted(() => ({
       };
     }
 
-    if (cmd === "start_mujoco_viewer_service") {
-      return {
-        lifecycle: "running",
-        pid: 5252,
-        command: "conda run -n reachy python -m viewer",
-        working_dir: "/projects/sample",
-        started_at: "2026-03-28T12:01:00Z",
-        exit_code: null,
-        last_error: null,
-        recent_logs: [
-          "Desktop launched conda run -n reachy python -m viewer (pid 5252).",
-        ],
-      };
-    }
-
     if (cmd === "stop_robot_sim_daemon") {
       return {
         lifecycle: "stopped",
@@ -90,44 +54,33 @@ const tauriCoreMock = vi.hoisted(() => ({
       };
     }
 
-    if (cmd === "stop_mujoco_viewer_service") {
-      return {
-        lifecycle: "stopped",
-        pid: null,
-        command: "conda run -n reachy python -m viewer",
-        working_dir: "/projects/sample",
-        started_at: "2026-03-28T12:01:00Z",
-        exit_code: 0,
-        last_error: null,
-        recent_logs: [
-          "Desktop-managed conda run -n reachy python -m viewer stopped with code 0.",
-        ],
-      };
-    }
-
-    if (cmd === "probe_mujoco_viewer_url") {
-      return viewerProbeMock.result;
-    }
-
     return null;
   }),
 }));
 
 vi.mock("@/contexts/settings-context", () => settingsMock);
+vi.mock("@/hooks/use-reachy-status", () => reachyStatusMock);
 vi.mock("@tauri-apps/api/core", () => tauriCoreMock);
-vi.mock("@tauri-apps/plugin-opener", () => openerMock);
 
 function mockWorkbenchSettings(robotSettings: Record<string, unknown>) {
-  const updateSettings = vi.fn(async () => null);
-
   settingsMock.useSettings.mockReturnValue({
     settings: {
       robot_settings: robotSettings,
     },
-    updateSettings,
   });
+}
 
-  return { updateSettings };
+function mockReachyStatus(
+  overrides: Partial<ReturnType<typeof reachyStatusMock.useReachyStatus>> = {},
+) {
+  reachyStatusMock.useReachyStatus.mockReturnValue({
+    connectionState: "offline",
+    daemonBaseUrl: "http://localhost:8000",
+    snapshot: null,
+    error: null,
+    lastUpdatedAt: null,
+    ...overrides,
+  });
 }
 
 if (typeof document !== "undefined")
@@ -135,12 +88,7 @@ if (typeof document !== "undefined")
     beforeEach(() => {
       vi.stubGlobal("fetch", vi.fn());
       vi.mocked(tauriCoreMock.invoke).mockClear();
-      vi.mocked(openerMock.openUrl).mockClear();
-      viewerProbeMock.result = {
-        ok: true,
-        status: 200,
-        error: null,
-      };
+      mockReachyStatus();
     });
 
     afterEach(() => {
@@ -164,9 +112,12 @@ if (typeof document !== "undefined")
 
       expect(screen.getAllByText("Disabled").length).toBeGreaterThan(0);
       expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+      expect(
+        screen.getByTestId("reachy-simulation-viewport"),
+      ).toBeInTheDocument();
     });
 
-    it("renders daemon-backed MuJoCo status when simulation mode is active", async () => {
+    it("renders daemon-backed MuJoCo status and the embedded 3D viewport", async () => {
       vi.mocked(fetch).mockResolvedValue({
         ok: true,
         json: async () => ({
@@ -189,6 +140,18 @@ if (typeof document !== "undefined")
         mujoco_live_status_enabled: true,
         daemon_base_url: "http://localhost:8000/",
       });
+      mockReachyStatus({
+        connectionState: "live",
+        snapshot: {
+          control_mode: "enabled",
+          body_yaw: 0.2,
+          antennas_position: [0.15, -0.15],
+          head_joints: [0.2, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1],
+          passive_joints: new Array(21).fill(0),
+          timestamp: "2026-03-28T08:15:30.000Z",
+        },
+        lastUpdatedAt: "2026-03-28T08:15:30.000Z",
+      });
 
       render(<MujocoPanel projectPath="/projects/sample" />);
 
@@ -206,8 +169,12 @@ if (typeof document !== "undefined")
 
       expect(screen.getByText("MuJoCo")).toBeInTheDocument();
       expect(screen.getByText("MuJoCo Runtime")).toBeInTheDocument();
-      expect(screen.getByText("Running")).toBeInTheDocument();
       expect(screen.getByText("enabled")).toBeInTheDocument();
+      expect(screen.getAllByText("Embedded 3D").length).toBeGreaterThan(0);
+      expect(
+        screen.getByTestId("reachy-simulation-viewport"),
+      ).toBeInTheDocument();
+      expect(screen.getByText("Live Pose")).toBeInTheDocument();
     });
 
     it("shows an idle simulator panel when the daemon is running a physical backend", async () => {
@@ -242,128 +209,7 @@ if (typeof document !== "undefined")
 
       expect(screen.getByText("Physical Robot")).toBeInTheDocument();
       expect(screen.getByText("gravity_compensation")).toBeInTheDocument();
-    });
-
-    it("renders an embedded viewer iframe when a MuJoCo viewer url is configured", async () => {
-      vi.mocked(fetch).mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          robot_name: "reachy_mini",
-          state: "running",
-          simulation_enabled: true,
-          mockup_sim_enabled: false,
-          backend_status: {
-            motor_control_mode: "enabled",
-            error: null,
-          },
-          error: null,
-          version: "1.2.3",
-        }),
-      } as Response);
-
-      mockWorkbenchSettings({
-        mujoco_live_status_enabled: true,
-        mujoco_viewer_url: "http://localhost:9001/viewer",
-        daemon_base_url: "http://localhost:8000",
-      });
-
-      render(<MujocoPanel projectPath="/projects/sample" />);
-
-      await waitFor(() => {
-        expect(tauriCoreMock.invoke).toHaveBeenCalledWith(
-          "probe_mujoco_viewer_url",
-          { url: "http://localhost:9001/viewer" },
-        );
-      });
-
-      expect(await screen.findByTitle("MuJoCo Viewer")).toHaveAttribute(
-        "src",
-        "http://localhost:9001/viewer",
-      );
-      expect(screen.getAllByText("Web Viewer").length).toBeGreaterThan(0);
-    });
-
-    it("shows an offline placeholder instead of rendering an iframe when the viewer url is unreachable", async () => {
-      vi.mocked(fetch).mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          robot_name: "reachy_mini",
-          state: "running",
-          simulation_enabled: true,
-          mockup_sim_enabled: false,
-          backend_status: {
-            motor_control_mode: "enabled",
-            error: null,
-          },
-          error: null,
-          version: "1.2.3",
-        }),
-      } as Response);
-      viewerProbeMock.result = {
-        ok: false,
-        status: null,
-        error: "connection refused",
-      };
-
-      mockWorkbenchSettings({
-        mujoco_live_status_enabled: true,
-        mujoco_viewer_url: "http://localhost:9001/viewer",
-        daemon_base_url: "http://localhost:8000",
-      });
-
-      render(<MujocoPanel projectPath="/projects/sample" />);
-
-      expect(
-        await screen.findByText("Viewer 服务未启动或地址不可达。"),
-      ).toBeInTheDocument();
-      expect(screen.getByText("connection refused")).toBeInTheDocument();
-      expect(screen.queryByTitle("MuJoCo Viewer")).not.toBeInTheDocument();
-    });
-
-    it("shows the native-window hint when no MuJoCo viewer url is configured", async () => {
-      vi.mocked(fetch).mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          robot_name: "reachy_mini",
-          state: "running",
-          simulation_enabled: true,
-          mockup_sim_enabled: false,
-          backend_status: {
-            motor_control_mode: "enabled",
-            error: null,
-          },
-          error: null,
-          version: "1.2.3",
-        }),
-      } as Response);
-
-      const { updateSettings } = mockWorkbenchSettings({
-        mujoco_live_status_enabled: true,
-        mujoco_viewer_url: "",
-        daemon_base_url: "http://localhost:8000",
-      });
-
-      render(<MujocoPanel projectPath="/projects/sample" />);
-
-      expect(
-        await screen.findByText("MuJoCo 当前走原生窗口。"),
-      ).toBeInTheDocument();
-      expect(screen.queryByTitle("MuJoCo Viewer")).not.toBeInTheDocument();
-
-      fireEvent.click(screen.getByRole("button", { name: "Use Local Preset" }));
-
-      await waitFor(() => {
-        expect(updateSettings).toHaveBeenCalledWith({
-          robot_settings: {
-            live_status_enabled: false,
-            mujoco_live_status_enabled: true,
-            mujoco_viewer_url: "http://127.0.0.1:9001/viewer",
-            mujoco_viewer_launch_command:
-              "conda run -n reachy python -m your_web_viewer --host 127.0.0.1 --port 9001",
-            daemon_base_url: "http://localhost:8000",
-          },
-        });
-      });
+      expect(screen.getAllByText("Embedded 3D").length).toBeGreaterThan(0);
     });
 
     it("starts the desktop-managed simulator with the current project path", async () => {
@@ -387,6 +233,10 @@ if (typeof document !== "undefined")
         mujoco_live_status_enabled: true,
         daemon_base_url: "http://localhost:8000",
       });
+      mockReachyStatus({
+        connectionState: "connecting",
+        error: "Waiting for state stream",
+      });
 
       render(<MujocoPanel projectPath="/projects/sample" />);
 
@@ -407,87 +257,5 @@ if (typeof document !== "undefined")
         await screen.findByText("Desktop Runtime Live"),
       ).toBeInTheDocument();
       expect(screen.getByText("4242")).toBeInTheDocument();
-    });
-
-    it("starts the desktop-managed viewer service with the configured launch command", async () => {
-      vi.mocked(fetch).mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          robot_name: "reachy_mini",
-          state: "running",
-          simulation_enabled: true,
-          mockup_sim_enabled: false,
-          backend_status: {
-            motor_control_mode: "enabled",
-            error: null,
-          },
-          error: null,
-          version: "1.2.3",
-        }),
-      } as Response);
-
-      mockWorkbenchSettings({
-        mujoco_live_status_enabled: true,
-        mujoco_viewer_url: "http://localhost:9001/viewer",
-        mujoco_viewer_launch_command: "conda run -n reachy python -m viewer",
-        daemon_base_url: "http://localhost:8000",
-      });
-
-      render(<MujocoPanel projectPath="/projects/sample" />);
-
-      fireEvent.click(
-        await screen.findByRole("button", { name: "Start Viewer" }),
-      );
-
-      await waitFor(() => {
-        expect(tauriCoreMock.invoke).toHaveBeenCalledWith(
-          "start_mujoco_viewer_service",
-          {
-            workingDir: "/projects/sample",
-            launchCommand: "conda run -n reachy python -m viewer",
-          },
-        );
-      });
-
-      expect(
-        await screen.findByText("Viewer Service Live"),
-      ).toBeInTheDocument();
-      expect(screen.getByText("5252")).toBeInTheDocument();
-    });
-
-    it("opens the configured viewer url in the system browser", async () => {
-      vi.mocked(fetch).mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          robot_name: "reachy_mini",
-          state: "running",
-          simulation_enabled: true,
-          mockup_sim_enabled: false,
-          backend_status: {
-            motor_control_mode: "enabled",
-            error: null,
-          },
-          error: null,
-          version: "1.2.3",
-        }),
-      } as Response);
-
-      mockWorkbenchSettings({
-        mujoco_live_status_enabled: true,
-        mujoco_viewer_url: "http://localhost:9001/viewer",
-        daemon_base_url: "http://localhost:8000",
-      });
-
-      render(<MujocoPanel projectPath="/projects/sample" />);
-
-      fireEvent.click(
-        await screen.findByRole("button", { name: "Open in Browser" }),
-      );
-
-      await waitFor(() => {
-        expect(openerMock.openUrl).toHaveBeenCalledWith(
-          "http://localhost:9001/viewer",
-        );
-      });
     });
   });

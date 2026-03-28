@@ -85,7 +85,9 @@ if (typeof document !== 'undefined') describe('ReachyStatusPanel live status', (
     render(<ReachyStatusPanel />)
 
     expect(MockWebSocket.instances).toHaveLength(1)
-    expect(MockWebSocket.instances[0]?.url).toBe('ws://localhost:8000/api/state/ws/full?with_doa=true')
+    expect(MockWebSocket.instances[0]?.url).toBe(
+      'ws://localhost:8000/api/state/ws/full?with_doa=true&with_head_joints=true&with_passive_joints=true',
+    )
 
     await act(async () => {
       MockWebSocket.instances[0]?.emitOpen()
@@ -93,6 +95,8 @@ if (typeof document !== 'undefined') describe('ReachyStatusPanel live status', (
         control_mode: 'enabled',
         body_yaw: 0.2,
         antennas_position: [0.15, -0.15],
+        head_joints: [0.2, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1],
+        passive_joints: new Array(21).fill(0),
         head_pose: {
           x: 0,
           y: 0.01,

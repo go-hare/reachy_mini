@@ -4,7 +4,6 @@ import {
   ChevronLeft,
   ChevronRight,
   Cpu,
-  ExternalLink,
   Orbit,
   Play,
   RadioTower,
@@ -20,12 +19,11 @@ import {
   type ComponentType,
   type ReactNode,
 } from "react";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { useSettings } from "@/contexts/settings-context";
 import ReachyController from "@/components/controller/ReachyController";
+import ReachySimulationViewport from "@/components/workbench/ReachySimulationViewport";
 import { useMujocoStatus } from "@/hooks/use-mujoco-status";
 import { useRobotDaemonProcess } from "@/hooks/use-robot-daemon-process";
-import { useRobotViewerProcess } from "@/hooks/use-robot-viewer-process";
 import {
   useReachyStatus,
   type ReachyStatusResult,
@@ -33,14 +31,8 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import {
-  DEFAULT_MUJOCO_WEB_VIEWER_URL,
   getDefaultRobotWorkbenchSettings,
-  isWorkbenchLaunchCommandTemplate,
-  normalizeWorkbenchLaunchCommand,
-  normalizeWorkbenchViewerUrl,
-  probeMujocoViewerUrl,
   type ReachyDaemonStatus,
-  type MujocoViewerProbeResult,
   type ReachyXYZRPYPose,
 } from "@/lib/reachy-daemon";
 
@@ -219,57 +211,22 @@ function formatProcessLifecycle(lifecycle?: string | null) {
   return lifecycle === "running" ? "Running" : "Stopped";
 }
 
-function getMujocoViewerModeLabel(viewerUrl: string) {
-  return viewerUrl ? "Web Viewer" : "Native Window";
-}
-
-function getViewerServiceCommandLabel(
-  statusCommand?: string | null,
-  launchCommand?: string,
-) {
-  return statusCommand?.trim() || launchCommand?.trim() || "Not configured";
-}
-
-type ViewerAvailability = "idle" | "checking" | "ready" | "offline";
-
-function getViewerSurfaceStatusLabel(
-  viewerUrl: string,
-  viewerAvailability: ViewerAvailability,
-  viewerFrameStatus: "idle" | "loading" | "ready",
-) {
-  if (!viewerUrl) return "Awaiting URL";
-  if (viewerAvailability === "checking") return "Checking Viewer";
-  if (viewerAvailability === "offline") return "Viewer Offline";
-  if (viewerFrameStatus === "loading") return "Embedded Loading";
-  if (viewerFrameStatus === "ready") return "Embedded Ready";
-  return "Awaiting Viewer";
-}
-
-function getViewerProbeHint(probeResult?: MujocoViewerProbeResult | null) {
-  if (!probeResult) return null;
-  if (probeResult.error?.trim()) return probeResult.error.trim();
-  if (typeof probeResult.status === "number") {
-    return `HTTP ${probeResult.status}`;
-  }
-  return null;
-}
-
-export function MujocoPanel({ projectPath }: { projectPath: string }) {
-  const { settings, updateSettings } = useSettings();
+export function MujocoPanel({
+  projectPath,
+  statusResult,
+}: {
+  projectPath: string;
+  statusResult?: ReachyStatusResult;
+}) {
+  const { settings } = useSettings();
   const robotSettings = {
     ...getDefaultRobotWorkbenchSettings(),
     ...(settings.robot_settings || {}),
   };
+  const liveStatus = useReachyStatus(robotSettings);
+  const reachyStatus = statusResult ?? liveStatus;
   const { connectionState, daemonBaseUrl, daemonStatus, error, lastUpdatedAt } =
     useMujocoStatus(robotSettings);
-  const viewerUrl = normalizeWorkbenchViewerUrl(
-    robotSettings.mujoco_viewer_url,
-  );
-  const viewerLaunchCommand = normalizeWorkbenchLaunchCommand(
-    robotSettings.mujoco_viewer_launch_command,
-  );
-  const viewerLaunchCommandIsTemplate =
-    isWorkbenchLaunchCommandTemplate(viewerLaunchCommand);
   const simulationEnabled = Boolean(daemonStatus?.simulation_enabled);
   const mockupEnabled = Boolean(daemonStatus?.mockup_sim_enabled);
   const backendLabel = getMujocoBackendLabel(daemonStatus);
@@ -283,29 +240,6 @@ export function MujocoPanel({ projectPath }: { projectPath: string }) {
     isStopping,
     isBusy,
   } = useRobotDaemonProcess(projectPath);
-  const {
-    status: viewerServiceStatus,
-    error: viewerServiceError,
-    refresh: refreshViewerService,
-    start: startViewerService,
-    stop: stopViewerService,
-    isStarting: isStartingViewerService,
-    isStopping: isStoppingViewerService,
-    isBusy: isViewerServiceBusy,
-  } = useRobotViewerProcess(projectPath, viewerLaunchCommand);
-  const [viewerFrameKey, setViewerFrameKey] = useState(0);
-  const [viewerFrameStatus, setViewerFrameStatus] = useState<
-    "idle" | "loading" | "ready"
-  >(viewerUrl ? "loading" : "idle");
-  const [viewerAvailability, setViewerAvailability] =
-    useState<ViewerAvailability>(viewerUrl ? "checking" : "idle");
-  const [viewerProbeResult, setViewerProbeResult] =
-    useState<MujocoViewerProbeResult | null>(null);
-  const [viewerProbeNonce, setViewerProbeNonce] = useState(0);
-  const [viewerSettingsAction, setViewerSettingsAction] = useState<
-    "preset" | "clear" | null
-  >(null);
-  const [viewerError, setViewerError] = useState<string | null>(null);
   const panelStatus =
     connectionState === "disabled"
       ? "Disabled"
@@ -332,6 +266,16 @@ export function MujocoPanel({ projectPath }: { projectPath: string }) {
     desktopDaemonStatus.command || "reachy-mini-daemon --sim";
   const desktopWorkingDir = desktopDaemonStatus.working_dir || projectPath;
   const desktopLogs = desktopDaemonStatus.recent_logs || [];
+  const runtimeRunning =
+    desktopDaemonStatus.lifecycle === "running" ||
+    simulationEnabled ||
+    mockupEnabled;
+  const viewportStatus =
+    reachyStatus.connectionState === "live"
+      ? "Live Pose"
+      : runtimeRunning
+        ? "Waiting State"
+        : "Ready";
   const launchStatus =
     desktopDaemonStatus.lifecycle === "running"
       ? "Desktop Runtime Live"
@@ -340,166 +284,6 @@ export function MujocoPanel({ projectPath }: { projectPath: string }) {
         : isStopping
           ? "Stopping"
           : "Desktop Runtime Idle";
-  const viewerServiceProcessValue = formatProcessLifecycle(
-    viewerServiceStatus.lifecycle,
-  );
-  const viewerServiceStartedAt = formatTimestamp(
-    viewerServiceStatus.started_at,
-  );
-  const viewerServiceCommand = getViewerServiceCommandLabel(
-    viewerServiceStatus.command,
-    viewerLaunchCommand,
-  );
-  const viewerServiceWorkingDir =
-    viewerServiceStatus.working_dir || projectPath;
-  const viewerServiceLogs = viewerServiceStatus.recent_logs || [];
-  const viewerServiceLaunchStatus =
-    viewerServiceStatus.lifecycle === "running"
-      ? "Viewer Service Live"
-      : isStartingViewerService
-        ? "Starting"
-        : isStoppingViewerService
-        ? "Stopping"
-          : "Viewer Service Idle";
-  const viewerSurfaceStatus = getViewerSurfaceStatusLabel(
-    viewerUrl,
-    viewerAvailability,
-    viewerFrameStatus,
-  );
-  const viewerProbeHint = getViewerProbeHint(viewerProbeResult);
-
-  useEffect(() => {
-    setViewerAvailability(viewerUrl ? "checking" : "idle");
-    setViewerProbeResult(null);
-    setViewerFrameStatus(viewerUrl ? "loading" : "idle");
-    setViewerError(null);
-  }, [viewerUrl]);
-
-  useEffect(() => {
-    if (!viewerUrl || viewerServiceStatus.lifecycle !== "running") {
-      return;
-    }
-
-    setViewerProbeNonce((current) => current + 1);
-  }, [viewerServiceStatus.lifecycle, viewerUrl]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function runViewerProbe() {
-      if (!viewerUrl) {
-        setViewerAvailability("idle");
-        setViewerProbeResult(null);
-        setViewerFrameStatus("idle");
-        return;
-      }
-
-      setViewerAvailability("checking");
-      setViewerProbeResult(null);
-      setViewerFrameStatus("loading");
-
-      try {
-        const probeResult = await probeMujocoViewerUrl(viewerUrl);
-        if (cancelled) return;
-
-        setViewerProbeResult(probeResult);
-
-        if (probeResult.ok) {
-          setViewerAvailability("ready");
-          setViewerFrameStatus("loading");
-          return;
-        }
-
-        setViewerAvailability("offline");
-        setViewerFrameStatus("idle");
-      } catch (error) {
-        if (cancelled) return;
-
-        setViewerAvailability("offline");
-        setViewerFrameStatus("idle");
-        setViewerProbeResult({
-          ok: false,
-          status: null,
-          error:
-            error instanceof Error ? error.message : "Viewer probe failed",
-        });
-      }
-    }
-
-    void runViewerProbe();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [viewerUrl, viewerProbeNonce]);
-
-  const handleApplyViewerPreset = useCallback(async () => {
-    setViewerSettingsAction("preset");
-    setViewerError(null);
-
-    try {
-      await updateSettings({
-        robot_settings: {
-          ...robotSettings,
-          mujoco_viewer_url: DEFAULT_MUJOCO_WEB_VIEWER_URL,
-        },
-      });
-    } catch (error) {
-      setViewerError(
-        error instanceof Error
-          ? error.message
-          : "Failed to save MuJoCo Web Viewer preset",
-      );
-    } finally {
-      setViewerSettingsAction(null);
-    }
-  }, [updateSettings]);
-
-  const handleClearViewerUrl = useCallback(async () => {
-    setViewerSettingsAction("clear");
-    setViewerError(null);
-
-    try {
-      await updateSettings({
-        robot_settings: {
-          ...robotSettings,
-          mujoco_viewer_url: "",
-        },
-      });
-      setViewerFrameStatus("idle");
-    } catch (error) {
-      setViewerError(
-        error instanceof Error
-          ? error.message
-          : "Failed to clear MuJoCo Web Viewer URL",
-      );
-    } finally {
-      setViewerSettingsAction(null);
-    }
-  }, [updateSettings]);
-
-  const handleOpenViewerInBrowser = useCallback(async () => {
-    if (!viewerUrl) return;
-
-    try {
-      setViewerError(null);
-      await openUrl(viewerUrl);
-    } catch (error) {
-      setViewerError(
-        error instanceof Error
-          ? error.message
-          : "Failed to open MuJoCo Web Viewer in browser",
-      );
-    }
-  }, [viewerUrl]);
-
-  const handleReloadViewer = useCallback(() => {
-    if (!viewerUrl) return;
-
-    setViewerError(null);
-    setViewerFrameKey((current) => current + 1);
-    setViewerProbeNonce((current) => current + 1);
-  }, [viewerUrl]);
 
   return (
     <RobotPanelCard
@@ -572,11 +356,7 @@ export function MujocoPanel({ projectPath }: { projectPath: string }) {
                   connectionState === "disabled" ? "Disabled" : backendLabel
                 }
               />
-              <MetricRow
-                icon={Orbit}
-                label="Viewer"
-                value={getMujocoViewerModeLabel(viewerUrl)}
-              />
+              <MetricRow icon={Orbit} label="Viewport" value="Embedded 3D" />
               <MetricRow
                 icon={Cpu}
                 label="Daemon State"
@@ -630,237 +410,25 @@ export function MujocoPanel({ projectPath }: { projectPath: string }) {
           <div className="flex items-center justify-between gap-3 border-b border-border/60 px-4 py-3">
             <div>
               <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-                Viewer Surface
+                Embedded 3D
               </p>
             </div>
             <span className="inline-flex items-center rounded-full border border-border/70 bg-muted/25 px-2 py-1 text-[10px] font-medium uppercase tracking-[0.1em] text-muted-foreground">
-              {getMujocoViewerModeLabel(viewerUrl)}
+              {viewportStatus}
             </span>
           </div>
-          <div className="space-y-3 border-b border-border/60 px-4 py-4">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-                  Viewer Service
-                </p>
-              </div>
-              <span className="inline-flex items-center rounded-full border border-border/70 bg-muted/25 px-2 py-1 text-[10px] font-medium uppercase tracking-[0.1em] text-muted-foreground">
-                {viewerServiceLaunchStatus}
-              </span>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => void startViewerService()}
-                disabled={
-                  isViewerServiceBusy ||
-                  viewerServiceStatus.lifecycle === "running" ||
-                  !viewerLaunchCommand ||
-                  viewerLaunchCommandIsTemplate
-                }
-              >
-                <Play className="size-4" />
-                {isStartingViewerService ? "Starting..." : "Start Viewer"}
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => void stopViewerService()}
-                disabled={
-                  isViewerServiceBusy ||
-                  viewerServiceStatus.lifecycle !== "running"
-                }
-              >
-                <Square className="size-4" />
-                {isStoppingViewerService ? "Stopping..." : "Stop Viewer"}
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => void refreshViewerService()}
-                disabled={isViewerServiceBusy}
-              >
-                <RefreshCw className="size-4" />
-                Refresh Service
-              </Button>
-            </div>
-            <div className="grid gap-2 md:grid-cols-2">
-              <MetricRow
-                icon={Cpu}
-                label="Viewer Process"
-                value={viewerServiceProcessValue}
-              />
-              <MetricRow
-                icon={Sparkles}
-                label="Viewer PID"
-                value={
-                  viewerServiceStatus.pid
-                    ? String(viewerServiceStatus.pid)
-                    : "—"
-                }
-              />
-            </div>
-            <div className="rounded-2xl border border-border/60 bg-muted/20 p-3 text-xs">
-              <div className="flex items-center justify-between gap-3">
-                <span className="text-foreground">Launch command</span>
-                <span className="max-w-[220px] truncate text-muted-foreground">
-                  {viewerServiceCommand}
-                </span>
-              </div>
-              <div className="mt-2 flex items-center justify-between gap-3">
-                <span className="text-foreground">Working dir</span>
-                <span className="max-w-[220px] truncate text-muted-foreground">
-                  {viewerServiceWorkingDir}
-                </span>
-              </div>
-              <div className="mt-2 flex items-center justify-between gap-3">
-                <span className="text-foreground">Started</span>
-                <span className="text-muted-foreground">
-                  {viewerServiceStartedAt}
-                </span>
-              </div>
-            </div>
-            {!viewerLaunchCommand ? (
+          <div className="space-y-3 px-4 py-4">
+            <ReachySimulationViewport
+              snapshot={reachyStatus.snapshot}
+              connectionState={reachyStatus.connectionState}
+              runtimeRunning={runtimeRunning}
+            />
+            {runtimeRunning && reachyStatus.connectionState !== "live" ? (
               <div className="rounded-2xl border border-border/60 bg-muted/20 px-3 py-2.5 text-xs text-muted-foreground">
-                先在 Settings 里填 `MuJoCo Web Viewer Launch
-                Command`，这里才能一键拉起 viewer 服务。
+                {reachyStatus.error ||
+                  "运行中，等待 Reachy 状态 websocket 的第一帧数据。"}
               </div>
             ) : null}
-            {viewerLaunchCommandIsTemplate ? (
-              <div className="rounded-2xl border border-border/60 bg-muted/20 px-3 py-2.5 text-xs text-muted-foreground">
-                当前是默认模板命令。先把 `your_web_viewer` 换成你真实的 Python
-                viewer 入口，再点 `Start Viewer`。
-              </div>
-            ) : null}
-            {viewerServiceLogs.length > 0 ? (
-              <div className="rounded-2xl border border-border/60 bg-background/70 p-3">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-                  Viewer Logs
-                </p>
-                <pre className="mt-3 max-h-36 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-muted-foreground">
-                  {viewerServiceLogs.slice(-8).join("\n")}
-                </pre>
-              </div>
-            ) : null}
-          </div>
-          <div className="flex flex-wrap items-center gap-2 border-b border-border/60 px-4 py-3">
-            {!viewerUrl ? (
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => void handleApplyViewerPreset()}
-                disabled={viewerSettingsAction !== null}
-              >
-                {viewerSettingsAction === "preset"
-                  ? "Applying..."
-                  : "Use Local Preset"}
-              </Button>
-            ) : (
-              <>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => void handleOpenViewerInBrowser()}
-                >
-                  <ExternalLink className="size-4" />
-                  Open in Browser
-                </Button>
-                <Button size="sm" variant="ghost" onClick={handleReloadViewer}>
-                  <RefreshCw className="size-4" />
-                  Reload
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => void handleClearViewerUrl()}
-                  disabled={viewerSettingsAction !== null}
-                >
-                  {viewerSettingsAction === "clear"
-                    ? "Clearing..."
-                    : "Clear URL"}
-                </Button>
-              </>
-            )}
-            <span className="ml-auto text-[11px] font-medium text-muted-foreground">
-              {viewerSurfaceStatus}
-            </span>
-          </div>
-          <div className="relative min-h-[160px] bg-[radial-gradient(circle_at_top,_hsl(var(--muted))_0%,_transparent_75%)]">
-            {!viewerUrl ? (
-              <div className="flex h-[160px] items-center justify-center px-5 text-center">
-                <div className="space-y-2">
-                  <div className="mx-auto flex size-10 items-center justify-center rounded-2xl border border-border/70 bg-background">
-                    <Orbit className="size-5 text-foreground" />
-                  </div>
-                  <p className="text-sm font-medium text-foreground">
-                    MuJoCo 当前走原生窗口。
-                  </p>
-                  <p className="text-xs leading-5 text-muted-foreground">
-                    右侧这里只是 Web Viewer 接入口。先点 `Use Local Preset`，
-                    后面本地 viewer 服务起来后就会直接嵌到这里。
-                  </p>
-                </div>
-              </div>
-            ) : viewerAvailability === "checking" ? (
-              <div className="flex h-[160px] items-center justify-center px-5 text-center">
-                <div className="space-y-2">
-                  <div className="mx-auto flex size-10 items-center justify-center rounded-2xl border border-border/70 bg-background">
-                    <RefreshCw className="size-5 animate-spin text-foreground" />
-                  </div>
-                  <p className="text-sm font-medium text-foreground">
-                    正在检查 MuJoCo Viewer
-                  </p>
-                  <p className="text-xs leading-5 text-muted-foreground">
-                    {viewerUrl}
-                  </p>
-                </div>
-              </div>
-            ) : viewerAvailability === "ready" ? (
-              <>
-                {viewerFrameStatus === "loading" ? (
-                  <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-background/70 backdrop-blur-[1px]">
-                    <div className="space-y-1 text-center">
-                      <p className="text-sm font-medium text-foreground">
-                        Loading MuJoCo Web Viewer
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        {viewerUrl}
-                      </p>
-                    </div>
-                  </div>
-                ) : null}
-                <iframe
-                  key={`${viewerUrl}:${viewerFrameKey}`}
-                  title="MuJoCo Viewer"
-                  src={viewerUrl}
-                  className="h-[160px] w-full border-0 bg-background"
-                  loading="lazy"
-                  referrerPolicy="no-referrer"
-                  onLoad={() => setViewerFrameStatus("ready")}
-                />
-              </>
-            ) : (
-              <div className="flex h-[160px] items-center justify-center px-5 text-center">
-                <div className="space-y-2">
-                  <div className="mx-auto flex size-10 items-center justify-center rounded-2xl border border-border/70 bg-background">
-                    <Orbit className="size-5 text-foreground" />
-                  </div>
-                  <p className="text-sm font-medium text-foreground">
-                    {viewerServiceStatus.lifecycle === "running"
-                      ? "Viewer 服务已启动，但页面还没就绪。"
-                      : "Viewer 服务未启动或地址不可达。"}
-                  </p>
-                  <p className="text-xs leading-5 text-muted-foreground">
-                    {viewerProbeHint || viewerUrl}
-                  </p>
-                  <p className="text-xs leading-5 text-muted-foreground">
-                    你这台机器当前没有这个服务时，这是正常状态。先配置好
-                    Python viewer service，再点 `Start Viewer` 或 `Reload`。
-                  </p>
-                </div>
-              </div>
-            )}
           </div>
         </div>
         <div className="rounded-2xl border border-border/60 bg-background/70 p-3">
@@ -904,16 +472,6 @@ export function MujocoPanel({ projectPath }: { projectPath: string }) {
         {desktopDaemonError || desktopDaemonStatus.last_error ? (
           <div className="rounded-2xl border border-[hsl(var(--warning))]/30 bg-[hsl(var(--warning))]/10 px-3 py-2.5 text-xs text-[hsl(var(--warning))]">
             {desktopDaemonError || desktopDaemonStatus.last_error}
-          </div>
-        ) : null}
-        {viewerServiceError || viewerServiceStatus.last_error ? (
-          <div className="rounded-2xl border border-[hsl(var(--warning))]/30 bg-[hsl(var(--warning))]/10 px-3 py-2.5 text-xs text-[hsl(var(--warning))]">
-            {viewerServiceError || viewerServiceStatus.last_error}
-          </div>
-        ) : null}
-        {viewerError ? (
-          <div className="rounded-2xl border border-[hsl(var(--warning))]/30 bg-[hsl(var(--warning))]/10 px-3 py-2.5 text-xs text-[hsl(var(--warning))]">
-            {viewerError}
           </div>
         ) : null}
       </div>
@@ -1127,7 +685,7 @@ export function RobotSidePanel({
         data-testid="robot-side-panel-scroll"
       >
         <div className="flex flex-col gap-3 p-3">
-          <MujocoPanel projectPath={projectPath} />
+          <MujocoPanel projectPath={projectPath} statusResult={reachyStatus} />
           <ReachyStatusPanel statusResult={reachyStatus} />
           <ReachyControllerPanel statusResult={reachyStatus} />
         </div>

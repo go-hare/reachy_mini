@@ -39,31 +39,29 @@
 - 聊天主区仍可正常工作
 - 为后续接入 Reachy 桌面端模块留下明确插槽
 
-## 当前子阶段：Web Viewer 接入口
+## 当前子阶段：内嵌 3D 仿真首版
 
 ### 目标
 
-- 不做 MuJoCo 原生窗口嵌入
-- 先在桌面端铺好 Web Viewer 接入口
-- 后续只要本地有 viewer 服务起在固定端口，工作台就能直接接上
+- 在右侧 MuJoCo 面板内直接显示 Reachy 3D 视图
+- 保留桌面端 `Start Simulation` 启动链
+- 启动后通过 Reachy daemon 的 websocket 状态流驱动机器人姿态
+- 不依赖额外的 `9001/viewer` 网页服务
 
 ### 本轮范围
 
-- 设置页补 `MuJoCo Web Viewer` 的本地预设入口
-- 右侧 `Viewer Surface` 支持：
-  - 一键填本地预设地址
-  - 内嵌 iframe 预览
-  - 用系统浏览器打开
-  - 手动刷新 iframe
+- 状态 websocket 补充 `head_joints` 与 `passive_joints`
+- 右侧 MuJoCo 面板移除旧的 Web Viewer 交互
+- 接入本地 URDF/STL 资产，直接渲染 Reachy 3D 机器人
 - 保持现在的 `reachy-mini-daemon --sim` 启动链不变
 
 ### 本轮不做
 
 - 不改 Python 主业务逻辑
-- 不实现真正的 Web Viewer 服务
-- 不处理原生 MuJoCo 窗口嵌入
+- 不处理完整 MuJoCo 原生窗口嵌入
+- 不实现单独的网页 viewer 服务
 
 ### 当前默认假设
 
-- 本地 Web Viewer 预设地址使用 `http://127.0.0.1:9001/viewer`
-- 设置默认值仍保持空，避免误导当前仍走原生窗口的用户
+- Reachy daemon 继续跑在 `http://localhost:8000`
+- 3D 视图优先展示“桌面端内嵌机器人姿态”，而不是完整 MuJoCo 场景页面
