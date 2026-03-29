@@ -57,8 +57,6 @@ export interface AppSettings {
   robot_settings?: {
     live_status_enabled?: boolean;
     mujoco_live_status_enabled?: boolean;
-    mujoco_viewer_url?: string;
-    mujoco_viewer_launch_command?: string;
     daemon_base_url?: string;
   };
 }
@@ -186,13 +184,6 @@ export interface GeneralSettingsProps {
   onReachyLiveStatusEnabledChange?: (enabled: boolean) => void;
   tempMujocoLiveStatusEnabled?: boolean;
   onMujocoLiveStatusEnabledChange?: (enabled: boolean) => void;
-  tempMujocoViewerUrl?: string;
-  onMujocoViewerUrlChange?: (value: string) => void;
-  onApplyMujocoViewerPreset?: () => void;
-  onClearMujocoViewerUrl?: () => void;
-  tempMujocoViewerLaunchCommand?: string;
-  onMujocoViewerLaunchCommandChange?: (value: string) => void;
-  onApplyMujocoViewerLaunchCommandPreset?: () => void;
   tempReachyDaemonBaseUrl?: string;
   onReachyDaemonBaseUrlChange?: (value: string) => void;
 }

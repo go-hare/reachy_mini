@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from inspect import isawaitable
@@ -110,10 +111,13 @@ def _default_affect_model_path() -> Path:
 
 
 _DEFAULT_IDLE_TICK_INTERVAL_S = 15.0
+_DEFAULT_SPEECH_INTERRUPT_GRACE_S = 0.5
 _SURFACED_FRONT_DECISION_SIGNAL_NAMES = {
     "idle_tick",
+    "idle_entered",
     "vision_attention_updated",
 }
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(slots=True, frozen=True)
@@ -206,6 +210,7 @@ class RuntimeScheduler:
         affect_runtime: AffectRuntime | None = None,
         front_style: str | None = None,
         idle_tick_interval_s: float = _DEFAULT_IDLE_TICK_INTERVAL_S,
+        speech_interrupt_grace_s: float = _DEFAULT_SPEECH_INTERRUPT_GRACE_S,
         runtime_tool_context: ReachyToolContext | None = None,
     ) -> None:
         self.profile_root = profile_root
@@ -215,6 +220,7 @@ class RuntimeScheduler:
         self.front_style = front_style
         self.runtime_tool_context = runtime_tool_context
         self._idle_tick_interval_s = max(float(idle_tick_interval_s), 0.0)
+        self._speech_interrupt_grace_s = max(float(speech_interrupt_grace_s), 0.0)
         self._lifecycle_lock = asyncio.Lock()
         self._idle_condition = asyncio.Condition()
         self._listener_task: asyncio.Task[None] | None = None
@@ -230,7 +236,12 @@ class RuntimeScheduler:
         self._thread_front_decisions: dict[str, dict[str, Any]] = {}
         self._thread_user_speaking: dict[str, bool] = {}
         self._thread_reply_audio_interrupted: set[str] = set()
+        self._pending_reply_audio_interrupt_tasks: dict[str, asyncio.Task[None]] = {}
         self._front_output_subscribers: set[asyncio.Queue[FrontOutputPacket]] = set()
+        self._runtime_loop: asyncio.AbstractEventLoop | None = None
+        self._reactive_vision_queue: asyncio.Queue[Any] | None = None
+        self._reactive_vision_task: asyncio.Task[None] | None = None
+        self._reactive_vision_listener: Callable[[Any], None] | None = None
 
     async def start(self) -> None:
         async with self._lifecycle_lock:
@@ -238,10 +249,12 @@ class RuntimeScheduler:
                 return
 
             self._listener_error = None
+            self._runtime_loop = asyncio.get_running_loop()
             await self.kernel.start()
             self._pending_kernel_deliveries = {}
             self._delivery_tasks = set()
             self._listener_task = asyncio.create_task(self._listen_kernel_outputs())
+            self._attach_reactive_vision_bridge()
 
     async def stop(self) -> None:
         async with self._lifecycle_lock:
@@ -249,6 +262,7 @@ class RuntimeScheduler:
             if listener is None and not self.kernel.is_running:
                 return
 
+            await self._detach_reactive_vision_bridge()
             await self.kernel.stop()
             if listener is not None:
                 try:
@@ -266,9 +280,11 @@ class RuntimeScheduler:
             self._thread_user_speaking.clear()
             self._thread_reply_audio_interrupted.clear()
             self._front_output_subscribers.clear()
+            self._runtime_loop = None
             self._fail_pending_outputs(RuntimeError("Runtime scheduler stopped."))
             await self._cancel_delivery_tasks()
             await self._cancel_idle_tick_tasks()
+            await self._cancel_reply_audio_interrupt_tasks()
 
     async def handle_user_text(
         self,
@@ -300,15 +316,6 @@ class RuntimeScheduler:
                     user_text=user_text,
                 )
             )
-            await self._push_surface_state(
-                thread_id,
-                build_listening_surface_state(
-                    thread_id=thread_id,
-                    affect_state=affect_state,
-                    emotion_signal=emotion_signal,
-                ),
-                surface_state_handler=surface_state_handler,
-            )
             await self._dispatch_front_signal(
                 FrontSignal(
                     name="listening_entered",
@@ -316,7 +323,11 @@ class RuntimeScheduler:
                     turn_id=turn_id,
                     user_text=user_text,
                     metadata={"phase": "listening"},
-                )
+                ),
+                affect_state=affect_state,
+                emotion_signal=emotion_signal,
+                surface_state_handler=surface_state_handler,
+                apply_surface_patch=True,
             )
             memory = self._build_front_memory_view(thread_id=thread_id, user_text=user_text)
             front_turn = await self.front.handle_user_turn(
@@ -358,6 +369,7 @@ class RuntimeScheduler:
                 "user_id": user_id,
                 "turn_id": turn_id,
                 "user_text": user_text,
+                "front_reply": front_reply,
                 "affect_state": affect_state,
                 "emotion_signal": emotion_signal,
                 "surface_state_handler": surface_state_handler,
@@ -409,7 +421,6 @@ class RuntimeScheduler:
             signal_name="user_speech_started",
             thread_id=thread_id,
             user_text=user_text,
-            surface_state=build_listening_surface_state(thread_id=thread_id),
             metadata={"phase": "listening"},
             surface_state_handler=surface_state_handler,
         )
@@ -432,17 +443,17 @@ class RuntimeScheduler:
 
         was_user_speaking = self._thread_user_speaking.get(thread_id, False)
         self._thread_user_speaking[thread_id] = True
-        if not was_user_speaking and self._active_turns.get(thread_id, 0) > 0:
-            self._thread_reply_audio_interrupted.add(thread_id)
         if not was_user_speaking:
-            await self._interrupt_reply_audio_playback(thread_id)
-            self._reset_runtime_audio_motion()
+            self._schedule_reply_audio_interrupt(thread_id)
 
         resolved_user_text = str(user_text or "")
         self._thread_idle_context[thread_id] = {
             "turn_id": "",
             "user_text": resolved_user_text,
         }
+        current_phase = str(
+            self._thread_surface_state.get(thread_id, {}).get("phase", "") or ""
+        )
         await self._dispatch_front_signal(
             FrontSignal(
                 name="user_speech_partial",
@@ -452,18 +463,9 @@ class RuntimeScheduler:
                     "phase": "listening",
                     "partial": True,
                 },
-            )
-        )
-
-        current_phase = str(
-            self._thread_surface_state.get(thread_id, {}).get("phase", "") or ""
-        )
-        if current_phase == "listening":
-            return
-        await self._push_surface_state(
-            thread_id,
-            build_listening_surface_state(thread_id=thread_id),
+            ),
             surface_state_handler=surface_state_handler,
+            apply_surface_patch=current_phase != "listening",
         )
 
     async def handle_user_speech_stopped(
@@ -481,7 +483,6 @@ class RuntimeScheduler:
             signal_name="user_speech_stopped",
             thread_id=thread_id,
             user_text=user_text,
-            surface_state=build_listening_wait_surface_state(thread_id=thread_id),
             metadata={"phase": "listening_wait"},
             surface_state_handler=surface_state_handler,
         )
@@ -497,7 +498,6 @@ class RuntimeScheduler:
         signal_name: str,
         thread_id: str,
         user_text: str,
-        surface_state: dict[str, Any],
         metadata: dict[str, Any],
         surface_state_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None,
     ) -> None:
@@ -507,11 +507,10 @@ class RuntimeScheduler:
         self._record_thread_activity(thread_id)
         is_speech_start = signal_name == "user_speech_started"
         self._thread_user_speaking[thread_id] = is_speech_start
-        if is_speech_start and self._active_turns.get(thread_id, 0) > 0:
-            self._thread_reply_audio_interrupted.add(thread_id)
         if is_speech_start:
-            await self._interrupt_reply_audio_playback(thread_id)
-            self._reset_runtime_audio_motion()
+            self._schedule_reply_audio_interrupt(thread_id)
+        else:
+            self._cancel_reply_audio_interrupt_task(thread_id)
         self._thread_idle_context[thread_id] = {
             "turn_id": "",
             "user_text": str(user_text or ""),
@@ -522,12 +521,9 @@ class RuntimeScheduler:
                 thread_id=thread_id,
                 user_text=str(user_text or ""),
                 metadata=dict(metadata),
-            )
-        )
-        await self._push_surface_state(
-            thread_id,
-            dict(surface_state),
+            ),
             surface_state_handler=surface_state_handler,
+            apply_surface_patch=True,
         )
         if signal_name == "user_speech_stopped" and self._active_turns.get(thread_id, 0) <= 0:
             self._schedule_idle_tick(thread_id)
@@ -692,6 +688,17 @@ class RuntimeScheduler:
             except asyncio.CancelledError:
                 pass
 
+    async def _cancel_reply_audio_interrupt_tasks(self) -> None:
+        tasks = list(self._pending_reply_audio_interrupt_tasks.values())
+        self._pending_reply_audio_interrupt_tasks.clear()
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
     def _schedule_kernel_delivery(self, *, output: BrainOutput, delivery: dict[str, Any]) -> None:
         task = asyncio.create_task(self._deliver_kernel_output(output=output, delivery=delivery))
         self._delivery_tasks.add(task)
@@ -732,6 +739,7 @@ class RuntimeScheduler:
             self._idle_condition.notify_all()
         if not became_idle:
             return
+        self._cancel_reply_audio_interrupt_task(thread_id)
         self._thread_reply_audio_interrupted.discard(thread_id)
         self._thread_idle_context[thread_id] = {
             "turn_id": str(turn_id or ""),
@@ -747,6 +755,179 @@ class RuntimeScheduler:
         task = self._idle_tick_tasks.pop(thread_id, None)
         if task is not None:
             task.cancel()
+
+    def _schedule_reply_audio_interrupt(self, thread_id: str) -> None:
+        if self._active_turns.get(thread_id, 0) <= 0:
+            return
+        task = self._pending_reply_audio_interrupt_tasks.get(thread_id)
+        if task is not None and not task.done():
+            return
+        task = asyncio.create_task(self._run_reply_audio_interrupt_after_grace(thread_id))
+        self._pending_reply_audio_interrupt_tasks[thread_id] = task
+
+    def _cancel_reply_audio_interrupt_task(self, thread_id: str) -> None:
+        task = self._pending_reply_audio_interrupt_tasks.pop(thread_id, None)
+        if task is not None:
+            task.cancel()
+
+    async def _run_reply_audio_interrupt_after_grace(self, thread_id: str) -> None:
+        current_task = asyncio.current_task()
+        try:
+            if self._speech_interrupt_grace_s > 0.0:
+                await asyncio.sleep(self._speech_interrupt_grace_s)
+            if not self._thread_user_speaking.get(thread_id, False):
+                return
+            if self._active_turns.get(thread_id, 0) <= 0:
+                return
+            interrupted = await self._interrupt_reply_audio_playback(thread_id)
+            if interrupted:
+                self._reset_runtime_audio_motion()
+        except asyncio.CancelledError:
+            raise
+        finally:
+            task = self._pending_reply_audio_interrupt_tasks.get(thread_id)
+            if task is current_task:
+                self._pending_reply_audio_interrupt_tasks.pop(thread_id, None)
+
+    def _attach_reactive_vision_bridge(self) -> None:
+        context = self.runtime_tool_context
+        if context is None:
+            return
+        camera_worker = getattr(context, "camera_worker", None)
+        if camera_worker is None or not hasattr(camera_worker, "add_reactive_vision_listener"):
+            return
+        if self._reactive_vision_task is not None and not self._reactive_vision_task.done():
+            return
+
+        self._reactive_vision_queue = asyncio.Queue()
+        self._reactive_vision_task = asyncio.create_task(self._run_reactive_vision_loop())
+        runtime_loop = self._runtime_loop
+
+        def _listener(event: Any) -> None:
+            queue = self._reactive_vision_queue
+            if runtime_loop is None or queue is None:
+                return
+            try:
+                runtime_loop.call_soon_threadsafe(queue.put_nowait, event)
+            except RuntimeError:
+                return
+
+        self._reactive_vision_listener = _listener
+        camera_worker.add_reactive_vision_listener(_listener)
+
+    async def _detach_reactive_vision_bridge(self) -> None:
+        context = self.runtime_tool_context
+        camera_worker = getattr(context, "camera_worker", None) if context is not None else None
+        listener = self._reactive_vision_listener
+        if (
+            listener is not None
+            and camera_worker is not None
+            and hasattr(camera_worker, "remove_reactive_vision_listener")
+        ):
+            try:
+                camera_worker.remove_reactive_vision_listener(listener)
+            except Exception:
+                pass
+        self._reactive_vision_listener = None
+
+        task = self._reactive_vision_task
+        self._reactive_vision_task = None
+        self._reactive_vision_queue = None
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    async def _run_reactive_vision_loop(self) -> None:
+        queue = self._reactive_vision_queue
+        if queue is None:
+            return
+        try:
+            while True:
+                event = await queue.get()
+                try:
+                    await self._handle_reactive_vision_event(event)
+                finally:
+                    queue.task_done()
+        except asyncio.CancelledError:
+            raise
+
+    async def _handle_reactive_vision_event(self, event: Any) -> None:
+        signal = self._adapt_reactive_vision_signal(event)
+        if signal is None:
+            return
+        await self._dispatch_front_signal(
+            signal,
+            apply_surface_patch=True,
+        )
+
+    def _adapt_reactive_vision_signal(self, event: Any) -> FrontSignal | None:
+        event_name = str(getattr(event, "name", "") or "").strip()
+        metadata = dict(getattr(event, "metadata", {}) or {})
+        if event_name not in {"attention_acquired", "attention_released"}:
+            return None
+
+        thread_id = self._resolve_reactive_vision_thread_id()
+        if not self._reactive_vision_can_affect_front(thread_id):
+            return None
+
+        idle_context = dict(self._thread_idle_context.get(thread_id, {}))
+        base_metadata = {
+            "source": str(metadata.get("source", "reactive_vision") or "reactive_vision"),
+            "reactive_event_name": event_name,
+        }
+
+        if event_name == "attention_acquired":
+            if metadata.get("direction") is not None:
+                base_metadata["direction"] = metadata.get("direction")
+            if metadata.get("tracking_enabled") is not None:
+                base_metadata["tracking_enabled"] = bool(metadata.get("tracking_enabled"))
+            return FrontSignal(
+                name="vision_attention_updated",
+                thread_id=thread_id,
+                turn_id=str(idle_context.get("turn_id", "") or ""),
+                user_text=str(idle_context.get("user_text", "") or ""),
+                metadata=base_metadata,
+            )
+
+        return FrontSignal(
+            name="idle_entered",
+            thread_id=thread_id,
+            turn_id=str(idle_context.get("turn_id", "") or ""),
+            user_text=str(idle_context.get("user_text", "") or ""),
+            metadata={
+                **base_metadata,
+                "phase": "idle",
+                "reason": str(metadata.get("reason", "") or "released"),
+                "return_to_center": bool(metadata.get("return_to_center", False)),
+            },
+        )
+
+    def _resolve_reactive_vision_thread_id(self) -> str:
+        if self._thread_last_activity_at:
+            return max(
+                self._thread_last_activity_at,
+                key=lambda thread_id: self._thread_last_activity_at.get(thread_id, 0.0),
+            )
+        if self._thread_surface_state:
+            return next(iter(self._thread_surface_state))
+        if self._thread_idle_context:
+            return next(iter(self._thread_idle_context))
+        return "app:main"
+
+    def _reactive_vision_can_affect_front(self, thread_id: str) -> bool:
+        current_phase = str(
+            self._thread_surface_state.get(thread_id, {}).get("phase", "") or ""
+        ).strip().lower()
+        return current_phase not in {
+            "listening",
+            "listening_wait",
+            "replying",
+            "settling",
+        }
 
     def _schedule_idle_tick(self, thread_id: str) -> None:
         if self._idle_tick_interval_s <= 0.0:
@@ -847,14 +1028,11 @@ class RuntimeScheduler:
                 payload=dict(decision_payload),
             )
         )
-        await self._push_surface_state(
-            thread_id,
-            build_companion_phase_surface_state(
-                thread_id=thread_id,
-                phase="replying",
-                affect_state=affect_state,
-                emotion_signal=emotion_signal,
-            ),
+        await self._apply_front_decision_surface_state(
+            thread_id=thread_id,
+            decision_payload=decision_payload,
+            affect_state=affect_state,
+            emotion_signal=emotion_signal,
             surface_state_handler=surface_state_handler,
         )
 
@@ -947,17 +1125,11 @@ class RuntimeScheduler:
                 turn_id=turn_id,
                 user_text=user_text,
                 metadata={"phase": "settling"},
-            )
-        )
-        await self._push_surface_state(
-            thread_id,
-            build_companion_phase_surface_state(
-                thread_id=thread_id,
-                phase="settling",
-                affect_state=affect_state,
-                emotion_signal=emotion_signal,
             ),
+            affect_state=affect_state,
+            emotion_signal=emotion_signal,
             surface_state_handler=surface_state_handler,
+            apply_surface_patch=True,
         )
         await self._dispatch_front_signal(
             FrontSignal(
@@ -966,17 +1138,11 @@ class RuntimeScheduler:
                 turn_id=turn_id,
                 user_text=user_text,
                 metadata={"phase": "idle"},
-            )
-        )
-        await self._push_surface_state(
-            thread_id,
-            build_companion_phase_surface_state(
-                thread_id=thread_id,
-                phase="idle",
-                affect_state=affect_state,
-                emotion_signal=emotion_signal,
             ),
+            affect_state=affect_state,
+            emotion_signal=emotion_signal,
             surface_state_handler=surface_state_handler,
+            apply_surface_patch=True,
         )
         return final_reply
 
@@ -1021,10 +1187,18 @@ class RuntimeScheduler:
             return result.get(key, default)
         return getattr(result, key, default)
 
-    async def _dispatch_front_signal(self, signal: FrontSignal) -> None:
+    async def _dispatch_front_signal(
+        self,
+        signal: FrontSignal,
+        *,
+        affect_state: AffectState | None = None,
+        emotion_signal: EmotionSignal | None = None,
+        surface_state_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
+        apply_surface_patch: bool = False,
+    ) -> dict[str, Any] | None:
         handler = getattr(self.front, "handle_signal", None)
         if not callable(handler):
-            return
+            return None
         try:
             maybe_awaitable = handler(signal)
             if isawaitable(maybe_awaitable):
@@ -1032,62 +1206,165 @@ class RuntimeScheduler:
             else:
                 result = maybe_awaitable
             if result is not None:
-                tool_calls = self._extract_front_result_value(result, "tool_calls", []) or []
-                resolved_signal_name = str(
-                    self._extract_front_result_value(result, "signal_name", "") or signal.name
+                decision_payload = self._normalize_front_decision_payload(
+                    signal=signal,
+                    result=result,
                 )
-                resolved_turn_id = str(
-                    self._extract_front_result_value(result, "turn_id", "") or signal.turn_id
-                )
-                normalized_tool_calls = [
-                    {
-                        "tool_name": str(
-                            self._extract_front_result_value(call, "tool_name", "") or ""
-                        ),
-                        "arguments": dict(
-                            self._extract_front_result_value(call, "arguments", {}) or {}
-                        ),
-                        "reason": str(
-                            self._extract_front_result_value(call, "reason", "") or ""
-                        ),
-                    }
-                    for call in list(tool_calls)
-                ]
-                decision_payload = {
-                    "signal_name": resolved_signal_name,
-                    "turn_id": resolved_turn_id,
-                    "reply_text": str(self._extract_front_result_value(result, "reply_text", "") or ""),
-                    "lifecycle_state": str(
-                        self._extract_front_result_value(result, "lifecycle_state", "") or ""
-                    ),
-                    "surface_patch": dict(
-                        self._extract_front_result_value(result, "surface_patch", {}) or {}
-                    ),
-                    "tool_calls": normalized_tool_calls,
-                    "debug_reason": str(self._extract_front_result_value(result, "debug_reason", "") or ""),
-                }
+                self._thread_front_decisions[signal.thread_id] = dict(decision_payload)
+                if apply_surface_patch:
+                    await self._apply_front_decision_surface_state(
+                        thread_id=signal.thread_id,
+                        decision_payload=decision_payload,
+                        affect_state=affect_state,
+                        emotion_signal=emotion_signal,
+                        surface_state_handler=surface_state_handler,
+                    )
                 if self._should_surface_front_decision(
-                    signal_name=resolved_signal_name,
+                    signal_name=str(decision_payload["signal_name"] or ""),
                     reply_text=str(decision_payload["reply_text"] or ""),
-                    tool_calls=normalized_tool_calls,
+                    tool_calls=list(decision_payload["tool_calls"] or []),
                 ):
-                    self._thread_front_decisions[signal.thread_id] = dict(decision_payload)
                     self._publish_front_output(
                         FrontOutputPacket(
                             type="front_decision",
                             thread_id=signal.thread_id,
-                            turn_id=resolved_turn_id,
+                            turn_id=str(decision_payload["turn_id"] or ""),
                             payload=dict(decision_payload),
                         )
                     )
                 await self._execute_front_tool_calls(
                     thread_id=signal.thread_id,
-                    turn_id=resolved_turn_id,
-                    signal_name=resolved_signal_name,
-                    tool_calls=normalized_tool_calls,
+                    turn_id=str(decision_payload["turn_id"] or ""),
+                    signal_name=str(decision_payload["signal_name"] or ""),
+                    tool_calls=list(decision_payload["tool_calls"] or []),
                 )
+                return decision_payload
         except Exception:
+            return None
+        return None
+
+    def _normalize_front_decision_payload(
+        self,
+        *,
+        signal: FrontSignal,
+        result: Any,
+    ) -> dict[str, Any]:
+        tool_calls = self._extract_front_result_value(result, "tool_calls", []) or []
+        resolved_signal_name = str(
+            self._extract_front_result_value(result, "signal_name", "") or signal.name
+        )
+        resolved_turn_id = str(
+            self._extract_front_result_value(result, "turn_id", "") or signal.turn_id
+        )
+        resolved_lifecycle_state = str(
+            self._extract_front_result_value(result, "lifecycle_state", "")
+            or signal.metadata.get("phase", "")
+            or ""
+        )
+        normalized_tool_calls = [
+            {
+                "tool_name": str(
+                    self._extract_front_result_value(call, "tool_name", "") or ""
+                ),
+                "arguments": dict(
+                    self._extract_front_result_value(call, "arguments", {}) or {}
+                ),
+                "reason": str(
+                    self._extract_front_result_value(call, "reason", "") or ""
+                ),
+            }
+            for call in list(tool_calls)
+        ]
+        surface_patch = dict(
+            self._extract_front_result_value(result, "surface_patch", {}) or {}
+        )
+        if resolved_lifecycle_state and not str(surface_patch.get("phase", "") or "").strip():
+            surface_patch["phase"] = resolved_lifecycle_state
+        if resolved_signal_name and not str(surface_patch.get("source_signal", "") or "").strip():
+            surface_patch["source_signal"] = resolved_signal_name
+        return {
+            "signal_name": resolved_signal_name,
+            "turn_id": resolved_turn_id,
+            "reply_text": str(self._extract_front_result_value(result, "reply_text", "") or ""),
+            "lifecycle_state": resolved_lifecycle_state,
+            "surface_patch": surface_patch,
+            "tool_calls": normalized_tool_calls,
+            "debug_reason": str(self._extract_front_result_value(result, "debug_reason", "") or ""),
+            "signal_metadata": dict(signal.metadata or {}),
+        }
+
+    async def _apply_front_decision_surface_state(
+        self,
+        *,
+        thread_id: str,
+        decision_payload: dict[str, Any],
+        affect_state: AffectState | None,
+        emotion_signal: EmotionSignal | None,
+        surface_state_handler: Callable[[dict[str, Any]], Awaitable[None] | None] | None,
+    ) -> None:
+        state = self._build_surface_state_from_front_decision(
+            thread_id=thread_id,
+            decision_payload=decision_payload,
+            affect_state=affect_state,
+            emotion_signal=emotion_signal,
+        )
+        if state is None:
             return
+        await self._push_surface_state(
+            thread_id,
+            state,
+            surface_state_handler=surface_state_handler,
+        )
+
+    def _build_surface_state_from_front_decision(
+        self,
+        *,
+        thread_id: str,
+        decision_payload: dict[str, Any],
+        affect_state: AffectState | None,
+        emotion_signal: EmotionSignal | None,
+    ) -> dict[str, Any] | None:
+        surface_patch = dict(decision_payload.get("surface_patch", {}) or {})
+        phase = str(
+            surface_patch.get("phase", "")
+            or decision_payload.get("lifecycle_state", "")
+            or ""
+        ).strip().lower()
+        if not phase:
+            return None
+
+        if phase == "listening":
+            state = build_listening_surface_state(
+                thread_id=thread_id,
+                affect_state=affect_state,
+                emotion_signal=emotion_signal,
+            )
+        elif phase == "listening_wait":
+            state = build_listening_wait_surface_state(
+                thread_id=thread_id,
+                affect_state=affect_state,
+                emotion_signal=emotion_signal,
+            )
+        elif phase == "idle":
+            state = build_idle_surface_state(
+                thread_id=thread_id,
+                affect_state=affect_state,
+                emotion_signal=emotion_signal,
+            )
+        else:
+            state = build_companion_phase_surface_state(
+                thread_id=thread_id,
+                phase=phase,
+                affect_state=affect_state,
+                emotion_signal=emotion_signal,
+            )
+
+        for key, value in surface_patch.items():
+            if key == "thread_id" or value is None:
+                continue
+            state[key] = value
+        state["thread_id"] = thread_id
+        return state
 
     @staticmethod
     def _should_surface_front_decision(
@@ -1272,11 +1549,26 @@ class RuntimeScheduler:
             thread_id = str(delivery["thread_id"])
             turn_id = str(delivery["turn_id"])
             user_text = str(delivery["user_text"])
+            front_reply = str(delivery.get("front_reply", "") or "").strip()
             if (
                 output.type == BrainOutputType.response
                 and output.response is not None
                 and output.response.task_type == TaskType.none
             ):
+                await self._publish_text_done(
+                    packet_type="front_final_done",
+                    thread_id=thread_id,
+                    turn_id=turn_id,
+                    text=front_reply,
+                )
+                if front_reply:
+                    await self._invoke_final_reply_handler(
+                        handler=delivery.get("final_reply_handler"),
+                        thread_id=thread_id,
+                        turn_id=turn_id,
+                        user_text=user_text,
+                        text=front_reply,
+                    )
                 await self._dispatch_front_signal(
                     FrontSignal(
                         name="idle_entered",
@@ -1284,27 +1576,30 @@ class RuntimeScheduler:
                         turn_id=turn_id,
                         user_text=user_text,
                         metadata={"phase": "idle"},
-                    )
-                )
-                await self._push_surface_state(
-                    thread_id,
-                    build_idle_surface_state(
-                        thread_id=thread_id,
-                        affect_state=delivery["affect_state"],
-                        emotion_signal=delivery["emotion_signal"],
                     ),
+                    affect_state=delivery["affect_state"],
+                    emotion_signal=delivery["emotion_signal"],
                     surface_state_handler=delivery["surface_state_handler"],
-                )
-                await self._publish_text_done(
-                    packet_type="front_final_done",
-                    thread_id=thread_id,
-                    turn_id=turn_id,
-                    text="",
+                    apply_surface_patch=True,
                 )
                 return
 
             kernel_output = self._render_kernel_output(output)
             if not kernel_output:
+                await self._publish_text_done(
+                    packet_type="front_final_done",
+                    thread_id=thread_id,
+                    turn_id=turn_id,
+                    text=front_reply,
+                )
+                if front_reply:
+                    await self._invoke_final_reply_handler(
+                        handler=delivery.get("final_reply_handler"),
+                        thread_id=thread_id,
+                        turn_id=turn_id,
+                        user_text=user_text,
+                        text=front_reply,
+                    )
                 await self._dispatch_front_signal(
                     FrontSignal(
                         name="idle_entered",
@@ -1312,22 +1607,11 @@ class RuntimeScheduler:
                         turn_id=turn_id,
                         user_text=user_text,
                         metadata={"phase": "idle"},
-                    )
-                )
-                await self._push_surface_state(
-                    thread_id,
-                    build_idle_surface_state(
-                        thread_id=thread_id,
-                        affect_state=delivery["affect_state"],
-                        emotion_signal=delivery["emotion_signal"],
                     ),
+                    affect_state=delivery["affect_state"],
+                    emotion_signal=delivery["emotion_signal"],
                     surface_state_handler=delivery["surface_state_handler"],
-                )
-                await self._publish_text_done(
-                    packet_type="front_final_done",
-                    thread_id=thread_id,
-                    turn_id=turn_id,
-                    text="",
+                    apply_surface_patch=True,
                 )
                 return
 
@@ -1351,17 +1635,11 @@ class RuntimeScheduler:
                         "phase": "replying",
                         "kernel_output": kernel_output,
                     },
-                )
-            )
-            await self._push_surface_state(
-                thread_id,
-                build_companion_phase_surface_state(
-                    thread_id=thread_id,
-                    phase="replying",
-                    affect_state=delivery["affect_state"],
-                    emotion_signal=delivery["emotion_signal"],
                 ),
+                affect_state=delivery["affect_state"],
+                emotion_signal=delivery["emotion_signal"],
                 surface_state_handler=delivery["surface_state_handler"],
+                apply_surface_patch=True,
             )
 
             try:
@@ -1394,17 +1672,11 @@ class RuntimeScheduler:
                         turn_id=turn_id,
                         user_text=user_text,
                         metadata={"phase": "idle"},
-                    )
-                )
-                await self._push_surface_state(
-                    thread_id,
-                    build_companion_phase_surface_state(
-                        thread_id=thread_id,
-                        phase="idle",
-                        affect_state=delivery["affect_state"],
-                        emotion_signal=delivery["emotion_signal"],
                     ),
+                    affect_state=delivery["affect_state"],
+                    emotion_signal=delivery["emotion_signal"],
                     surface_state_handler=delivery["surface_state_handler"],
+                    apply_surface_patch=True,
                 )
                 await self._publish_turn_error(
                     thread_id=thread_id,
@@ -1451,17 +1723,11 @@ class RuntimeScheduler:
                     turn_id=turn_id,
                     user_text=user_text,
                     metadata={"phase": "settling"},
-                )
-            )
-            await self._push_surface_state(
-                thread_id,
-                build_companion_phase_surface_state(
-                    thread_id=thread_id,
-                    phase="settling",
-                    affect_state=delivery["affect_state"],
-                    emotion_signal=delivery["emotion_signal"],
                 ),
+                affect_state=delivery["affect_state"],
+                emotion_signal=delivery["emotion_signal"],
                 surface_state_handler=delivery["surface_state_handler"],
+                apply_surface_patch=True,
             )
             await self._dispatch_front_signal(
                 FrontSignal(
@@ -1470,17 +1736,11 @@ class RuntimeScheduler:
                     turn_id=turn_id,
                     user_text=user_text,
                     metadata={"phase": "idle"},
-                )
-            )
-            await self._push_surface_state(
-                thread_id,
-                build_companion_phase_surface_state(
-                    thread_id=thread_id,
-                    phase="idle",
-                    affect_state=delivery["affect_state"],
-                    emotion_signal=delivery["emotion_signal"],
                 ),
+                affect_state=delivery["affect_state"],
+                emotion_signal=delivery["emotion_signal"],
                 surface_state_handler=delivery["surface_state_handler"],
+                apply_surface_patch=True,
             )
         finally:
             await self._mark_thread_idle(
@@ -1566,10 +1826,13 @@ class RuntimeScheduler:
         """Optionally synthesize or play one final reply before settling."""
 
         if handler is None:
+            LOGGER.info("Reply audio handler skipped: no handler provided.")
             return False
         if self._thread_user_speaking.get(thread_id, False):
+            LOGGER.info("Reply audio handler skipped: user still marked speaking on %s.", thread_id)
             return False
         if thread_id in self._thread_reply_audio_interrupted:
+            LOGGER.info("Reply audio handler skipped: thread %s already interrupted.", thread_id)
             return False
 
         started_emitted = False
@@ -1630,6 +1893,12 @@ class RuntimeScheduler:
             )
 
         try:
+            LOGGER.info(
+                "Reply audio handler invoked: thread_id=%s turn_id=%s chars=%s",
+                thread_id,
+                turn_id,
+                len(str(text or "")),
+            )
             maybe_awaitable = handler(
                 {
                     "thread_id": thread_id,
@@ -1651,9 +1920,24 @@ class RuntimeScheduler:
                 turn_id=turn_id,
                 error=f"Reply audio failed: {exc}",
             )
+            LOGGER.warning(
+                "Reply audio handler failed: thread_id=%s turn_id=%s error=%s",
+                thread_id,
+                turn_id,
+                exc,
+            )
             return False
 
         played_audio = played_audio or started_emitted or finished_emitted
+        LOGGER.info(
+            "Reply audio handler completed: thread_id=%s turn_id=%s played=%s started=%s finished=%s interrupted=%s",
+            thread_id,
+            turn_id,
+            played_audio,
+            started_emitted,
+            finished_emitted,
+            audio_interrupted,
+        )
         if played_audio and not started_emitted:
             await _emit_audio_started()
         if audio_interrupted:

@@ -3,9 +3,11 @@ from __future__ import annotations
 """Reachy Mini application base classes and helpers."""
 
 import asyncio
+import base64
 import importlib
 import logging
 import threading
+import time
 import traceback
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from pathlib import Path
@@ -92,6 +94,14 @@ class UserSpeechStoppedEvent(BaseModel):
     text: str = ""
 
 
+class BrowserCameraFrameEvent(BaseModel):
+    """One browser-camera frame sent over WebSocket for runtime-side perception."""
+
+    type: Literal["browser_camera_frame"]
+    image_b64: str = Field(min_length=1)
+    thread_id: str = "app:main"
+
+
 class ReachyMiniApp:
     """Base class for Reachy Mini applications."""
 
@@ -124,9 +134,12 @@ class ReachyMiniApp:
             logger=self.logger,
         )
         self.runtime: RuntimeScheduler | None = None
+        self.runtime_config: Any | None = None
         self.runtime_loop: asyncio.AbstractEventLoop | None = None
         self.runtime_ready = threading.Event()
         self.runtime_tool_context: Any | None = None
+        self.runtime_microphone_bridge: Any | None = None
+        self._runtime_speech_input_block_until: float = 0.0
 
         self.settings_app: FastAPI | None = None
         if self.custom_app_url is not None and not self.dont_start_webserver:
@@ -268,10 +281,23 @@ class ReachyMiniApp:
 
     async def play_runtime_reply_audio(self, payload: dict[str, Any]) -> bool:
         """Synthesize and play one final runtime reply when speech output is configured."""
-        return await self.runtime_host_adapter.play_runtime_reply_audio(
-            self.runtime_tool_context,
-            payload,
-        )
+        cooldown_s = self._get_runtime_speech_input_playback_cooldown_s()
+        if cooldown_s > 0.0:
+            self._runtime_speech_input_block_until = max(
+                self._runtime_speech_input_block_until,
+                time.monotonic() + cooldown_s,
+            )
+        try:
+            return await self.runtime_host_adapter.play_runtime_reply_audio(
+                self.runtime_tool_context,
+                payload,
+            )
+        finally:
+            if cooldown_s > 0.0:
+                self._runtime_speech_input_block_until = max(
+                    self._runtime_speech_input_block_until,
+                    time.monotonic() + cooldown_s,
+                )
 
     def apply_runtime_surface_state(self, state: dict[str, Any]) -> None:
         """Apply one runtime surface-state snapshot onto the embodiment driver."""
@@ -314,6 +340,7 @@ class ReachyMiniApp:
 
         profile = load_profile_bundle(profile_root)
         config = load_profile_runtime_config(profile)
+        self.runtime_config = config
         return RuntimeScheduler.from_profile(
             profile=profile,
             config=config,
@@ -380,12 +407,20 @@ class ReachyMiniApp:
         await websocket.accept()
 
         outbound_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-        tracked_thread_ids: set[str] = set()
+        tracked_thread_ids: set[str] = {"app:main"}
         await outbound_queue.put(self._build_runtime_status_event())
+        if self.runtime_ready.is_set():
+            await self._publish_runtime_snapshot(
+                outbound_queue,
+                thread_id="app:main",
+            )
         ready_task: asyncio.Task[None] | None = None
         if not self.runtime_ready.is_set():
             ready_task = asyncio.create_task(
-                self._wait_and_publish_runtime_ready(outbound_queue)
+                self._wait_and_publish_runtime_ready(
+                    outbound_queue,
+                    thread_id="app:main",
+                )
             )
 
         send_task = asyncio.create_task(
@@ -428,17 +463,141 @@ class ReachyMiniApp:
 
         runtime = self.build_runtime(self.profile_root)
         self.runtime = runtime
+        microphone_bridge_task: asyncio.Task[None] | None = None
         await runtime.start()
         self.runtime_ready.set()
+        microphone_bridge = self._build_runtime_microphone_bridge(runtime)
+        self.runtime_microphone_bridge = microphone_bridge
+        if microphone_bridge is not None:
+            microphone_bridge_task = asyncio.create_task(
+                microphone_bridge.run(),
+                name="resident-runtime-microphone",
+            )
         try:
             while not stop_event.is_set():
                 await asyncio.sleep(0.25)
         finally:
+            if microphone_bridge is not None:
+                try:
+                    await microphone_bridge.stop()
+                except Exception as exc:
+                    self.logger.warning("Failed to stop runtime microphone bridge: %s", exc)
+            if microphone_bridge_task is not None:
+                try:
+                    await microphone_bridge_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception as exc:
+                    self.logger.warning("Runtime microphone bridge failed: %s", exc)
+            self.runtime_microphone_bridge = None
             self.runtime_ready.clear()
             try:
                 await runtime.stop()
             finally:
                 self.runtime = None
+
+    def _build_runtime_microphone_bridge(self, runtime: "RuntimeScheduler") -> Any | None:
+        """Build the optional robot-microphone bridge for the resident runtime."""
+
+        config = getattr(self.runtime_config, "speech_input", None)
+        if config is None or not getattr(config, "enabled", False):
+            return None
+
+        context = self.runtime_tool_context
+        reachy_mini = getattr(context, "reachy_mini", None)
+        media = getattr(reachy_mini, "media", None)
+        if media is None:
+            self.logger.warning("Runtime microphone bridge skipped: media is unavailable.")
+            return None
+
+        try:
+            from reachy_mini.runtime.speech_input import (
+                RuntimeMicrophoneBridge,
+                build_runtime_speech_input_transcriber,
+            )
+
+            transcriber = build_runtime_speech_input_transcriber(
+                config=config,
+                fallback_api_key=str(
+                    getattr(getattr(self.runtime_config, "front_model", None), "api_key", "")
+                    or ""
+                ),
+                fallback_base_url=str(
+                    getattr(getattr(self.runtime_config, "front_model", None), "base_url", "")
+                    or ""
+                ),
+            )
+        except Exception as exc:
+            self.logger.warning("Failed to build speech input transcriber: %s", exc)
+            return None
+
+        if transcriber is None:
+            return None
+
+        thread_id = "app:main"
+        session_id = thread_id
+        user_id = "user"
+
+        async def surface_state_handler(state: dict[str, Any]) -> None:
+            self.apply_runtime_surface_state(state)
+
+        async def on_speech_started(_: str) -> None:
+            await runtime.handle_user_speech_started(
+                thread_id=thread_id,
+                session_id=session_id,
+                user_id=user_id,
+                user_text="",
+                surface_state_handler=surface_state_handler,
+            )
+
+        async def on_speech_stopped(_: str) -> None:
+            await runtime.handle_user_speech_stopped(
+                thread_id=thread_id,
+                session_id=session_id,
+                user_id=user_id,
+                user_text="",
+                surface_state_handler=surface_state_handler,
+            )
+
+        async def on_user_text(transcript: str) -> None:
+            resolved_transcript = str(transcript or "").strip()
+            if not resolved_transcript:
+                return
+            await runtime.handle_user_text(
+                thread_id=thread_id,
+                session_id=session_id,
+                user_id=user_id,
+                user_text=resolved_transcript,
+                surface_state_handler=surface_state_handler,
+                final_reply_handler=self.play_runtime_reply_audio,
+            )
+
+        def input_blocked() -> bool:
+            if time.monotonic() < self._runtime_speech_input_block_until:
+                return True
+            context = self.runtime_tool_context
+            speech_driver = getattr(context, "speech_driver", None)
+            if speech_driver is not None and getattr(speech_driver, "speech_active", False):
+                return True
+            reply_audio_service = getattr(context, "reply_audio_service", None)
+            active_playback_task = getattr(reply_audio_service, "_active_playback_task", None)
+            return active_playback_task is not None and not active_playback_task.done()
+
+        return RuntimeMicrophoneBridge(
+            media=media,
+            transcriber=transcriber,
+            config=config,
+            logger=self.logger,
+            on_speech_started=on_speech_started,
+            on_speech_stopped=on_speech_stopped,
+            on_user_text=on_user_text,
+            input_blocked=input_blocked,
+        )
+
+    def _get_runtime_speech_input_playback_cooldown_s(self) -> float:
+        config = getattr(self.runtime_config, "speech_input", None)
+        cooldown_ms = getattr(config, "playback_block_cooldown_ms", 0)
+        return max(float(cooldown_ms), 0.0) / 1000.0
 
     async def _chat_turn(self, payload: ChatRequest) -> ChatResponse:
         runtime = self.runtime
@@ -505,6 +664,8 @@ class ReachyMiniApp:
     async def _wait_and_publish_runtime_ready(
         self,
         outbound_queue: asyncio.Queue[dict[str, Any]],
+        *,
+        thread_id: str = "app:main",
     ) -> None:
         """Publish a ready status event once the runtime becomes ready."""
         while not self.runtime_ready.is_set():
@@ -512,6 +673,42 @@ class ReachyMiniApp:
             if self.runtime_ready.is_set():
                 break
         await outbound_queue.put(self._build_runtime_status_event())
+        await self._publish_runtime_snapshot(
+            outbound_queue,
+            thread_id=thread_id,
+        )
+
+    async def _publish_runtime_snapshot(
+        self,
+        outbound_queue: asyncio.Queue[dict[str, Any]],
+        *,
+        thread_id: str,
+    ) -> None:
+        """Publish the current runtime-visible state snapshot for one thread."""
+        runtime = self.runtime
+        if runtime is None or not self.runtime_ready.is_set():
+            return
+
+        surface_state = runtime.get_thread_surface_state(thread_id)
+        if surface_state is not None:
+            await outbound_queue.put(
+                {
+                    "type": "surface_state",
+                    "thread_id": thread_id,
+                    "state": dict(surface_state),
+                }
+            )
+
+        front_decision = runtime.get_thread_front_decision(thread_id)
+        if front_decision is not None:
+            await outbound_queue.put(
+                {
+                    "type": "front_decision",
+                    "thread_id": thread_id,
+                    "turn_id": str(front_decision.get("turn_id", "") or ""),
+                    "payload": dict(front_decision),
+                }
+            )
 
     async def _runtime_websocket_send_loop(
         self,
@@ -581,6 +778,16 @@ class ReachyMiniApp:
 
                 tracked_thread_ids.add(str(speech_event.thread_id or "app:main"))
                 await self._dispatch_user_speech_event(speech_event, outbound_queue)
+                continue
+
+            if event_type == "browser_camera_frame":
+                try:
+                    frame_event = BrowserCameraFrameEvent.model_validate(payload)
+                    self._ingest_browser_camera_frame(frame_event)
+                except ValidationError as exc:
+                    self.logger.warning("Invalid browser camera frame payload: %s", exc)
+                except Exception as exc:
+                    self.logger.warning("Failed to ingest browser camera frame: %s", exc)
                 continue
 
             else:
@@ -820,6 +1027,43 @@ class ReachyMiniApp:
             "ready": self.runtime_ready.is_set(),
             "profile_root": str(self.profile_root) if self.profile_root is not None else "",
         }
+
+    def _ingest_browser_camera_frame(self, event: BrowserCameraFrameEvent) -> None:
+        """Decode one browser frame and inject it into the camera worker."""
+        context = self.runtime_tool_context
+        camera_worker = getattr(context, "camera_worker", None) if context is not None else None
+        if camera_worker is None or not hasattr(camera_worker, "ingest_external_frame"):
+            return
+
+        frame = self._decode_browser_camera_frame(event.image_b64)
+        if frame is None:
+            return
+        camera_worker.ingest_external_frame(frame)
+
+    @staticmethod
+    def _decode_browser_camera_frame(image_b64: str) -> Any | None:
+        """Decode one JPEG base64 payload from the browser into a BGR frame."""
+        payload = str(image_b64 or "").strip()
+        if not payload:
+            return None
+        if payload.startswith("data:") and "," in payload:
+            payload = payload.split(",", 1)[1]
+
+        try:
+            import cv2
+            import numpy as np
+        except ImportError:
+            return None
+
+        try:
+            raw = base64.b64decode(payload)
+        except Exception:
+            return None
+
+        buffer = np.frombuffer(raw, dtype=np.uint8)
+        if buffer.size == 0:
+            return None
+        return cv2.imdecode(buffer, cv2.IMREAD_COLOR)
 
     @staticmethod
     def _build_turn_error_event(*, thread_id: str, error: str) -> dict[str, Any]:

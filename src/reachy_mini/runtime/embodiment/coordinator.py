@@ -381,7 +381,7 @@ class EmbodimentCoordinator:
             return "idle"
 
         value = str(state.get("phase", "") or "").strip().lower()
-        if value in {"idle", "settling", "listening_wait", "replying", "listening"}:
+        if value in {"idle", "settling", "attending", "listening_wait", "replying", "listening"}:
             return value
         return "idle"
 

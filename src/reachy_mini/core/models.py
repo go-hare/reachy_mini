@@ -52,6 +52,7 @@ class BrainEventType(StrEnum):
     observation = "observation"
     front_event = "front_event"
     tool_results = "tool_results"
+    run_resume = "run_resume"
     shutdown = "shutdown"
 
 

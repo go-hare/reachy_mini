@@ -12,6 +12,7 @@ interface SimpleSliderProps {
   showRollVisualization?: boolean
   smoothedValue?: number
   step?: number
+  compact?: boolean
 }
 
 const SimpleSlider = memo(function SimpleSlider({
@@ -26,6 +27,7 @@ const SimpleSlider = memo(function SimpleSlider({
   showRollVisualization = false,
   smoothedValue,
   step = 0.01,
+  compact = false,
 }: SimpleSliderProps) {
   const [draftValue, setDraftValue] = useState(value)
 
@@ -40,8 +42,8 @@ const SimpleSlider = memo(function SimpleSlider({
   const rollVisualization = useMemo(() => {
     if (!showRollVisualization) return null
 
-    const width = 38
-    const height = 20
+    const width = compact ? 32 : 38
+    const height = compact ? 18 : 20
     const padding = 4
     const normalized = (value - min) / (max - min)
     const startX = width - padding
@@ -68,15 +70,15 @@ const SimpleSlider = memo(function SimpleSlider({
   }, [max, min, showRollVisualization, value])
 
   return (
-    <div className="flex flex-col gap-2">
-      <div className={centered ? "space-y-0.5 text-center" : "space-y-0.5"}>
-        <p className="text-[11px] font-semibold text-foreground">{label}</p>
-        <p className="font-mono text-[10px] text-muted-foreground">
+    <div className={`flex flex-col ${compact ? "gap-1.5" : "gap-2"}`}>
+      <div className={centered ? "space-y-0.5 text-center" : `flex items-center ${compact ? "gap-2" : "gap-2.5"}`}>
+        <p className={compact ? "text-[10px] font-semibold text-foreground" : "text-[11px] font-semibold text-foreground"}>{label}</p>
+        <p className={compact ? "font-mono text-[9px] text-muted-foreground" : "font-mono text-[10px] text-muted-foreground"}>
           {displayValue}
           {unit === "deg" ? "deg" : ` ${unit}`}
         </p>
       </div>
-      <div className="flex items-center gap-3">
+      <div className={`flex items-center ${compact ? "gap-2" : "gap-3"}`}>
         {rollVisualization ? (
           <svg
             viewBox={`-${rollVisualization.padding} -${rollVisualization.padding} ${rollVisualization.width + rollVisualization.padding * 2} ${rollVisualization.height + rollVisualization.padding * 2}`}

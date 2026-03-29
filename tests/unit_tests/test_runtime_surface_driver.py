@@ -8,10 +8,14 @@ class FakeMovementManager:
 
     def __init__(self) -> None:
         self.listening_calls: list[bool] = []
+        self.surface_active_calls: list[bool] = []
         self.activity_marks = 0
 
     def set_listening(self, listening: bool) -> None:
         self.listening_calls.append(bool(listening))
+
+    def set_surface_active(self, active: bool) -> None:
+        self.surface_active_calls.append(bool(active))
 
     def mark_activity(self) -> None:
         self.activity_marks += 1
@@ -24,10 +28,12 @@ def test_surface_driver_maps_phases_to_listening_and_activity() -> None:
 
     assert driver.apply_state({"thread_id": "app:test", "phase": "listening"}) == "listening"
     assert movement_manager.listening_calls == [True]
+    assert movement_manager.surface_active_calls == [True]
     assert movement_manager.activity_marks == 1
 
     assert driver.apply_state({"thread_id": "app:test", "phase": "replying"}) == "replying"
     assert movement_manager.listening_calls[-1] is False
+    assert movement_manager.surface_active_calls[-1] is True
     assert movement_manager.activity_marks == 2
 
     assert (
@@ -35,11 +41,13 @@ def test_surface_driver_maps_phases_to_listening_and_activity() -> None:
         == "listening_wait"
     )
     assert movement_manager.listening_calls[-1] is False
+    assert movement_manager.surface_active_calls[-1] is True
     assert movement_manager.activity_marks == 3
 
     assert driver.apply_state({"thread_id": "app:test", "phase": "idle"}) == "idle"
     assert driver.current_phase == "idle"
     assert movement_manager.listening_calls[-1] is False
+    assert movement_manager.surface_active_calls[-1] is False
     assert movement_manager.activity_marks == 3
 
 
@@ -110,3 +118,32 @@ def test_surface_driver_holds_settling_until_recommended_hold_expires() -> None:
     assert driver.current_phase == "idle"
     assert driver.current_state == {"phase": "idle"}
 
+
+def test_surface_driver_recognizes_attending_with_middle_priority() -> None:
+    """Attending should outrank idle/settling but yield to listening-wait and above."""
+    movement_manager = FakeMovementManager()
+    driver = SurfaceDriver(movement_manager=movement_manager)
+
+    assert driver.apply_state({"thread_id": "thread-a", "phase": "settling"}) == "settling"
+    assert (
+        driver.apply_state(
+            {
+                "thread_id": "thread-b",
+                "phase": "attending",
+                "source_signal": "vision_attention_updated",
+            }
+        )
+        == "attending"
+    )
+    assert driver.current_state["phase"] == "attending"
+    assert driver.current_state["source_signal"] == "vision_attention_updated"
+    assert movement_manager.surface_active_calls[-1] is True
+
+    assert (
+        driver.apply_state({"thread_id": "thread-c", "phase": "listening_wait"})
+        == "listening_wait"
+    )
+    assert driver.current_phase == "listening_wait"
+
+    assert driver.apply_state({"thread_id": "thread-c", "phase": "idle"}) == "attending"
+    assert driver.current_phase == "attending"

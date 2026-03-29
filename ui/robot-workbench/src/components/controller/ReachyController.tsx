@@ -19,6 +19,10 @@ interface ReachyControllerProps {
   snapshot: ReachyFullState | null
   syncState: ReachyConnectionState
   isActive?: boolean
+  showOverviewMetrics?: boolean
+  showResetAction?: boolean
+  showStatusMessages?: boolean
+  density?: "default" | "compact"
 }
 
 function formatTransportLabel(state: ControllerTransportState) {
@@ -54,7 +58,12 @@ function ControllerInner({
   snapshot,
   syncState,
   isActive = true,
+  showOverviewMetrics = true,
+  showResetAction = true,
+  showStatusMessages = true,
+  density = "default",
 }: ReachyControllerProps) {
+  const isCompact = density === "compact"
   const { transportState, error, sendCommand, forceSendCommand } = useControllerAPI({
     daemonBaseUrl,
     enabled: isActive,
@@ -75,24 +84,28 @@ function ControllerInner({
   })
 
   return (
-    <div className="flex flex-col gap-3">
-      <div className="grid gap-2 md:grid-cols-2">
-        <MetricTile label="Command" value={formatTransportLabel(transportState)} />
-        <MetricTile label="Sync" value={formatSyncLabel(syncState)} />
-        <MetricTile label="Daemon" value={daemonBaseUrl.replace(/^https?:\/\//, "")} />
-        <MetricTile label="Control Mode" value={snapshot?.control_mode ?? "—"} />
-      </div>
-
-      <section className="space-y-2.5">
-        <div className="flex items-center justify-between gap-3">
-          <SectionHeading icon={Activity} label="Antennas" />
-          <Button size="sm" variant="outline" onClick={() => void resetAllValues()}>
-            <RotateCcw className="size-4" />
-            回正
-          </Button>
+    <div className={`flex flex-col ${isCompact ? "gap-3" : "gap-3"}`}>
+      {showOverviewMetrics ? (
+        <div className="grid gap-2 md:grid-cols-2">
+          <MetricTile label="Command" value={formatTransportLabel(transportState)} />
+          <MetricTile label="Sync" value={formatSyncLabel(syncState)} />
+          <MetricTile label="Daemon" value={daemonBaseUrl.replace(/^https?:\/\//, "")} />
+          <MetricTile label="Control Mode" value={snapshot?.control_mode ?? "—"} />
         </div>
-        <div className="grid gap-3 md:grid-cols-2">
-          <ControlCard>
+      ) : null}
+
+      <section className={isCompact ? "space-y-2.5" : "space-y-2.5"}>
+        <div className="flex items-center justify-between gap-3">
+          <SectionHeading icon={Activity} label="Antennas" compact={isCompact} />
+          {showResetAction ? (
+            <Button size="sm" variant="outline" onClick={() => void resetAllValues()}>
+              <RotateCcw className="size-4" />
+              回正
+            </Button>
+          ) : null}
+        </div>
+        <div className={`grid ${isCompact ? "gap-3" : "gap-3"} md:grid-cols-2`}>
+          <ControlCard compact={isCompact}>
             <CircularSlider
               label="Left"
               value={localValues.antennas[0] ?? 0}
@@ -102,9 +115,10 @@ function ControllerInner({
               max={Math.PI}
               unit="rad"
               step={0.01}
+              compact={isCompact}
             />
           </ControlCard>
-          <ControlCard>
+          <ControlCard compact={isCompact}>
             <CircularSlider
               label="Right"
               value={localValues.antennas[1] ?? 0}
@@ -115,16 +129,17 @@ function ControllerInner({
               unit="rad"
               alignRight
               step={0.01}
+              compact={isCompact}
             />
           </ControlCard>
         </div>
       </section>
 
-      <section className="space-y-2.5">
-        <SectionHeading icon={Waypoints} label="Head" />
-        <div className="grid gap-3 md:grid-cols-2">
-          <ControlCard>
-            <div className="flex items-center gap-4">
+      <section className={isCompact ? "space-y-2.5" : "space-y-2.5"}>
+        <SectionHeading icon={Waypoints} label="Head" compact={isCompact} />
+        <div className={`grid ${isCompact ? "gap-3" : "gap-3"} md:grid-cols-2`}>
+          <ControlCard compact={isCompact}>
+            <div className={`flex items-center ${isCompact ? "gap-0" : "gap-4"}`}>
               <Joystick2D
                 label="Position X/Y"
                 valueX={mapRobotToDisplay(localValues.headPose.y, "positionY")}
@@ -141,6 +156,7 @@ function ControllerInner({
                 maxX={EXTENDED_ROBOT_RANGES.POSITION.max}
                 minY={EXTENDED_ROBOT_RANGES.POSITION.min}
                 maxY={EXTENDED_ROBOT_RANGES.POSITION.max}
+                size={isCompact ? 120 : 112}
               />
               <VerticalSlider
                 label="Position Z"
@@ -151,11 +167,13 @@ function ControllerInner({
                 max={0.05}
                 unit="m"
                 centered
+                height={isCompact ? 120 : 120}
+                compact={isCompact}
               />
             </div>
           </ControlCard>
 
-          <ControlCard>
+          <ControlCard compact={isCompact}>
             <Joystick2D
               label="Pitch / Yaw"
               valueX={mapRobotToDisplay(localValues.headPose.yaw, "yaw")}
@@ -173,10 +191,11 @@ function ControllerInner({
               minY={EXTENDED_ROBOT_RANGES.PITCH.min}
               maxY={EXTENDED_ROBOT_RANGES.PITCH.max}
               labelAlign="right"
+              size={isCompact ? 120 : 112}
             />
           </ControlCard>
         </div>
-        <ControlCard>
+        <ControlCard compact={isCompact}>
           <SimpleSlider
             label="Roll"
             value={localValues.headPose.roll}
@@ -185,13 +204,14 @@ function ControllerInner({
             min={-0.5}
             max={0.5}
             showRollVisualization
+            compact={isCompact}
           />
         </ControlCard>
       </section>
 
-      <section className="space-y-2.5">
-        <SectionHeading icon={Waypoints} label="Body" />
-        <ControlCard>
+      <section className={isCompact ? "space-y-2.5" : "space-y-2.5"}>
+        <SectionHeading icon={Waypoints} label="Body" compact={isCompact} />
+        <ControlCard compact={isCompact}>
           <CircularSlider
             label="Yaw"
             value={localValues.bodyYaw}
@@ -203,17 +223,18 @@ function ControllerInner({
             inverted
             reverse
             step={0.01}
+            compact={isCompact}
           />
         </ControlCard>
       </section>
 
-      {syncState === "disabled" ? (
+      {showStatusMessages && syncState === "disabled" ? (
         <div className="rounded-2xl border border-border/70 bg-muted/20 px-3 py-2.5 text-xs text-muted-foreground">
           状态流已关闭，当前只发命令不回读。
         </div>
       ) : null}
 
-      {error ? (
+      {showStatusMessages && error ? (
         <div className="rounded-2xl border border-[hsl(var(--warning))]/30 bg-[hsl(var(--warning))]/10 px-3 py-2.5 text-xs text-[hsl(var(--warning))]">
           {error}
         </div>
@@ -236,25 +257,27 @@ function MetricTile({ label, value }: { label: string; value: string }) {
 function SectionHeading({
   icon: Icon,
   label,
+  compact = false,
 }: {
   icon: typeof Activity
   label: string
+  compact?: boolean
 }) {
   return (
-    <div className="flex items-center gap-2">
-      <div className="flex size-6 items-center justify-center rounded-lg border border-border/70 bg-background/90">
-        <Icon className="size-3.5 text-muted-foreground" />
+    <div className={`flex items-center ${compact ? "gap-1.5" : "gap-2"}`}>
+      <div className={`flex ${compact ? "size-5 rounded-md" : "size-6 rounded-lg"} items-center justify-center border border-border/70 bg-background/90`}>
+        <Icon className={compact ? "size-3 text-muted-foreground" : "size-3.5 text-muted-foreground"} />
       </div>
-      <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+      <p className={compact ? "text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground" : "text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground"}>
         {label}
       </p>
     </div>
   )
 }
 
-function ControlCard({ children }: { children: ReactNode }) {
+function ControlCard({ children, compact = false }: { children: ReactNode; compact?: boolean }) {
   return (
-    <div className="rounded-2xl border border-border/60 bg-background/80 p-2.5">
+    <div className={compact ? "rounded-[8px] border border-border/60 bg-background/80 px-2 py-1" : "rounded-2xl border border-border/60 bg-background/80 p-2.5"}>
       {children}
     </div>
   )

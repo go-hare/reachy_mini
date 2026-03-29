@@ -13,6 +13,7 @@ interface CircularSliderProps {
   alignRight?: boolean
   smoothedValue?: number
   step?: number
+  compact?: boolean
 }
 
 const CircularSlider = memo(function CircularSlider({
@@ -28,6 +29,7 @@ const CircularSlider = memo(function CircularSlider({
   alignRight = false,
   smoothedValue,
   step = 0.1,
+  compact = false,
 }: CircularSliderProps) {
   const [draftValue, setDraftValue] = useState(value)
 
@@ -44,8 +46,8 @@ const CircularSlider = memo(function CircularSlider({
     const arcEnd = 0.74
     const arcSpan = arcEnd - arcStart
     const arcDegrees = 270
-    const radius = 18
-    const border = 5
+    const radius = compact ? 16 : 18
+    const border = compact ? 4 : 5
     const circleRadius = radius - border / 2
     const circumference = 2 * Math.PI * circleRadius
     const internalValue = arcStart + ((value - min) / (max - min)) * arcSpan
@@ -66,15 +68,17 @@ const CircularSlider = memo(function CircularSlider({
   }, [inverted, max, min, reverse, value])
 
   return (
-    <div className="flex flex-col gap-2">
-      <div className={alignRight ? "space-y-0.5 text-right" : "space-y-0.5"}>
-        <p className="text-[11px] font-semibold text-foreground">{label}</p>
-        <p className="font-mono text-[10px] text-muted-foreground">
+    <div className={`flex flex-col ${compact ? "gap-1.5" : "gap-2"}`}>
+      <div
+        className={`flex items-center ${compact ? "gap-2" : "gap-2.5"} ${alignRight ? "justify-end flex-row-reverse" : ""}`}
+      >
+        <p className={compact ? "text-[10px] font-semibold text-foreground" : "text-[11px] font-semibold text-foreground"}>{label}</p>
+        <p className={compact ? "font-mono text-[9px] text-muted-foreground" : "font-mono text-[10px] text-muted-foreground"}>
           {displayValue}
           {unit === "deg" ? "deg" : ` ${unit}`}
         </p>
       </div>
-      <div className={`flex items-center gap-3 ${alignRight ? "flex-row-reverse" : ""}`}>
+      <div className={`flex items-center ${compact ? "gap-2" : "gap-3"} ${alignRight ? "flex-row-reverse" : ""}`}>
         <svg
           viewBox={`0 0 ${svgCalculations.radius * 2} ${svgCalculations.radius * 2}`}
           style={{

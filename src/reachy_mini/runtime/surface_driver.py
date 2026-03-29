@@ -12,9 +12,10 @@ from reachy_mini.runtime.moves import MovementManager
 _PHASE_PRIORITY: dict[str, int] = {
     "idle": 0,
     "settling": 1,
-    "listening_wait": 2,
-    "replying": 3,
-    "listening": 4,
+    "attending": 2,
+    "listening_wait": 3,
+    "replying": 4,
+    "listening": 5,
 }
 
 
@@ -87,6 +88,8 @@ class SurfaceDriver:
             return
 
         movement_manager.set_listening(phase == "listening")
+        if hasattr(movement_manager, "set_surface_active"):
+            movement_manager.set_surface_active(phase != "idle")
         if phase != "idle":
             movement_manager.mark_activity()
 
@@ -168,4 +171,3 @@ class SurfaceDriver:
         payload = dict(state)
         payload["phase"] = cls._normalize_phase(state)
         return payload
-

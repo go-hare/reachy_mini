@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
+import shutil
+import tempfile
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from inspect import isawaitable
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 import numpy as np
@@ -23,6 +27,7 @@ PCM_SAMPLE_RATE_HZ = 24_000
 ReplyAudioEventCallback = Callable[[], Awaitable[None] | None]
 ReplyAudioDeltaCallback = Callable[[str], Awaitable[None] | None]
 ReplyAudioFinishedCallback = Callable[[bool], Awaitable[None] | None]
+LOGGER = logging.getLogger(__name__)
 
 
 async def _run_callback(result: Awaitable[None] | None) -> None:
@@ -100,6 +105,86 @@ class OpenAIReplySpeechSynthesizer:
             async for chunk in response.iter_bytes():
                 if chunk:
                     yield bytes(chunk)
+
+
+@dataclass(slots=True)
+class MacOSSayReplySpeechSynthesizer:
+    """Local macOS TTS adapter that renders text with ``say`` and converts to PCM16."""
+
+    voice: str = "Tingting"
+    speed: float = 1.0
+
+    async def synthesize_pcm16(self, text: str) -> bytes:
+        """Render one reply with ``say`` and convert it to 24 kHz mono PCM16."""
+
+        resolved_text = str(text or "").strip()
+        if not resolved_text:
+            return b""
+
+        if shutil.which("say") is None:
+            raise RuntimeError("Speech provider 'macos_say' requires the `say` command.")
+        if shutil.which("ffmpeg") is None:
+            raise RuntimeError("Speech provider 'macos_say' requires the `ffmpeg` command.")
+
+        with tempfile.NamedTemporaryFile(suffix=".aiff", delete=False) as handle:
+            output_path = Path(handle.name)
+        try:
+            LOGGER.info(
+                "macOS say synthesis started: voice=%s chars=%s speed=%.2f",
+                self.voice,
+                len(resolved_text),
+                float(self.speed),
+            )
+            say_command = ["say"]
+            if str(self.voice or "").strip():
+                say_command.extend(["-v", str(self.voice).strip()])
+            rate_wpm = max(80, min(360, int(round(175.0 * max(float(self.speed), 0.2)))))
+            say_command.extend(["-r", str(rate_wpm), "-o", str(output_path), resolved_text])
+
+            say_process = await asyncio.create_subprocess_exec(
+                *say_command,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, say_stderr = await say_process.communicate()
+            if say_process.returncode != 0:
+                error_text = (say_stderr or b"").decode("utf-8", errors="ignore").strip()
+                raise RuntimeError(
+                    f"`say` failed: {error_text or f'exit code {say_process.returncode}'}"
+                )
+
+            ffmpeg_process = await asyncio.create_subprocess_exec(
+                "ffmpeg",
+                "-v",
+                "error",
+                "-i",
+                str(output_path),
+                "-f",
+                "s16le",
+                "-acodec",
+                "pcm_s16le",
+                "-ac",
+                "1",
+                "-ar",
+                str(PCM_SAMPLE_RATE_HZ),
+                "pipe:1",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            ffmpeg_stdout, ffmpeg_stderr = await ffmpeg_process.communicate()
+            if ffmpeg_process.returncode != 0:
+                error_text = (ffmpeg_stderr or b"").decode("utf-8", errors="ignore").strip()
+                raise RuntimeError(
+                    f"`ffmpeg` failed: {error_text or f'exit code {ffmpeg_process.returncode}'}"
+                )
+            LOGGER.info(
+                "macOS say synthesis finished: voice=%s pcm_bytes=%s",
+                self.voice,
+                len(ffmpeg_stdout or b""),
+            )
+            return bytes(ffmpeg_stdout or b"")
+        finally:
+            output_path.unlink(missing_ok=True)
 
 
 @dataclass(slots=True)
@@ -368,6 +453,11 @@ class RuntimeReplyAudioService:
         try:
             stream_pcm16 = getattr(self.synthesizer, "stream_pcm16", None)
             if callable(stream_pcm16):
+                LOGGER.info(
+                    "Reply audio streaming started: synthesizer=%s chars=%s",
+                    type(self.synthesizer).__name__,
+                    len(resolved_text),
+                )
                 return await self.player.play_pcm16_stream(
                     stream_pcm16(resolved_text),
                     on_started=on_started,
@@ -376,16 +466,32 @@ class RuntimeReplyAudioService:
                     interrupt_event=interrupt_event,
                 )
 
+            LOGGER.info(
+                "Reply audio synthesis started: synthesizer=%s chars=%s",
+                type(self.synthesizer).__name__,
+                len(resolved_text),
+            )
             pcm_data = await self.synthesizer.synthesize_pcm16(resolved_text)
             if interrupt_event.is_set() or not pcm_data:
+                LOGGER.info(
+                    "Reply audio synthesis produced no playable audio: interrupted=%s pcm_bytes=%s",
+                    interrupt_event.is_set(),
+                    len(pcm_data),
+                )
                 return False
-            return await self.player.play_pcm16(
+            played = await self.player.play_pcm16(
                 pcm_data,
                 on_started=on_started,
                 on_audio_delta=on_audio_delta,
                 on_finished=on_finished,
                 interrupt_event=interrupt_event,
             )
+            LOGGER.info(
+                "Reply audio playback finished: played=%s pcm_bytes=%s",
+                played,
+                len(pcm_data),
+            )
+            return played
         finally:
             if self._active_playback_task is active_task:
                 self._active_playback_task = None
@@ -422,23 +528,29 @@ def build_runtime_reply_audio_service(
         return None
 
     provider = str(config.provider or "").strip().lower()
-    if provider != "openai":
+    if provider == "openai":
+        api_key = str(config.api_key or "").strip() or str(fallback_api_key or "").strip()
+        if not api_key:
+            raise RuntimeError("Speech provider 'openai' requires `api_key`.")
+
+        synthesizer: ReplySpeechSynthesizer = OpenAIReplySpeechSynthesizer(
+            model=str(config.model or "").strip() or SpeechRuntimeConfig().model,
+            voice=str(config.voice or "").strip() or SpeechRuntimeConfig().voice,
+            api_key=api_key,
+            base_url=str(config.base_url or "").strip(),
+            instructions=str(config.instructions or "").strip(),
+            speed=float(config.speed),
+        )
+    elif provider == "macos_say":
+        synthesizer = MacOSSayReplySpeechSynthesizer(
+            voice=str(config.voice or "").strip() or "Tingting",
+            speed=float(config.speed),
+        )
+    else:
         raise RuntimeError(
             f"Unsupported speech provider: {config.provider or '<empty>'}"
         )
 
-    api_key = str(config.api_key or "").strip() or str(fallback_api_key or "").strip()
-    if not api_key:
-        raise RuntimeError("Speech provider 'openai' requires `api_key`.")
-
-    synthesizer = OpenAIReplySpeechSynthesizer(
-        model=str(config.model or "").strip() or SpeechRuntimeConfig().model,
-        voice=str(config.voice or "").strip() or SpeechRuntimeConfig().voice,
-        api_key=api_key,
-        base_url=str(config.base_url or "").strip(),
-        instructions=str(config.instructions or "").strip(),
-        speed=float(config.speed),
-    )
     return RuntimeReplyAudioService(
         synthesizer=synthesizer,
         player=ReplyAudioPlayer(
@@ -450,6 +562,7 @@ def build_runtime_reply_audio_service(
 
 
 __all__ = [
+    "MacOSSayReplySpeechSynthesizer",
     "OpenAIReplySpeechSynthesizer",
     "PCM_SAMPLE_RATE_HZ",
     "ReplyAudioPlayer",

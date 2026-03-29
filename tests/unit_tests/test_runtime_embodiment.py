@@ -36,6 +36,7 @@ class FakeMovementManager:
 
     def __init__(self) -> None:
         self.listening_calls: list[bool] = []
+        self.surface_active_calls: list[bool] = []
         self.activity_marks = 0
         self.queued_moves: list[object] = []
         self.moving_durations: list[float] = []
@@ -43,6 +44,9 @@ class FakeMovementManager:
 
     def set_listening(self, listening: bool) -> None:
         self.listening_calls.append(bool(listening))
+
+    def set_surface_active(self, active: bool) -> None:
+        self.surface_active_calls.append(bool(active))
 
     def mark_activity(self) -> None:
         self.activity_marks += 1
@@ -195,6 +199,33 @@ def test_embodiment_coordinator_exposes_current_surface_state_and_settling_hold(
 
     assert coordinator.current_phase == "idle"
     assert coordinator.current_surface_state == {"phase": "idle"}
+
+
+def test_embodiment_coordinator_preserves_attending_phase_from_surface_driver() -> None:
+    """Attending should survive coordinator normalization as a stable surface phase."""
+    movement_manager = FakeMovementManager()
+    coordinator = EmbodimentCoordinator(
+        surface_driver=SurfaceDriver(movement_manager=movement_manager),
+        speech_driver=SpeechDriver(head_wobbler=FakeHeadWobbler()),
+    )
+
+    assert (
+        coordinator.apply_surface_state(
+            {
+                "thread_id": "app:test",
+                "phase": "attending",
+                "source_signal": "vision_attention_updated",
+            }
+        )
+        == "attending"
+    )
+    assert coordinator.current_phase == "attending"
+    assert coordinator.current_surface_state["phase"] == "attending"
+    assert coordinator.current_surface_state["source_signal"] == "vision_attention_updated"
+    assert movement_manager.surface_active_calls[-1] is True
+
+    assert coordinator.apply_surface_state({"thread_id": "app:test", "phase": "idle"}) == "idle"
+    assert movement_manager.surface_active_calls[-1] is False
 
 
 def test_embodiment_coordinator_handles_explicit_motion_actions() -> None:

@@ -120,6 +120,21 @@ class AppRuntimeHostAdapter:
                     speech_driver=speech_driver,
                     fallback_api_key=runtime_config.front_model.api_key,
                 )
+                if reply_audio_service is not None:
+                    self.logger.info(
+                        "Runtime reply audio ready: provider=%s media=%s speech_driver=%s",
+                        getattr(runtime_config.speech, "provider", ""),
+                        type(media).__name__ if media is not None else "None",
+                        type(speech_driver).__name__
+                        if speech_driver is not None
+                        else "None",
+                    )
+                else:
+                    self.logger.info(
+                        "Runtime reply audio disabled or unavailable: provider=%s media=%s",
+                        getattr(runtime_config.speech, "provider", ""),
+                        type(media).__name__ if media is not None else "None",
+                    )
             except Exception as exc:
                 self.logger.warning("Failed to build reply audio service: %s", exc)
 
@@ -210,12 +225,19 @@ class AppRuntimeHostAdapter:
         """Synthesize and play one final runtime reply when speech output is configured."""
         reply_audio_service = getattr(context, "reply_audio_service", None)
         if reply_audio_service is None or not hasattr(reply_audio_service, "speak_text"):
+            self.logger.info("Runtime reply audio skipped: no reply_audio_service available.")
             return False
 
         text = str(payload.get("text", "") or "").strip()
         if not text:
+            self.logger.info("Runtime reply audio skipped: empty reply text.")
             return False
 
+        self.logger.info(
+            "Runtime reply audio requested: chars=%s service=%s",
+            len(text),
+            type(reply_audio_service).__name__,
+        )
         speak_text = reply_audio_service.speak_text
         callback_kwargs = {
             key: payload.get(key)
@@ -227,8 +249,11 @@ class AppRuntimeHostAdapter:
 
         result = speak_text(text, **callback_kwargs) if callback_kwargs else speak_text(text)
         if isawaitable(result):
-            return bool(await result)
-        return bool(result)
+            played = bool(await result)
+        else:
+            played = bool(result)
+        self.logger.info("Runtime reply audio finished: played=%s chars=%s", played, len(text))
+        return played
 
     @staticmethod
     def _supports_reply_audio_callbacks(speak_text: Any) -> bool:

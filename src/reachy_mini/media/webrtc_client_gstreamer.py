@@ -145,8 +145,10 @@ class GstWebRTCClient:
         self._appsink_video.set_property("max-buffers", 1)  # keep last image only
         self._pipeline_record.add(self._appsink_video)
 
-        # Set resolution after appsink is created so caps can be properly configured
-        self.set_resolution(self.camera_specs.default_resolution)
+        # Set resolution after appsink is created so caps can be properly configured.
+        # MuJoCo simulation has a fixed output mode, so startup should not be treated
+        # as a runtime resolution change.
+        self._apply_initial_resolution()
 
         self._webrtcsrc = self._configure_webrtcsrc(
             signaling_host, signaling_port, peer_id
@@ -187,6 +189,24 @@ class GstWebRTCClient:
         if self.camera_specs is not None:
             return self.camera_specs.D
         return None
+
+    def _apply_initial_resolution(self) -> None:
+        """Apply the startup resolution without treating MuJoCo defaults as changes."""
+
+        resolution = self.camera_specs.default_resolution
+        if isinstance(self.camera_specs, MujocoCameraSpecs):
+            self._resolution = resolution
+            self.resized_K = np.array(self.camera_specs.K, copy=True)
+            caps_video = Gst.Caps.from_string(
+                f"video/x-raw,format=BGR,"
+                f"width={self._resolution.value[0]},"
+                f"height={self._resolution.value[1]},"
+                f"framerate={self.framerate}/1"
+            )
+            self._appsink_video.set_property("caps", caps_video)
+            return
+
+        self.set_resolution(resolution)
 
     def set_resolution(self, resolution: CameraResolution) -> None:
         """Change the camera resolution.

@@ -68,16 +68,27 @@ class HeadTracker:
         img: NDArray[np.uint8],
     ) -> tuple[NDArray[np.float32] | None, float | None]:
         """Return face center in normalized coordinates and an optional roll."""
+        face_center, roll, _ = self.get_head_observation(img)
+        return face_center, roll
+
+    def get_head_observation(
+        self,
+        img: NDArray[np.uint8],
+    ) -> tuple[NDArray[np.float32] | None, float | None, float | None]:
+        """Return one richer face observation for reactive-vision emitters."""
         h, w = img.shape[:2]
         try:
             results = self.model(img, verbose=False)
             detections = self._detections_cls.from_ultralytics(results[0])
             face_idx = self._select_best_face(detections)
             if face_idx is None:
-                return None, None
+                return None, None, None
             bbox = detections.xyxy[face_idx]
             face_center = self._bbox_to_mp_coords(bbox, w, h)
-            return face_center, 0.0
+            confidence = None
+            if detections.confidence is not None:
+                confidence = float(detections.confidence[face_idx])
+            return face_center, 0.0, confidence
         except Exception as exc:  # pragma: no cover - runtime fallback
             logger.warning("YOLO head tracking failed: %s", exc)
-            return None, None
+            return None, None, None

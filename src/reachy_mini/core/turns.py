@@ -15,7 +15,7 @@ from .message_utils import extract_message_text
 from .memory import CognitiveEvent, MemoryPatch, MemoryView, make_id
 from .models import BrainResponse, BrainTurnContext, PendingToolCall, TaskType, ToolResult, TurnRoute, TurnRouteKind
 from .resident import PendingSleepJob
-from .run_store import Run
+from .run_store import Run, RunStatus
 from .sleep_agent import SleepOutcome
 from .tooling import ClientTool, FunctionTool, ToolExecutionRecord, ToolRulesSolver
 
@@ -42,6 +42,27 @@ class PendingRunState:
 
 
 class BrainKernelTurnMixin:
+    async def handle_scheduled_run(
+        self,
+        *,
+        run_id: str,
+    ) -> BrainResponse | None:
+        state = self._pending_runs.get(run_id)
+        self._scheduled_run_resumes.discard(run_id)
+        if state is None:
+            return None
+        response = await self._advance_run(state, step_limit=1)
+        run = response.run
+        if run is None:
+            return None
+        if response.pending_tool_calls:
+            return response
+        if str(response.reply or "").strip():
+            return response
+        if run.status in {RunStatus.completed, RunStatus.failed, RunStatus.cancelled}:
+            return response
+        return None
+
     async def handle_tool_results(
         self,
         *,
@@ -104,6 +125,16 @@ class BrainKernelTurnMixin:
             target_run_id=state.run.id,
             reason="tool results resumed run",
         )
+        if state.run.background:
+            self._pending_runs[state.run.id] = state
+            await self.schedule_run_resume(run_id=state.run.id)
+            return self._make_response(
+                task_type=state.task_type,
+                run=state.run,
+                context=state.context,
+                tool_trace=list(state.tool_trace),
+                route=state.route,
+            )
         return await self._advance_run(state)
 
     async def run_sleep_cycle(
@@ -163,7 +194,7 @@ class BrainKernelTurnMixin:
 
         if existing_run is None:
             effective_background = background
-            if route is not None:
+            if route is not None and background is None:
                 effective_background = route.kind == TurnRouteKind.start_background
             run = self.create_run(
                 conversation_id=conversation_id,
@@ -177,7 +208,12 @@ class BrainKernelTurnMixin:
             run = self.run_store.update_run(existing_run.id, metadata=merged_metadata)
 
         if route is not None:
-            run = self._apply_turn_route(conversation_id=conversation_id, run=run, route=route)
+            if background is None:
+                run = self._apply_turn_route(conversation_id=conversation_id, run=run, route=route)
+            elif background:
+                run = self.run_store.update_run(run.id, background=True)
+            else:
+                run = self._promote_run_to_foreground(conversation_id=conversation_id, run_id=run.id)
         memory_view = memory or self._build_memory_view(conversation_id=conversation_id, query=input_text)
         context = self.build_turn_context(
             conversation_id=conversation_id,
@@ -219,10 +255,27 @@ class BrainKernelTurnMixin:
             task_type=task_type,
             route=route,
         )
+        if state.run.background:
+            self._pending_runs[state.run.id] = state
+            await self.schedule_run_resume(run_id=state.run.id)
+            return self._make_response(
+                task_type=state.task_type,
+                run=state.run,
+                context=state.context,
+                tool_trace=list(state.tool_trace),
+                route=state.route,
+            )
         return await self._advance_run(state)
 
-    async def _advance_run(self, state: PendingRunState) -> BrainResponse:
+    async def _advance_run(
+        self,
+        state: PendingRunState,
+        *,
+        step_limit: int | None = None,
+    ) -> BrainResponse:
         tool_names = [entry["name"] for entry in state.tool_entries]
+        steps_this_call = 0
+        effective_step_limit = max(1, int(step_limit)) if step_limit is not None else None
 
         while state.steps_taken < state.max_steps:
             allowed_names = state.tool_rules.get_allowed_tool_names(
@@ -235,6 +288,7 @@ class BrainKernelTurnMixin:
             response = await self._ainvoke(bound_model, state.messages)
             state.messages.append(response)
             state.steps_taken += 1
+            steps_this_call += 1
 
             tool_calls = list(getattr(response, "tool_calls", []) or [])
             if not tool_calls:
@@ -289,6 +343,23 @@ class BrainKernelTurnMixin:
                     context=state.context,
                     tool_trace=list(state.tool_trace),
                     pending_tool_calls=list(pending_tool_calls),
+                    route=state.route,
+                )
+
+            if effective_step_limit is not None and steps_this_call >= effective_step_limit:
+                state.run = self.run_store.update_run(
+                    state.run.id,
+                    status=RunStatus.running,
+                    current_tool="",
+                )
+                self._pending_runs[state.run.id] = state
+                if state.run.background:
+                    await self.schedule_run_resume(run_id=state.run.id)
+                return self._make_response(
+                    task_type=state.task_type,
+                    run=state.run,
+                    context=state.context,
+                    tool_trace=list(state.tool_trace),
                     route=state.route,
                 )
 

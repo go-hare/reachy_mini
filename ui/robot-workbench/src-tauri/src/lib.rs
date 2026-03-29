@@ -321,10 +321,6 @@ pub fn run() {
             get_robot_sim_daemon_status,
             start_robot_sim_daemon,
             stop_robot_sim_daemon,
-            get_mujoco_viewer_service_status,
-            start_mujoco_viewer_service,
-            stop_mujoco_viewer_service,
-            probe_mujoco_viewer_url,
             get_indexer_status,
             trigger_reindex,
             sync_autohand_docs,
@@ -458,7 +454,6 @@ pub fn run() {
                 })?);
             app.manage(index_db.clone());
             app.manage(services::robot_daemon_service::RobotDaemonManager::default());
-            app.manage(services::robot_daemon_service::MujocoViewerServiceManager::default());
 
             // Spawn background indexer loop
             let indexer_app_handle = app.handle().clone();

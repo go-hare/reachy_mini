@@ -291,10 +291,10 @@
   - `src/contexts/__tests__/settings-context-agent.test.tsx`
   - `src/components/__tests__/App.projectHeader.identity.test.tsx`
   - Settings modal tests still emit the pre-existing Radix dialog description warning, but assertions pass.
-- Default MuJoCo viewer URL pass:
-  - Default viewer URL is now prewired to `http://localhost:9001/viewer`.
-  - Missing `robot_settings.mujoco_viewer_url` falls back to the default URL in settings/context/panel flows.
-  - An explicitly cleared `mujoco_viewer_url` still normalizes to an empty string, so users can disable the embedded viewer.
+- Obsolete MuJoCo web viewer removal pass:
+  - The robot workbench keeps only Reachy live status, MuJoCo daemon status, and the embedded 3D viewport.
+  - `robot_settings` no longer persists `mujoco_viewer_url` or `mujoco_viewer_launch_command`.
+  - Legacy viewer fields are ignored on load and omitted on save.
   - Focused verification passed:
   - `src/lib/__tests__/reachy-daemon.test.ts`
   - `src/components/settings/__tests__/SettingsModal.mujocoStatus.autosave.test.tsx`

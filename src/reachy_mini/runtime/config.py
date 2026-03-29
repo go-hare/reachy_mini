@@ -56,6 +56,25 @@ class SpeechRuntimeConfig:
 
 
 @dataclass(slots=True)
+class SpeechInputRuntimeConfig:
+    """How optional robot-microphone capture and transcription should start."""
+
+    enabled: bool = False
+    provider: str = ""
+    model: str = "gpt-4o-mini-transcribe"
+    base_url: str = ""
+    api_key: str = ""
+    language: str = "zh"
+    vad_db_on: float = -36.0
+    vad_db_off: float = -46.0
+    vad_attack_ms: int = 80
+    vad_release_ms: int = 700
+    min_utterance_ms: int = 350
+    max_utterance_ms: int = 15_000
+    playback_block_cooldown_ms: int = 700
+
+
+@dataclass(slots=True)
 class ProfileRuntimeConfig:
     """Structured runtime settings parsed from ``config.jsonl``."""
 
@@ -66,6 +85,7 @@ class ProfileRuntimeConfig:
     kernel_model: KernelModelConfig = field(default_factory=KernelModelConfig)
     vision: VisionRuntimeConfig = field(default_factory=VisionRuntimeConfig)
     speech: SpeechRuntimeConfig = field(default_factory=SpeechRuntimeConfig)
+    speech_input: SpeechInputRuntimeConfig = field(default_factory=SpeechInputRuntimeConfig)
 
 
 def load_profile_runtime_config(profile: ProfileBundle) -> ProfileRuntimeConfig:
@@ -120,6 +140,65 @@ def load_profile_runtime_config(profile: ProfileBundle) -> ProfileRuntimeConfig:
                 ),
                 speed=float(record.get("speed", config.speech.speed)),
                 chunk_ms=max(20, int(chunk_ms)) if chunk_ms is not None else config.speech.chunk_ms,
+            )
+            continue
+
+        if kind == "speech_input":
+            config.speech_input = SpeechInputRuntimeConfig(
+                enabled=bool(record.get("enabled", config.speech_input.enabled)),
+                provider=str(
+                    record.get("provider", config.speech_input.provider)
+                    or config.speech_input.provider
+                ),
+                model=str(
+                    record.get("model", config.speech_input.model)
+                    or config.speech_input.model
+                ),
+                base_url=str(record.get("base_url", config.speech_input.base_url) or ""),
+                api_key=str(record.get("api_key", config.speech_input.api_key) or ""),
+                language=str(
+                    record.get("language", config.speech_input.language)
+                    or config.speech_input.language
+                ),
+                vad_db_on=float(record.get("vad_db_on", config.speech_input.vad_db_on)),
+                vad_db_off=float(
+                    record.get("vad_db_off", config.speech_input.vad_db_off)
+                ),
+                vad_attack_ms=max(
+                    20,
+                    int(record.get("vad_attack_ms", config.speech_input.vad_attack_ms)),
+                ),
+                vad_release_ms=max(
+                    100,
+                    int(record.get("vad_release_ms", config.speech_input.vad_release_ms)),
+                ),
+                min_utterance_ms=max(
+                    100,
+                    int(
+                        record.get(
+                            "min_utterance_ms",
+                            config.speech_input.min_utterance_ms,
+                        )
+                    ),
+                ),
+                max_utterance_ms=max(
+                    1000,
+                    int(
+                        record.get(
+                            "max_utterance_ms",
+                            config.speech_input.max_utterance_ms,
+                        )
+                    ),
+                ),
+                playback_block_cooldown_ms=max(
+                    0,
+                    int(
+                        record.get(
+                            "playback_block_cooldown_ms",
+                            config.speech_input.playback_block_cooldown_ms,
+                        )
+                    ),
+                ),
             )
             continue
 
@@ -219,4 +298,5 @@ def apply_runtime_overrides(
         kernel_model=resolved_kernel_model,
         vision=config.vision,
         speech=config.speech,
+        speech_input=config.speech_input,
     )

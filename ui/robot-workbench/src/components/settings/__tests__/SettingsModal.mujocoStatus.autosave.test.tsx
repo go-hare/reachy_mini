@@ -19,8 +19,6 @@ const defaultLoadAppSettings = () => ({
   robot_settings: {
     live_status_enabled: true,
     mujoco_live_status_enabled: true,
-    mujoco_viewer_url: "",
-    mujoco_viewer_launch_command: "",
     daemon_base_url: "http://localhost:8000",
   },
 });
@@ -56,10 +54,6 @@ vi.mock("@/components/settings", () => ({
   GeneralSettings: ({
     tempMujocoLiveStatusEnabled,
     onMujocoLiveStatusEnabledChange,
-    tempMujocoViewerUrl,
-    onMujocoViewerUrlChange,
-    tempMujocoViewerLaunchCommand,
-    onMujocoViewerLaunchCommandChange,
   }: any) => (
     <div>
       <label htmlFor="mujoco-live-status-toggle">
@@ -79,24 +73,6 @@ vi.mock("@/components/settings", () => ({
           ? "MuJoCo live daemon panel enabled."
           : "MuJoCo live daemon panel disabled"}
       </p>
-      <label htmlFor="mujoco-viewer-url">MuJoCo Viewer URL</label>
-      <input
-        id="mujoco-viewer-url"
-        aria-label="MuJoCo Viewer URL"
-        value={tempMujocoViewerUrl || ""}
-        onChange={(event) => onMujocoViewerUrlChange?.(event.target.value)}
-      />
-      <label htmlFor="mujoco-viewer-launch-command">
-        MuJoCo Viewer Launch Command
-      </label>
-      <input
-        id="mujoco-viewer-launch-command"
-        aria-label="MuJoCo Viewer Launch Command"
-        value={tempMujocoViewerLaunchCommand || ""}
-        onChange={(event) =>
-          onMujocoViewerLaunchCommandChange?.(event.target.value)
-        }
-      />
     </div>
   ),
   AppearanceSettings: () => null,
@@ -156,88 +132,22 @@ if (typeof document !== "undefined")
               false,
           );
         expect(matchingCall).toBeTruthy();
+        expect(
+          matchingCall?.[1]?.settings?.robot_settings?.mujoco_viewer_url,
+        ).toBeUndefined();
+        expect(
+          matchingCall?.[1]?.settings?.robot_settings
+            ?.mujoco_viewer_launch_command,
+        ).toBeUndefined();
       });
     });
 
-    it("persists the MuJoCo viewer url through app settings", async () => {
-      render(
-        <SettingsProvider>
-          <SettingsModal
-            isOpen={true}
-            onClose={() => {}}
-            initialTab="general"
-          />
-        </SettingsProvider>,
-      );
-
-      fireEvent.change(await screen.findByLabelText("MuJoCo Viewer URL"), {
-        target: { value: "localhost:9001/viewer" },
-      });
-
-      await screen.findByDisplayValue("localhost:9001/viewer");
-
-      await waitFor(() => {
-        const saveCalls = invokeMock.mock.calls.filter(
-          ([cmd]) => cmd === "save_app_settings",
-        );
-        expect(saveCalls.length).toBeGreaterThan(0);
-        const matchingCall = [...saveCalls]
-          .reverse()
-          .find(
-            ([, args]) =>
-              args?.settings?.robot_settings?.mujoco_viewer_url ===
-              "http://localhost:9001/viewer",
-          );
-        expect(matchingCall).toBeTruthy();
-      });
-    });
-
-    it("persists the MuJoCo viewer launch command through app settings", async () => {
-      render(
-        <SettingsProvider>
-          <SettingsModal
-            isOpen={true}
-            onClose={() => {}}
-            initialTab="general"
-          />
-        </SettingsProvider>,
-      );
-
-      fireEvent.change(
-        await screen.findByLabelText("MuJoCo Viewer Launch Command"),
-        {
-          target: { value: "conda run -n reachy python -m tools.viewer" },
-        },
-      );
-
-      await screen.findByDisplayValue(
-        "conda run -n reachy python -m tools.viewer",
-      );
-
-      await waitFor(() => {
-        const saveCalls = invokeMock.mock.calls.filter(
-          ([cmd]) => cmd === "save_app_settings",
-        );
-        expect(saveCalls.length).toBeGreaterThan(0);
-        const matchingCall = [...saveCalls]
-          .reverse()
-          .find(
-            ([, args]) =>
-              args?.settings?.robot_settings?.mujoco_viewer_launch_command ===
-              "conda run -n reachy python -m tools.viewer",
-          );
-        expect(matchingCall).toBeTruthy();
-      });
-    });
-
-    it("falls back to an empty MuJoCo viewer url when the setting is missing", async () => {
+    it("does not render obsolete MuJoCo viewer settings in General Settings", async () => {
       loadAppSettingsState = {
         ...defaultLoadAppSettings(),
         robot_settings: {
           live_status_enabled: true,
           mujoco_live_status_enabled: true,
-          mujoco_viewer_url: "",
-          mujoco_viewer_launch_command: "",
           daemon_base_url: "http://localhost:8000",
         },
       };
@@ -252,6 +162,7 @@ if (typeof document !== "undefined")
         </SettingsProvider>,
       );
 
-      expect(await screen.findByLabelText("MuJoCo Viewer URL")).toHaveValue("");
+      expect(screen.queryByLabelText("MuJoCo Viewer URL")).toBeNull();
+      expect(screen.queryByLabelText("MuJoCo Viewer Launch Command")).toBeNull();
     });
   });

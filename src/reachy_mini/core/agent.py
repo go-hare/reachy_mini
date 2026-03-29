@@ -74,6 +74,7 @@ class BrainKernel(BrainKernelTurnMixin, BrainKernelRoutingMixin, BrainKernelResi
         self._sleep_worker_task: asyncio.Task[None] | None = None
         self._front_reply_events: dict[tuple[str, str], asyncio.Event] = {}
         self._front_reply_cache: dict[tuple[str, str], str] = {}
+        self._scheduled_run_resumes: set[str] = set()
 
     def build_turn_context(
         self,
@@ -259,6 +260,7 @@ class BrainKernel(BrainKernelTurnMixin, BrainKernelRoutingMixin, BrainKernelResi
         self._conversation_tasks = {}
         self._front_reply_events = {}
         self._front_reply_cache = {}
+        self._scheduled_run_resumes = set()
         self._sleep_queue = asyncio.Queue() if self.sleep_agent is not None else None
         self._sleep_worker_task = (
             asyncio.create_task(self._sleep_worker_loop()) if self._sleep_queue is not None else None
@@ -396,6 +398,28 @@ class BrainKernel(BrainKernelTurnMixin, BrainKernelRoutingMixin, BrainKernelResi
 
     def list_runs(self, conversation_id: str | None = None) -> list[Run]:
         return self.run_store.list_runs(agent_id=self.agent_id, conversation_id=conversation_id)
+
+    async def schedule_run_resume(self, *, run_id: str) -> str:
+        run_id = str(run_id or "").strip()
+        if not run_id:
+            raise ValueError("schedule_run_resume requires a run_id.")
+        if run_id in self._scheduled_run_resumes:
+            return ""
+
+        conversation_id = self._resolve_run_conversation_id(run_id)
+        event = BrainEvent(
+            event_id=make_id("brain_event"),
+            type=BrainEventType.run_resume,
+            conversation_id=conversation_id,
+            run_id=run_id,
+        )
+        self._scheduled_run_resumes.add(run_id)
+        try:
+            await self._put_event(event)
+        except Exception:
+            self._scheduled_run_resumes.discard(run_id)
+            raise
+        return event.event_id
 
     def _build_memory_view(self, *, conversation_id: str, query: str) -> MemoryView:
         if self.memory_store is None:

@@ -132,7 +132,7 @@ class GStreamerCamera:
 
         # Create appsink for frame output
         self._appsink_video: GstApp = Gst.ElementFactory.make("appsink")
-        self.set_resolution(self._resolution)
+        self._apply_initial_resolution()
         self._appsink_video.set_property("drop", True)
         self._appsink_video.set_property("max-buffers", 1)
         self.pipeline.add(self._appsink_video)
@@ -185,6 +185,25 @@ class GStreamerCamera:
         if self.camera_specs is not None:
             return self.camera_specs.D
         return None
+
+    def _apply_initial_resolution(self) -> None:
+        """Apply the startup resolution without treating MuJoCo defaults as changes."""
+
+        if self._resolution is None:
+            raise RuntimeError("Camera resolution is not set.")
+
+        if isinstance(self.camera_specs, MujocoCameraSpecs):
+            self.resized_K = np.array(self.camera_specs.K, copy=True)
+            caps_video = Gst.Caps.from_string(
+                f"video/x-raw,format=BGR,"
+                f"width={self._resolution.value[0]},"
+                f"height={self._resolution.value[1]},"
+                f"framerate={self.framerate}/1"
+            )
+            self._appsink_video.set_property("caps", caps_video)
+            return
+
+        self.set_resolution(self._resolution)
 
     def set_resolution(self, resolution: CameraResolution) -> None:
         """Change the camera resolution.

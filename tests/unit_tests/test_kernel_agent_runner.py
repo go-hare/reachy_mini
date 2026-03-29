@@ -11,6 +11,8 @@ from reachy_mini.runtime.profile_loader import load_profile_bundle
 from reachy_mini.runtime.scheduler import RuntimeScheduler
 from reachy_mini.runtime.tool_loader import build_runtime_tool_bundle
 from reachy_mini.runtime.tools import ReachyToolContext
+from reachy_mini.front.events import FrontToolExecution, FrontUserTurnResult
+from reachy_mini.runtime.camera_worker import ReactiveVisionEvent
 
 
 def _write_profile(profile_root: Path) -> None:
@@ -171,9 +173,46 @@ class FakeFront:
         self.reply_calls.append(kwargs)
         return "front hint"
 
+    async def handle_user_turn(self, **kwargs):
+        reply_text = await self.reply(**kwargs)
+        return FrontUserTurnResult(
+            reply_text=reply_text,
+            completes_turn=False,
+        )
+
     async def present(self, **kwargs):
         self.present_calls.append(kwargs)
         return "front final"
+
+    async def execute_tool_calls(self, calls):
+        results: list[FrontToolExecution] = []
+        for call in list(calls):
+            tool_name = str(getattr(call, "tool_name", "") or "")
+            arguments = dict(getattr(call, "arguments", {}) or {})
+            reason = str(getattr(call, "reason", "") or "")
+            tool = self.get_tool(tool_name)
+            if tool is None:
+                results.append(
+                    FrontToolExecution(
+                        tool_name=tool_name,
+                        arguments=arguments,
+                        reason=reason,
+                        success=False,
+                        result="tool not found",
+                    )
+                )
+                continue
+            execution = await tool.execute(**arguments)
+            results.append(
+                FrontToolExecution(
+                    tool_name=tool_name,
+                    arguments=arguments,
+                    reason=reason,
+                    success=True,
+                    result=str(execution or ""),
+                )
+            )
+        return results
 
     async def handle_signal(self, signal):
         self.signal_calls.append(signal)
@@ -287,6 +326,66 @@ class FakeAffectRuntime:
             pressure_delta=0.0,
             emotion_signal=self.emotion_signal,
         )
+
+
+class FakeReactiveVisionCameraWorker:
+    """Camera-worker stub exposing the new reactive-vision listener API."""
+
+    def __init__(self) -> None:
+        self.listeners: list[object] = []
+
+    def add_reactive_vision_listener(self, listener) -> None:
+        self.listeners.append(listener)
+
+    def remove_reactive_vision_listener(self, listener) -> None:
+        self.listeners = [item for item in self.listeners if item is not listener]
+
+    def emit(self, event: ReactiveVisionEvent) -> None:
+        for listener in list(self.listeners):
+            listener(event)
+
+
+class FakeVisionFront(FakeFront):
+    """Front stub that reacts to bridged reactive-vision signals."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.tools = [self.FakeMoveHeadTool(self.tool_runs), self.FakeExpressiveTool(self.tool_runs)]
+
+    class FakeMoveHeadTool:
+        def __init__(self, sink: list[dict[str, object]]) -> None:
+            self.name = "move_head"
+            self._sink = sink
+
+        def validate_params(self, params: dict[str, object]) -> list[str]:
+            _ = params
+            return []
+
+        async def execute(self, **kwargs):
+            self._sink.append(dict(kwargs))
+            return "front move executed"
+
+    async def handle_signal(self, signal):
+        signal_name = getattr(signal, "name", "")
+        if signal_name == "vision_attention_updated":
+            self.signal_calls.append(signal)
+            direction = str(getattr(signal, "metadata", {}).get("direction", "front") or "front")
+            return {
+                "signal_name": signal_name,
+                "lifecycle_state": "attending",
+                "surface_patch": {
+                    "phase": "attending",
+                    "source_signal": signal_name,
+                },
+                "tool_calls": [
+                    {
+                        "tool_name": "move_head",
+                        "arguments": {"direction": direction},
+                        "reason": "align gaze with reactive vision",
+                    }
+                ],
+            }
+        return await super().handle_signal(signal)
 
 
 def test_kernel_agent_runner_passes_affect_and_companion_through_front(tmp_path: Path) -> None:
@@ -428,6 +527,163 @@ def test_runtime_scheduler_publishes_front_tool_result_packets(tmp_path: Path) -
     asyncio.run(_exercise())
 
 
+def test_runtime_scheduler_tracks_non_surfaced_front_decisions(tmp_path: Path) -> None:
+    """Signal-only front reactions should still update the latest internal front decision."""
+
+    async def _exercise() -> None:
+        profile_root = tmp_path / "demo"
+        profile_root.mkdir()
+        _write_profile(profile_root)
+
+        profile = load_profile_bundle(profile_root)
+        config = load_profile_runtime_config(profile)
+        front = FakeFront()
+        kernel = FakeKernel()
+        runtime = RuntimeScheduler(
+            profile_root=profile.root,
+            front=front,
+            kernel=kernel,
+            affect_runtime=None,
+            front_style=config.front_style,
+        )
+
+        await runtime.start()
+        try:
+            await runtime.handle_user_speech_started(
+                thread_id="cli:main",
+                session_id="cli:main",
+                user_id="user",
+                user_text="喂",
+            )
+            latest_decision = runtime.get_thread_front_decision("cli:main")
+            surface_state = runtime.get_thread_surface_state("cli:main")
+        finally:
+            await runtime.stop()
+
+        assert latest_decision is not None
+        assert latest_decision["signal_name"] == "user_speech_started"
+        assert latest_decision["lifecycle_state"] == "listening"
+        assert latest_decision["surface_patch"]["phase"] == "listening"
+        assert latest_decision["surface_patch"]["source_signal"] == "user_speech_started"
+        assert surface_state is not None
+        assert surface_state["phase"] == "listening"
+        assert surface_state["thread_id"] == "cli:main"
+
+    asyncio.run(_exercise())
+
+
+def test_runtime_scheduler_bridges_reactive_vision_attention_into_front(tmp_path: Path) -> None:
+    """Reactive-vision attention events should bridge into the front signal path."""
+
+    async def _exercise() -> None:
+        profile_root = tmp_path / "demo"
+        profile_root.mkdir()
+        _write_profile(profile_root)
+
+        profile = load_profile_bundle(profile_root)
+        config = load_profile_runtime_config(profile)
+        front = FakeVisionFront()
+        kernel = FakeKernel()
+        camera_worker = FakeReactiveVisionCameraWorker()
+        runtime = RuntimeScheduler(
+            profile_root=profile.root,
+            front=front,
+            kernel=kernel,
+            affect_runtime=None,
+            front_style=config.front_style,
+            runtime_tool_context=ReachyToolContext(camera_worker=camera_worker),
+        )
+
+        await runtime.start()
+        try:
+            camera_worker.emit(
+                ReactiveVisionEvent(
+                    name="attention_acquired",
+                    metadata={
+                        "source": "reactive_vision",
+                        "direction": "left",
+                        "tracking_enabled": True,
+                    },
+                )
+            )
+            await asyncio.sleep(0.05)
+
+            latest_decision = runtime.get_thread_front_decision("app:main")
+            surface_state = runtime.get_thread_surface_state("app:main")
+        finally:
+            await runtime.stop()
+
+        assert [getattr(signal, "name", "") for signal in front.signal_calls] == [
+            "vision_attention_updated"
+        ]
+        assert latest_decision is not None
+        assert latest_decision["signal_name"] == "vision_attention_updated"
+        assert latest_decision["lifecycle_state"] == "attending"
+        assert latest_decision["surface_patch"]["phase"] == "attending"
+        assert front.tool_runs == [{"direction": "left"}]
+        assert surface_state is not None
+        assert surface_state["phase"] == "attending"
+        assert camera_worker.listeners == []
+
+    asyncio.run(_exercise())
+
+
+def test_runtime_scheduler_ignores_reactive_vision_while_listening(tmp_path: Path) -> None:
+    """Reactive-vision attention should not override an active listening phase."""
+
+    async def _exercise() -> None:
+        profile_root = tmp_path / "demo"
+        profile_root.mkdir()
+        _write_profile(profile_root)
+
+        profile = load_profile_bundle(profile_root)
+        config = load_profile_runtime_config(profile)
+        front = FakeVisionFront()
+        kernel = FakeKernel()
+        camera_worker = FakeReactiveVisionCameraWorker()
+        runtime = RuntimeScheduler(
+            profile_root=profile.root,
+            front=front,
+            kernel=kernel,
+            affect_runtime=None,
+            front_style=config.front_style,
+            runtime_tool_context=ReachyToolContext(camera_worker=camera_worker),
+        )
+
+        await runtime.start()
+        try:
+            await runtime.handle_user_speech_started(
+                thread_id="cli:main",
+                session_id="cli:main",
+                user_id="user",
+                user_text="喂",
+            )
+            camera_worker.emit(
+                ReactiveVisionEvent(
+                    name="attention_acquired",
+                    metadata={"source": "reactive_vision", "direction": "right"},
+                )
+            )
+            await asyncio.sleep(0.05)
+
+            latest_decision = runtime.get_thread_front_decision("cli:main")
+            surface_state = runtime.get_thread_surface_state("cli:main")
+        finally:
+            await runtime.stop()
+
+        assert [getattr(signal, "name", "") for signal in front.signal_calls] == [
+            "user_speech_started"
+        ]
+        assert latest_decision is not None
+        assert latest_decision["signal_name"] == "user_speech_started"
+        assert latest_decision["lifecycle_state"] == "listening"
+        assert surface_state is not None
+        assert surface_state["phase"] == "listening"
+        assert front.tool_runs == []
+
+    asyncio.run(_exercise())
+
+
 def test_runtime_scheduler_emits_assistant_audio_lifecycle_signals(tmp_path: Path) -> None:
     """Reply-audio playback should surface started/delta/finished lifecycle signals."""
 
@@ -479,6 +735,76 @@ def test_runtime_scheduler_emits_assistant_audio_lifecycle_signals(tmp_path: Pat
         assert "assistant_audio_finished" in signal_names
         assert signal_names.index("assistant_audio_started") < signal_names.index("assistant_audio_finished")
         assert signal_names.index("assistant_audio_finished") < signal_names.index("settling_entered")
+
+    asyncio.run(_exercise())
+
+
+def test_runtime_scheduler_reuses_front_reply_for_audio_when_kernel_returns_none(
+    tmp_path: Path,
+) -> None:
+    """When the kernel decides there is no task, the front reply should still become the final spoken reply."""
+
+    class FakeNoneKernel(FakeKernel):
+        async def publish_user_input(self, **kwargs):
+            self.user_inputs.append(kwargs)
+            await self._output_queue.put(
+                BrainOutput(
+                    event_id=str(kwargs.get("event_id", "")),
+                    type=BrainOutputType.response,
+                    response=BrainResponse(task_type=TaskType.none, reply=""),
+                )
+            )
+            return str(kwargs.get("event_id", ""))
+
+    async def _exercise() -> None:
+        profile_root = tmp_path / "demo"
+        profile_root.mkdir()
+        _write_profile(profile_root)
+
+        profile = load_profile_bundle(profile_root)
+        config = load_profile_runtime_config(profile)
+        front = FakeFront()
+        kernel = FakeNoneKernel()
+        runtime = RuntimeScheduler(
+            profile_root=profile.root,
+            front=front,
+            kernel=kernel,
+            affect_runtime=None,
+            front_style=config.front_style,
+        )
+
+        spoken_texts: list[str] = []
+        queue = runtime.subscribe_front_outputs()
+
+        async def final_reply_handler(payload: dict[str, object]) -> bool:
+            spoken_texts.append(str(payload.get("text", "") or ""))
+            return True
+
+        await runtime.start()
+        try:
+            await runtime.handle_user_text(
+                thread_id="cli:main",
+                session_id="cli:main",
+                user_id="user",
+                user_text="帮我看看日志",
+                final_reply_handler=final_reply_handler,
+            )
+            await runtime.wait_for_thread_idle("cli:main")
+
+            final_reply = ""
+            while not queue.empty():
+                packet = queue.get_nowait()
+                try:
+                    if packet.thread_id == "cli:main" and packet.type == "front_final_done":
+                        final_reply = str(packet.text or "")
+                finally:
+                    queue.task_done()
+        finally:
+            runtime.unsubscribe_front_outputs(queue)
+            await runtime.stop()
+
+        assert final_reply == "front hint"
+        assert spoken_texts == ["front hint"]
 
     asyncio.run(_exercise())
 
@@ -640,6 +966,7 @@ def test_runtime_scheduler_interrupts_reply_audio_when_user_speech_starts(
             affect_runtime=None,
             front_style=config.front_style,
             idle_tick_interval_s=0.0,
+            speech_interrupt_grace_s=0.02,
             runtime_tool_context=ReachyToolContext(
                 reachy_mini=object(),
                 reply_audio_service=reply_audio_service,
@@ -685,5 +1012,122 @@ def test_runtime_scheduler_interrupts_reply_audio_when_user_speech_starts(
         assert "settling_entered" not in signal_names
         assert latest_surface_state is not None
         assert latest_surface_state["phase"] == "listening"
+
+    asyncio.run(_exercise())
+
+
+def test_runtime_scheduler_keeps_reply_audio_when_user_speech_stops_within_grace(
+    tmp_path: Path,
+) -> None:
+    """Brief speech-start blips should not interrupt reply audio playback."""
+
+    class FakeGracePeriodReplyAudioService:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.finished = asyncio.Event()
+            self.interrupted = asyncio.Event()
+            self.interrupt_calls = 0
+
+        async def speak_text(
+            self,
+            text: str,
+            *,
+            on_started=None,
+            on_audio_delta=None,
+            on_finished=None,
+        ) -> bool:
+            _ = text
+            if on_started is not None:
+                await on_started()
+            self.started.set()
+            if on_audio_delta is not None:
+                await on_audio_delta("demo-delta")
+            try:
+                await asyncio.wait_for(self.interrupted.wait(), timeout=0.08)
+            except asyncio.TimeoutError:
+                pass
+            if on_finished is not None:
+                await on_finished(not self.interrupted.is_set())
+            self.finished.set()
+            return True
+
+        async def interrupt_playback(self) -> bool:
+            if self.interrupted.is_set():
+                return False
+            self.interrupt_calls += 1
+            self.interrupted.set()
+            await asyncio.sleep(0)
+            return True
+
+    async def _exercise() -> None:
+        profile_root = tmp_path / "demo"
+        profile_root.mkdir()
+        _write_profile(profile_root)
+
+        profile = load_profile_bundle(profile_root)
+        config = load_profile_runtime_config(profile)
+        front = FakeFront()
+        kernel = FakeKernel()
+        reply_audio_service = FakeGracePeriodReplyAudioService()
+        runtime = RuntimeScheduler(
+            profile_root=profile.root,
+            front=front,
+            kernel=kernel,
+            affect_runtime=None,
+            front_style=config.front_style,
+            idle_tick_interval_s=0.0,
+            speech_interrupt_grace_s=0.05,
+            runtime_tool_context=ReachyToolContext(
+                reachy_mini=object(),
+                reply_audio_service=reply_audio_service,
+            ),
+        )
+
+        async def final_reply_handler(payload: dict[str, object]) -> bool:
+            return await reply_audio_service.speak_text(
+                str(payload.get("text", "") or ""),
+                on_started=payload.get("on_started"),
+                on_audio_delta=payload.get("on_audio_delta"),
+                on_finished=payload.get("on_finished"),
+            )
+
+        await runtime.start()
+        try:
+            turn_task = asyncio.create_task(
+                runtime.handle_user_text(
+                    thread_id="cli:main",
+                    session_id="cli:main",
+                    user_id="user",
+                    user_text="帮我看看日志",
+                    final_reply_handler=final_reply_handler,
+                )
+            )
+            await reply_audio_service.started.wait()
+            await runtime.handle_user_speech_started(
+                thread_id="cli:main",
+                session_id="cli:main",
+                user_id="user",
+                user_text="欸",
+            )
+            await asyncio.sleep(0.01)
+            await runtime.handle_user_speech_stopped(
+                thread_id="cli:main",
+                session_id="cli:main",
+                user_id="user",
+                user_text="",
+            )
+            await turn_task
+            await runtime.wait_for_thread_idle("cli:main")
+            latest_surface_state = runtime.get_thread_surface_state("cli:main")
+        finally:
+            await runtime.stop()
+
+        signal_names = [getattr(signal, "name", "") for signal in front.signal_calls]
+        assert reply_audio_service.interrupt_calls == 0
+        assert "assistant_audio_started" in signal_names
+        assert "assistant_audio_finished" in signal_names
+        assert "settling_entered" in signal_names
+        assert latest_surface_state is not None
+        assert latest_surface_state["phase"] == "idle"
 
     asyncio.run(_exercise())

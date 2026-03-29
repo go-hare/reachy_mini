@@ -12,6 +12,7 @@ interface VerticalSliderProps {
   smoothedValue?: number
   height?: number
   step?: number
+  compact?: boolean
 }
 
 const VerticalSlider = memo(function VerticalSlider({
@@ -26,6 +27,7 @@ const VerticalSlider = memo(function VerticalSlider({
   smoothedValue,
   height = 120,
   step = 0.001,
+  compact = false,
 }: VerticalSliderProps) {
   const [draftValue, setDraftValue] = useState(value)
 
@@ -38,10 +40,10 @@ const VerticalSlider = memo(function VerticalSlider({
     typeof smoothedValue === "number" ? `${100 - ((smoothedValue - min) / (max - min)) * 100}%` : null
 
   return (
-    <div className="flex flex-col items-center gap-2">
+    <div className={`flex flex-col items-center ${compact ? "gap-1.5" : "gap-2"}`}>
       <div className={centered ? "space-y-0.5 text-center" : "w-full space-y-0.5"}>
-        <p className="text-[11px] font-semibold text-foreground">{label}</p>
-        <p className="font-mono text-[10px] text-muted-foreground">
+        <p className={compact ? "text-[10px] font-semibold text-foreground" : "text-[11px] font-semibold text-foreground"}>{label}</p>
+        <p className={compact ? "font-mono text-[9px] text-muted-foreground" : "font-mono text-[10px] text-muted-foreground"}>
           {displayValue}
           {unit === "deg" ? "deg" : ` ${unit}`}
         </p>

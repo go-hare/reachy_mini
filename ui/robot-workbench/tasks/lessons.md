@@ -1,7 +1,21 @@
 # Lessons
 
+## 2026-03-29
+
+- When the user points to a concrete desktop reference and says “I want this kind,” treat it as a request for the overall visual language and surface hierarchy, not just spacing or panel-order tweaks.
+- When a floating camera or preview card belongs to the 3D stage, do not reserve a matching column in the header below it; keep the overlay attached to the viewport and let the title/header block take the full row width.
+- When the user says “look at their layout, don’t guess,” stop locally optimizing one panel at a time and instead match the reference’s full-screen composition: viewport height, controller density, and per-column overflow behavior together.
+- When the reference shell is column-based, do not wrap each column in another oversized rounded card; copy the column padding, split, and overflow behavior first, then refine the inner controls.
+- When the user asks for adaptive desktop behavior, stop carrying over fixed reference pixel widths literally; keep the reference structure, but convert shell columns to responsive `minmax(..., 1fr)` behavior so wide windows do not leave dead gutters.
+- When the user asks for the top controls to be “smaller,” keep the startup actions in place and compact the toolbar sizing; do not interpret that as a request to remove the controls.
+- When the user marks a specific block and points to an empty target area, treat that as a request to relocate the whole block into that target region, not just restyle it in place.
+- When the user says a control block should move "up a bit" inside a column, prefer attaching it to the main scroll/content stack instead of leaving it in a separately padded footer region.
+- When a stage log panel starts collapsing into a shallow strip, stop relying on leftover flex height and switch it to a stable compact console size like the desktop reference.
+- When a reference camera preview is supposed to be live, do not stop at matching the black placeholder box; wire the actual stream transport into the overlay.
+
 ## 2026-03-27
 
+- When the user says a previously discussed desktop surface no longer exists, stop extending the partial integration and remove the concept end-to-end from settings, backend commands, and tests instead of only hiding the UI.
 - When the user says the current agent execution chain will be replaced, stop polishing status/monitor surfaces around it and trim the shell back to reusable desktop scaffolding.
 - When the user asks to remove desktop hotkeys, treat it as a full-surface cleanup: menu accelerators, Tauri global registrations, frontend shortcut listeners, and shortcut documentation should all be removed together.
 - When the user asks for a visible header change on the project page, verify the current screenshot state first and do not assume the Welcome screen needs the same treatment.

@@ -122,6 +122,7 @@ class GStreamerAudio:
         self._playbin: Optional[Gst.Element] = None
         self._pipeline_playback = Gst.Pipeline.new("audio_player")
         self._appsrc: Optional[GstApp] = None
+        self._appsrc_pts = 0
         self._init_pipeline_playback(self._pipeline_playback)
         self._bus_playback = self._pipeline_playback.get_bus()
         self._bus_playback.add_watch(
@@ -185,6 +186,7 @@ class GStreamerAudio:
         self._appsrc = Gst.ElementFactory.make("appsrc")
         self._appsrc.set_property("format", Gst.Format.TIME)
         self._appsrc.set_property("is-live", True)
+        self._appsrc.set_property("do-timestamp", True)
         caps = Gst.Caps.from_string(
             f"audio/x-raw,format=F32LE,channels={self.CHANNELS},rate={self.SAMPLE_RATE},layout=interleaved"
         )
@@ -304,6 +306,7 @@ class GStreamerAudio:
 
     def start_playing(self) -> None:
         """Start the playback pipeline so ``push_audio_sample`` can feed data."""
+        self._appsrc_pts = 0
         self._pipeline_playback.set_state(Gst.State.PLAYING)
         GLib.timeout_add_seconds(5, self._dump_latency)
 
@@ -332,7 +335,12 @@ class GStreamerAudio:
 
         """
         if self._appsrc is not None:
+            num_samples = int(data.shape[0]) if data.ndim >= 1 else 0
+            duration_ns = (num_samples * Gst.SECOND) // self.SAMPLE_RATE
             buf = Gst.Buffer.new_wrapped(data.tobytes())
+            buf.pts = self._appsrc_pts
+            buf.duration = duration_ns
+            self._appsrc_pts += duration_ns
             self._appsrc.push_buffer(buf)
         else:
             self.logger.warning(
@@ -341,6 +349,7 @@ class GStreamerAudio:
 
     def stop_playing(self) -> None:
         """Stop the playback pipeline."""
+        self._appsrc_pts = 0
         self._pipeline_playback.set_state(Gst.State.NULL)
         if self._playbin is not None:
             self._playbin.set_state(Gst.State.NULL)

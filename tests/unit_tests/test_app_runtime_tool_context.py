@@ -3,6 +3,7 @@
 import asyncio
 from pathlib import Path
 from types import SimpleNamespace
+import time
 from unittest.mock import patch
 
 import numpy as np
@@ -381,6 +382,88 @@ def test_runtime_reply_audio_helper_passes_lifecycle_callbacks_when_supported(
         "demo-delta",
         "finished:True",
     ]
+
+
+def test_runtime_microphone_bridge_blocks_input_during_reply_audio_cooldown(
+    tmp_path: Path,
+) -> None:
+    """Resident microphone bridge should stay blocked briefly after reply audio playback."""
+
+    profile_root = tmp_path / "profiles"
+    profile_root.mkdir()
+    _write_profile(
+        profile_root,
+        config_jsonl=(
+            '{"kind":"front","mode":"text","style":"friendly_concise","history_limit":4}\n'
+            '{"kind":"speech_input","enabled":true,"provider":"mlx_whisper","model":"mlx-community/whisper-small-mlx","playback_block_cooldown_ms":900}\n'
+            '{"kind":"front_model","provider":"mock","model":"reachy_mini_front_mock","temperature":0.4}\n'
+            '{"kind":"kernel_model","provider":"mock","model":"reachy_mini_kernel_mock","temperature":0.2}\n'
+        ),
+    )
+
+    app = ToolContextApp(profile_root)
+    app.runtime_config = SimpleNamespace(
+        speech_input=SimpleNamespace(
+            enabled=True,
+            provider="mlx_whisper",
+            model="mlx-community/whisper-small-mlx",
+            language="zh",
+            playback_block_cooldown_ms=900,
+        ),
+        front_model=SimpleNamespace(api_key="", base_url=""),
+    )
+
+    class FakeBridge:
+        def __init__(self, **kwargs) -> None:
+            self.input_blocked = kwargs["input_blocked"]
+
+    captured: dict[str, object] = {}
+
+    def _build_bridge(**kwargs):
+        bridge = FakeBridge(**kwargs)
+        captured["bridge"] = bridge
+        return bridge
+
+    async def _fake_play_runtime_reply_audio(context, payload):
+        _ = context
+        _ = payload
+        await asyncio.sleep(0)
+        return True
+
+    app.runtime_tool_context = SimpleNamespace(
+        reachy_mini=SimpleNamespace(media=object()),
+        speech_driver=SimpleNamespace(speech_active=False),
+        reply_audio_service=SimpleNamespace(_active_playback_task=None),
+    )
+
+    with patch(
+        "reachy_mini.runtime.speech_input.build_runtime_speech_input_transcriber",
+        return_value=object(),
+    ), patch(
+        "reachy_mini.runtime.speech_input.RuntimeMicrophoneBridge",
+        side_effect=_build_bridge,
+    ):
+        bridge = app._build_runtime_microphone_bridge(runtime=SimpleNamespace())
+
+    assert bridge is captured["bridge"]
+    assert bridge.input_blocked() is False
+
+    with patch.object(
+        app.runtime_host_adapter,
+        "play_runtime_reply_audio",
+        side_effect=_fake_play_runtime_reply_audio,
+    ):
+        result = asyncio.run(
+            app.play_runtime_reply_audio(
+                {"thread_id": "app:test", "turn_id": "turn-1", "text": "final reply"}
+            )
+        )
+
+    assert result is True
+    assert bridge.input_blocked() is True
+
+    app._runtime_speech_input_block_until = time.monotonic() - 1.0
+    assert bridge.input_blocked() is False
 
 
 def test_build_runtime_tool_context_builds_reply_audio_service_when_enabled(

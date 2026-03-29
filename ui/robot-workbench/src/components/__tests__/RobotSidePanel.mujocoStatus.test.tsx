@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import { MujocoPanel } from "@/components/workbench/RobotSidePanel";
 
@@ -212,6 +212,64 @@ if (typeof document !== "undefined")
       expect(screen.getAllByText("Embedded 3D").length).toBeGreaterThan(0);
     });
 
+    it("does not render obsolete web viewer controls", async () => {
+      vi.mocked(fetch).mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          robot_name: "reachy_mini",
+          state: "running",
+          simulation_enabled: true,
+          mockup_sim_enabled: false,
+          backend_status: {
+            motor_control_mode: "enabled",
+            error: null,
+          },
+          error: null,
+          version: "1.2.3",
+        }),
+      } as Response);
+
+      mockWorkbenchSettings({
+        mujoco_live_status_enabled: true,
+        daemon_base_url: "http://localhost:8000",
+      });
+
+      render(<MujocoPanel projectPath="/projects/sample" />);
+
+      await waitFor(() => {
+        expect(screen.getByText("MuJoCo")).toBeInTheDocument();
+      });
+
+      expect(screen.queryByText("Web Viewer")).toBeNull();
+      expect(screen.queryByRole("button", { name: "Start Viewer" })).toBeNull();
+      expect(screen.queryByTestId("mujoco-web-viewer-iframe")).toBeNull();
+    });
+
+    it("renders the expanded MuJoCo layout with a top toolbar above the split content", async () => {
+      mockWorkbenchSettings({
+        mujoco_live_status_enabled: true,
+        daemon_base_url: "http://localhost:8000",
+      });
+
+      render(<MujocoPanel projectPath="/projects/sample" layout="expanded" />);
+
+      const toolbar = screen.getByTestId("mujoco-expanded-toolbar");
+      const splitLayout = screen.getByTestId("mujoco-primary-layout");
+
+      expect(toolbar).toBeInTheDocument();
+      expect(toolbar.className).toContain("lg:flex-nowrap");
+      expect(splitLayout.className).toContain(
+        "xl:grid-cols-[minmax(300px,0.84fr)_minmax(340px,1.16fr)]",
+      );
+      expect(
+        toolbar.compareDocumentPosition(splitLayout) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+      expect(within(toolbar).getByRole("button", { name: "Start" })).toBeInTheDocument();
+      expect(within(toolbar).getByRole("button", { name: "Stop" })).toBeInTheDocument();
+      expect(within(toolbar).getByRole("button", { name: "Refresh" })).toBeInTheDocument();
+    });
+
     it("starts the desktop-managed simulator with the current project path", async () => {
       vi.mocked(fetch).mockResolvedValue({
         ok: true,
@@ -253,9 +311,7 @@ if (typeof document !== "undefined")
         );
       });
 
-      expect(
-        await screen.findByText("Desktop Runtime Live"),
-      ).toBeInTheDocument();
+      expect((await screen.findAllByText("Live")).length).toBeGreaterThan(0);
       expect(screen.getByText("4242")).toBeInTheDocument();
     });
   });

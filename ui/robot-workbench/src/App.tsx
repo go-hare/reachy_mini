@@ -23,7 +23,10 @@ import { ProjectIdentityHeader } from "@/components/project-identity-header"
 import { ProjectChooserModal } from "@/components/ProjectChooserModal"
 import { DashboardView } from "@/components/dashboard/DashboardView"
 import { DocsViewer } from "@/components/DocsViewer"
-import { RobotWorkbenchDock } from "@/components/workbench/RobotSidePanel"
+import {
+  RobotWorkbenchDock,
+  RobotWorkbenchMainPanel,
+} from "@/components/workbench/RobotSidePanel"
 import { useRecentProjects, RecentProject } from "@/hooks/use-recent-projects"
 import { useSettings } from "@/contexts/settings-context"
 import type { MenuEventPayload } from "@/types/menu"
@@ -66,14 +69,22 @@ function ProjectView({ project, selectedAgent, activeTab, onTabChange, onExecuti
           <TabsContent value="history" className="flex-1 flex flex-col m-0 min-h-0 min-w-0" forceMount>
             <HistoryView project={project} />
           </TabsContent>
+
+          <TabsContent value="robot" className="flex-1 flex flex-col m-0 min-h-0 min-w-0">
+            <RobotWorkbenchMainPanel
+              projectPath={project.path}
+            />
+          </TabsContent>
         </Tabs>
       </div>
-      <RobotWorkbenchDock
-        projectName={project.name}
-        projectPath={project.path}
-        collapsed={robotPanelCollapsed}
-        onToggle={() => setRobotPanelCollapsed((current) => !current)}
-      />
+      {activeTab === 'robot' ? null : (
+        <RobotWorkbenchDock
+          projectName={project.name}
+          projectPath={project.path}
+          collapsed={robotPanelCollapsed}
+          onToggle={() => setRobotPanelCollapsed((current) => !current)}
+        />
+      )}
     </div>
   )
 }

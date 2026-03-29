@@ -1,5 +1,5 @@
 import * as React from "react"
-import { Code, Copy, FolderGit, History, MessageCircle } from "lucide-react"
+import { Bot, Code, Copy, FolderGit, History, MessageCircle } from "lucide-react"
 
 import { RecentProject } from "@/hooks/use-recent-projects"
 import { Button } from "@/components/ui/button"
@@ -17,6 +17,7 @@ const VIEW_TABS = [
   { value: "chat", icon: MessageCircle, label: "Chat" },
   { value: "code", icon: Code, label: "Code" },
   { value: "history", icon: History, label: "History" },
+  { value: "robot", icon: Bot, label: "Robot Workbench" },
 ] as const
 
 export function ProjectIdentityHeader({

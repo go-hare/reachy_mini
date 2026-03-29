@@ -205,6 +205,7 @@ class MovementManager:
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._is_listening = False
+        self._surface_active = False
         self._last_commanded_pose: FullBodyPose = clone_full_body_pose(
             self.state.last_primary_pose
         )
@@ -251,6 +252,7 @@ class MovementManager:
         self._shared_state_lock = threading.Lock()
         self._shared_last_activity_time = self.state.last_activity_time
         self._shared_is_listening = self._is_listening
+        self._shared_surface_active = self._surface_active
         self._status_lock = threading.Lock()
         self._freq_stats = LoopFrequencyStats()
         self._freq_snapshot = LoopFrequencyStats()
@@ -295,14 +297,23 @@ class MovementManager:
 
         self._command_queue.put(("mark_activity", None))
 
+    def set_surface_active(self, active: bool) -> None:
+        """Keep the body in a quiet non-idle presence state while a surface phase is active."""
+
+        with self._shared_state_lock:
+            if self._shared_surface_active == bool(active):
+                return
+        self._command_queue.put(("set_surface_active", bool(active)))
+
     def is_idle(self) -> bool:
         """Whether the robot has been idle longer than the configured delay."""
 
         with self._shared_state_lock:
             last_activity = self._shared_last_activity_time
             listening = self._shared_is_listening
+            surface_active = self._shared_surface_active
 
-        if listening:
+        if listening or surface_active:
             return False
         return self._now() - last_activity >= self.idle_inactivity_delay
 
@@ -397,12 +408,26 @@ class MovementManager:
             self.state.update_activity()
             return
 
+        if command == "set_surface_active":
+            desired_state = bool(payload)
+            if self._surface_active == desired_state:
+                return
+
+            self._surface_active = desired_state
+            if desired_state and isinstance(self.state.current_move, BreathingMove):
+                self.state.current_move = None
+                self.state.move_start_time = None
+                self._breathing_active = False
+            self.state.update_activity()
+            return
+
         logger.warning("Unknown movement-manager command: %s", command)
 
     def _publish_shared_state(self) -> None:
         with self._shared_state_lock:
             self._shared_last_activity_time = self.state.last_activity_time
             self._shared_is_listening = self._is_listening
+            self._shared_surface_active = self._surface_active
 
     def _manage_move_queue(self, current_time: float) -> None:
         current_move = self.state.current_move
@@ -425,6 +450,7 @@ class MovementManager:
             self.state.current_move is None
             and not self.move_queue
             and not self._is_listening
+            and not self._surface_active
             and not self._breathing_active
         ):
             idle_for = current_time - self.state.last_activity_time
@@ -448,7 +474,9 @@ class MovementManager:
                     self._breathing_active = False
                     logger.error("Failed to start breathing: %s", exc)
 
-        if isinstance(self.state.current_move, BreathingMove) and self.move_queue:
+        if isinstance(self.state.current_move, BreathingMove) and (
+            self.move_queue or self._surface_active
+        ):
             self.state.current_move = None
             self.state.move_start_time = None
             self._breathing_active = False
@@ -714,6 +742,7 @@ class MovementManager:
         return {
             "queue_size": len(self.move_queue),
             "is_listening": self._is_listening,
+            "surface_active": self._surface_active,
             "breathing_active": self._breathing_active,
             "last_commanded_pose": {
                 "head": pose_snapshot[0].tolist(),

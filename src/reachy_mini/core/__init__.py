@@ -1,6 +1,6 @@
-"""Agent-core building blocks for Reachy Mini."""
+"""Agent harness kernel bootstrapped from the legacy core spine."""
 
-from .agent import BrainKernel
+from .agent import BrainKernel, BrainKernel as AgentHarnessKernel
 from .memory import (
     BasicBlockMemory,
     Block,
@@ -55,6 +55,7 @@ from .tooling import (
 
 __all__ = [
     "BaseToolRule",
+    "AgentHarnessKernel",
     "BasicBlockMemory",
     "Block",
     "BrainEvent",

@@ -47,11 +47,7 @@ import { useLLMSettings } from "@/hooks/use-llm-settings";
 import { useSettings as useAppSettingsContext } from "@/contexts/settings-context";
 import type { SettingsModalProps, SettingsTab } from "@/types/settings";
 import {
-  DEFAULT_MUJOCO_WEB_VIEWER_LAUNCH_COMMAND,
-  DEFAULT_MUJOCO_WEB_VIEWER_URL,
   getDefaultRobotWorkbenchSettings,
-  normalizeWorkbenchLaunchCommand,
-  normalizeWorkbenchViewerUrl,
   normalizeReachyDaemonBaseUrl,
 } from "@/lib/reachy-daemon";
 import {
@@ -204,20 +200,6 @@ export function SettingsModal({
     useState<boolean>(
       getDefaultRobotWorkbenchSettings().mujoco_live_status_enabled,
     );
-  const [mujocoViewerUrl, setMujocoViewerUrl] = useState<string>(
-    getDefaultRobotWorkbenchSettings().mujoco_viewer_url,
-  );
-  const [tempMujocoViewerUrl, setTempMujocoViewerUrl] = useState<string>(
-    getDefaultRobotWorkbenchSettings().mujoco_viewer_url,
-  );
-  const [mujocoViewerLaunchCommand, setMujocoViewerLaunchCommand] =
-    useState<string>(
-      getDefaultRobotWorkbenchSettings().mujoco_viewer_launch_command,
-    );
-  const [tempMujocoViewerLaunchCommand, setTempMujocoViewerLaunchCommand] =
-    useState<string>(
-      getDefaultRobotWorkbenchSettings().mujoco_viewer_launch_command,
-    );
   const [reachyDaemonBaseUrl, setReachyDaemonBaseUrl] = useState<string>(
     getDefaultRobotWorkbenchSettings().daemon_base_url,
   );
@@ -351,14 +333,6 @@ export function SettingsModal({
             const mujocoStatusEnabled =
               robotSettings.mujoco_live_status_enabled ??
               getDefaultRobotWorkbenchSettings().mujoco_live_status_enabled;
-            const mujocoViewer = normalizeWorkbenchViewerUrl(
-              robotSettings.mujoco_viewer_url ??
-                getDefaultRobotWorkbenchSettings().mujoco_viewer_url,
-            );
-            const mujocoViewerLaunchCommand = normalizeWorkbenchLaunchCommand(
-              robotSettings.mujoco_viewer_launch_command ??
-                getDefaultRobotWorkbenchSettings().mujoco_viewer_launch_command,
-            );
             const daemonBaseUrl = normalizeReachyDaemonBaseUrl(
               robotSettings.daemon_base_url ??
                 getDefaultRobotWorkbenchSettings().daemon_base_url,
@@ -367,10 +341,6 @@ export function SettingsModal({
             setTempReachyLiveStatusEnabled(Boolean(liveStatusEnabled));
             setMujocoLiveStatusEnabled(Boolean(mujocoStatusEnabled));
             setTempMujocoLiveStatusEnabled(Boolean(mujocoStatusEnabled));
-            setMujocoViewerUrl(mujocoViewer);
-            setTempMujocoViewerUrl(mujocoViewer);
-            setMujocoViewerLaunchCommand(mujocoViewerLaunchCommand);
-            setTempMujocoViewerLaunchCommand(mujocoViewerLaunchCommand);
             setReachyDaemonBaseUrl(daemonBaseUrl);
             setTempReachyDaemonBaseUrl(daemonBaseUrl);
           }
@@ -505,8 +475,6 @@ export function SettingsModal({
       tempShowOnboardingOnStart !== showOnboardingOnStart ||
       tempReachyLiveStatusEnabled !== reachyLiveStatusEnabled ||
       tempMujocoLiveStatusEnabled !== mujocoLiveStatusEnabled ||
-      tempMujocoViewerUrl !== mujocoViewerUrl ||
-      tempMujocoViewerLaunchCommand !== mujocoViewerLaunchCommand ||
       tempReachyDaemonBaseUrl !== reachyDaemonBaseUrl ||
       tempChatHistoryStyle !== chatHistoryStyle ||
       JSON.stringify(tempAgentSettings) !== JSON.stringify(agentSettings) ||
@@ -549,10 +517,6 @@ export function SettingsModal({
     reachyLiveStatusEnabled,
     tempMujocoLiveStatusEnabled,
     mujocoLiveStatusEnabled,
-    tempMujocoViewerUrl,
-    mujocoViewerUrl,
-    tempMujocoViewerLaunchCommand,
-    mujocoViewerLaunchCommand,
     tempReachyDaemonBaseUrl,
     reachyDaemonBaseUrl,
     tempChatHistoryStyle,
@@ -721,16 +685,9 @@ export function SettingsModal({
     const normalizedDaemonUrl = normalizeReachyDaemonBaseUrl(
       tempReachyDaemonBaseUrl,
     );
-    const normalizedMujocoViewerUrl =
-      normalizeWorkbenchViewerUrl(tempMujocoViewerUrl);
-    const normalizedMujocoViewerLaunchCommand = normalizeWorkbenchLaunchCommand(
-      tempMujocoViewerLaunchCommand,
-    );
     const robotSettingsChanged =
       tempReachyLiveStatusEnabled !== reachyLiveStatusEnabled ||
       tempMujocoLiveStatusEnabled !== mujocoLiveStatusEnabled ||
-      normalizedMujocoViewerUrl !== mujocoViewerUrl ||
-      normalizedMujocoViewerLaunchCommand !== mujocoViewerLaunchCommand ||
       normalizedDaemonUrl !== reachyDaemonBaseUrl;
 
     if (!settingsHydrated || !robotSettingsChanged) return;
@@ -741,17 +698,11 @@ export function SettingsModal({
           robot_settings: {
             live_status_enabled: tempReachyLiveStatusEnabled,
             mujoco_live_status_enabled: tempMujocoLiveStatusEnabled,
-            mujoco_viewer_url: normalizedMujocoViewerUrl,
-            mujoco_viewer_launch_command: normalizedMujocoViewerLaunchCommand,
             daemon_base_url: normalizedDaemonUrl,
           },
         });
         setReachyLiveStatusEnabled(tempReachyLiveStatusEnabled);
         setMujocoLiveStatusEnabled(tempMujocoLiveStatusEnabled);
-        setMujocoViewerUrl(normalizedMujocoViewerUrl);
-        setTempMujocoViewerUrl(normalizedMujocoViewerUrl);
-        setMujocoViewerLaunchCommand(normalizedMujocoViewerLaunchCommand);
-        setTempMujocoViewerLaunchCommand(normalizedMujocoViewerLaunchCommand);
         setReachyDaemonBaseUrl(normalizedDaemonUrl);
         setTempReachyDaemonBaseUrl(normalizedDaemonUrl);
       } catch (e) {
@@ -765,14 +716,10 @@ export function SettingsModal({
   }, [
     tempReachyLiveStatusEnabled,
     tempMujocoLiveStatusEnabled,
-    tempMujocoViewerUrl,
-    tempMujocoViewerLaunchCommand,
     tempReachyDaemonBaseUrl,
     settingsHydrated,
     reachyLiveStatusEnabled,
     mujocoLiveStatusEnabled,
-    mujocoViewerUrl,
-    mujocoViewerLaunchCommand,
     reachyDaemonBaseUrl,
   ]);
 
@@ -1036,10 +983,6 @@ export function SettingsModal({
         robot_settings: {
           live_status_enabled: tempReachyLiveStatusEnabled,
           mujoco_live_status_enabled: tempMujocoLiveStatusEnabled,
-          mujoco_viewer_url: normalizeWorkbenchViewerUrl(tempMujocoViewerUrl),
-          mujoco_viewer_launch_command: normalizeWorkbenchLaunchCommand(
-            tempMujocoViewerLaunchCommand,
-          ),
           daemon_base_url: normalizeReachyDaemonBaseUrl(
             tempReachyDaemonBaseUrl,
           ),
@@ -1084,14 +1027,6 @@ export function SettingsModal({
       setChatHistoryStyle(tempChatHistoryStyle);
       setReachyLiveStatusEnabled(tempReachyLiveStatusEnabled);
       setMujocoLiveStatusEnabled(tempMujocoLiveStatusEnabled);
-      const normalizedMujocoViewerUrl =
-        normalizeWorkbenchViewerUrl(tempMujocoViewerUrl);
-      setMujocoViewerUrl(normalizedMujocoViewerUrl);
-      setTempMujocoViewerUrl(normalizedMujocoViewerUrl);
-      const normalizedMujocoViewerLaunchCommand =
-        normalizeWorkbenchLaunchCommand(tempMujocoViewerLaunchCommand);
-      setMujocoViewerLaunchCommand(normalizedMujocoViewerLaunchCommand);
-      setTempMujocoViewerLaunchCommand(normalizedMujocoViewerLaunchCommand);
       const normalizedDaemonUrl = normalizeReachyDaemonBaseUrl(
         tempReachyDaemonBaseUrl,
       );
@@ -1132,8 +1067,6 @@ export function SettingsModal({
     setTempChatHistoryStyle(chatHistoryStyle);
     setTempReachyLiveStatusEnabled(reachyLiveStatusEnabled);
     setTempMujocoLiveStatusEnabled(mujocoLiveStatusEnabled);
-    setTempMujocoViewerUrl(mujocoViewerUrl);
-    setTempMujocoViewerLaunchCommand(mujocoViewerLaunchCommand);
     setTempReachyDaemonBaseUrl(reachyDaemonBaseUrl);
     setTempAgentSettings({ ...agentSettings });
     if (allAgentSettings) {
@@ -1304,23 +1237,6 @@ export function SettingsModal({
                       tempMujocoLiveStatusEnabled={tempMujocoLiveStatusEnabled}
                       onMujocoLiveStatusEnabledChange={
                         setTempMujocoLiveStatusEnabled
-                      }
-                      tempMujocoViewerUrl={tempMujocoViewerUrl}
-                      onMujocoViewerUrlChange={setTempMujocoViewerUrl}
-                      onApplyMujocoViewerPreset={() =>
-                        setTempMujocoViewerUrl(DEFAULT_MUJOCO_WEB_VIEWER_URL)
-                      }
-                      onClearMujocoViewerUrl={() => setTempMujocoViewerUrl("")}
-                      tempMujocoViewerLaunchCommand={
-                        tempMujocoViewerLaunchCommand
-                      }
-                      onMujocoViewerLaunchCommandChange={
-                        setTempMujocoViewerLaunchCommand
-                      }
-                      onApplyMujocoViewerLaunchCommandPreset={() =>
-                        setTempMujocoViewerLaunchCommand(
-                          DEFAULT_MUJOCO_WEB_VIEWER_LAUNCH_COMMAND,
-                        )
                       }
                       tempReachyDaemonBaseUrl={tempReachyDaemonBaseUrl}
                       onReachyDaemonBaseUrlChange={setTempReachyDaemonBaseUrl}

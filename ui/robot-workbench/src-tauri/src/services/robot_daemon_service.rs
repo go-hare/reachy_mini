@@ -29,18 +29,8 @@ pub struct RobotDaemonManager {
 }
 
 #[derive(Clone)]
-pub struct MujocoViewerServiceManager {
-    manager: ManagedProcessManager,
-}
-
-#[derive(Clone)]
 struct ManagedProcessManager {
     inner: Arc<Mutex<ManagedProcessState>>,
-}
-
-enum ProcessStopStrategy {
-    DirectChild,
-    TreeOnWindows,
 }
 
 struct ManagedProcess {
@@ -67,14 +57,6 @@ impl Default for RobotDaemonManager {
     }
 }
 
-impl Default for MujocoViewerServiceManager {
-    fn default() -> Self {
-        Self {
-            manager: ManagedProcessManager::new(""),
-        }
-    }
-}
-
 impl RobotDaemonManager {
     pub fn start_sim(
         &self,
@@ -88,31 +70,7 @@ impl RobotDaemonManager {
     }
 
     pub fn stop(&self) -> Result<RobotDaemonProcessStatus, String> {
-        self.manager.stop(ProcessStopStrategy::DirectChild)
-    }
-
-    pub fn status(&self) -> Result<RobotDaemonProcessStatus, String> {
-        self.manager.status()
-    }
-}
-
-impl MujocoViewerServiceManager {
-    pub fn start(
-        &self,
-        working_dir: Option<String>,
-        launch_command: String,
-    ) -> Result<RobotDaemonProcessStatus, String> {
-        let normalized_command = normalize_launch_command(&launch_command).ok_or_else(|| {
-            "MuJoCo viewer launch command is empty. Set it in Settings first.".to_string()
-        })?;
-        let command = build_shell_command(&normalized_command);
-
-        self.manager
-            .start_command(working_dir, command, normalized_command)
-    }
-
-    pub fn stop(&self) -> Result<RobotDaemonProcessStatus, String> {
-        self.manager.stop(ProcessStopStrategy::TreeOnWindows)
+        self.manager.stop()
     }
 
     pub fn status(&self) -> Result<RobotDaemonProcessStatus, String> {
@@ -196,7 +154,7 @@ impl ManagedProcessManager {
         Ok(state.snapshot())
     }
 
-    fn stop(&self, stop_strategy: ProcessStopStrategy) -> Result<RobotDaemonProcessStatus, String> {
+    fn stop(&self) -> Result<RobotDaemonProcessStatus, String> {
         let mut state = self
             .inner
             .lock()
@@ -218,7 +176,7 @@ impl ManagedProcessManager {
             ),
         );
 
-        let exit_status = stop_managed_process(&mut process, &command_label, stop_strategy)?;
+        let exit_status = stop_managed_process(&mut process, &command_label)?;
 
         state.last_exit_code = exit_status.code();
         state.last_error = None;
@@ -333,43 +291,17 @@ impl ManagedProcessState {
     }
 }
 
-fn normalize_launch_command(value: &str) -> Option<String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
-}
-
-fn build_shell_command(launch_command: &str) -> Command {
-    if cfg!(target_os = "windows") {
-        let mut command = Command::new("cmd");
-        command.args(["/C", launch_command]);
-        command
-    } else {
-        let mut command = Command::new("sh");
-        command.args(["-lc", launch_command]);
-        command
-    }
-}
-
 fn stop_managed_process(
     process: &mut ManagedProcess,
     command_label: &str,
-    stop_strategy: ProcessStopStrategy,
 ) -> Result<ExitStatus, String> {
-    if cfg!(target_os = "windows") && matches!(stop_strategy, ProcessStopStrategy::TreeOnWindows) {
-        terminate_process_tree(process.pid, command_label)?;
-    } else {
-        process.child.kill().map_err(|error| {
-            format!(
-                "Failed to stop {}: {}",
-                display_command_label(command_label),
-                error
-            )
-        })?;
-    }
+    process.child.kill().map_err(|error| {
+        format!(
+            "Failed to stop {}: {}",
+            display_command_label(command_label),
+            error
+        )
+    })?;
 
     process.child.wait().map_err(|error| {
         format!(
@@ -378,43 +310,6 @@ fn stop_managed_process(
             error
         )
     })
-}
-
-fn terminate_process_tree(pid: u32, command_label: &str) -> Result<(), String> {
-    let pid_string = pid.to_string();
-    let output = Command::new("taskkill")
-        .args(["/T", "/F", "/PID", pid_string.as_str()])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(|error| {
-            format!(
-                "Failed to stop {} tree via taskkill: {}",
-                display_command_label(command_label),
-                error
-            )
-        })?;
-
-    if output.status.success() {
-        return Ok(());
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    let details = if !stderr.is_empty() {
-        stderr
-    } else if !stdout.is_empty() {
-        stdout
-    } else {
-        "taskkill returned a non-zero exit status".to_string()
-    };
-
-    Err(format!(
-        "Failed to stop {} tree via taskkill: {}",
-        display_command_label(command_label),
-        details
-    ))
 }
 
 fn display_command_label(command_label: &str) -> &str {

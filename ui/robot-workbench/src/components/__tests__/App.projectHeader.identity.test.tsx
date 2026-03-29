@@ -122,6 +122,11 @@ if (typeof window !== 'undefined' && !window.matchMedia) {
   })
 }
 
+async function clickProjectFromList(projectPath: string) {
+  const matches = await screen.findAllByTitle(projectPath)
+  fireEvent.click(matches[0])
+}
+
 if (typeof document !== 'undefined') describe('App project identity header', () => {
   beforeEach(() => {
     chatExecutionState.sessionIds = []
@@ -180,7 +185,7 @@ if (typeof document !== 'undefined') describe('App project identity header', () 
   it('replaces breadcrumbs with a flatter project identity bar and shared actions', async () => {
     render(<App />)
 
-    fireEvent.click(await screen.findByTitle('/projects/sample/.commander/feature-alpha'))
+    await clickProjectFromList('/projects/sample/.commander/feature-alpha')
 
     const header = await screen.findByTestId('project-identity-header')
     expect(header).toBeInTheDocument()
@@ -206,7 +211,7 @@ if (typeof document !== 'undefined') describe('App project identity header', () 
 
     render(<App />)
 
-    fireEvent.click(await screen.findByTitle('/projects/sample/.commander/feature-alpha'))
+    await clickProjectFromList('/projects/sample/.commander/feature-alpha')
 
     const header = await screen.findByTestId('project-identity-header')
     expect(within(header).queryByTestId('project-header-status')).toBeNull()

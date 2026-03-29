@@ -54,6 +54,8 @@ class BrainKernelResidentMixin:
             self._conversation_queues = {}
             self._front_reply_events = {}
             self._front_reply_cache = {}
+            if hasattr(self, "_scheduled_run_resumes"):
+                self._scheduled_run_resumes = set()
             self._sleep_worker_task = None
             self._sleep_queue = None
 
@@ -222,6 +224,13 @@ class BrainKernelResidentMixin:
                 tool_results=event.tool_results,
                 latest_front_reply=event.latest_front_reply,
             )
+        elif event.type == BrainEventType.run_resume:
+            response = await self.handle_scheduled_run(run_id=event.run_id)
+            if response is None:
+                return BrainOutput(
+                    event_id=event.event_id,
+                    type=BrainOutputType.recorded,
+                )
         elif event.type == BrainEventType.front_event:
             if event.front_event is None:
                 raise RuntimeError(f"front_event payload is required for event {event.event_id}")

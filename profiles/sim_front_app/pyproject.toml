@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+
+[project]
+name = "sim_front_app"
+version = "0.1.0"
+description = "Reachy Mini app project"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "reachy-mini"
+]
+keywords = ["reachy-mini-app"]
+
+[project.entry-points."reachy_mini_apps"]
+sim_front_app = "sim_front_app.main:SimFrontApp"
+
+[tool.setuptools]
+package-dir = { "" = "." }
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["sim_front_app", "profiles"]
+
+[tool.setuptools.package-data]
+sim_front_app = ["**/*"] # Also include all non-.py files
+profiles = ["**/*"]

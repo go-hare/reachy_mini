@@ -3,8 +3,6 @@ import { invoke } from '@tauri-apps/api/core';
 import { applyDashboardPalette } from '@/lib/dashboard-palettes';
 import {
   getDefaultRobotWorkbenchSettings,
-  normalizeWorkbenchLaunchCommand,
-  normalizeWorkbenchViewerUrl,
   normalizeReachyDaemonBaseUrl,
   type RobotWorkbenchSettings,
 } from '@/lib/reachy-daemon';
@@ -99,10 +97,6 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
         ...(appSettings.robot_settings || {}),
       };
       mergedRobotSettings.daemon_base_url = normalizeReachyDaemonBaseUrl(mergedRobotSettings.daemon_base_url);
-      mergedRobotSettings.mujoco_viewer_url = normalizeWorkbenchViewerUrl(mergedRobotSettings.mujoco_viewer_url);
-      mergedRobotSettings.mujoco_viewer_launch_command = normalizeWorkbenchLaunchCommand(
-        mergedRobotSettings.mujoco_viewer_launch_command
-      );
       setSettings({
         ...defaultSettings,
         ...appSettings,
@@ -132,10 +126,6 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
         ...(newSettings.robot_settings || {}),
       };
       mergedRobotSettings.daemon_base_url = normalizeReachyDaemonBaseUrl(mergedRobotSettings.daemon_base_url);
-      mergedRobotSettings.mujoco_viewer_url = normalizeWorkbenchViewerUrl(mergedRobotSettings.mujoco_viewer_url);
-      mergedRobotSettings.mujoco_viewer_launch_command = normalizeWorkbenchLaunchCommand(
-        mergedRobotSettings.mujoco_viewer_launch_command
-      );
 
       const updatedSettings: AppSettings = {
         ...settings,

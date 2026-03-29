@@ -178,6 +178,9 @@ document.addEventListener("DOMContentLoaded", () => {
         if (phase === "listening") {
             return "Front 正在接收你的输入...";
         }
+        if (phase === "attending") {
+            return "Front 已注意到你，正在保持关注...";
+        }
         if (phase === "listening_wait") {
             return "已收到语音，正在等待最终文本...";
         }

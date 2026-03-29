@@ -8,6 +8,7 @@ import numpy as np
 
 from reachy_mini.runtime.config import SpeechRuntimeConfig
 from reachy_mini.runtime.reply_audio import (
+    MacOSSayReplySpeechSynthesizer,
     OpenAIReplySpeechSynthesizer,
     ReplyAudioPlayer,
     RuntimeReplyAudioService,
@@ -180,6 +181,24 @@ def test_openai_reply_speech_synthesizer_streams_pcm_bytes() -> None:
         }
     ]
     assert fake_streaming_api.response.closed is True
+
+
+def test_build_runtime_reply_audio_service_supports_macos_say() -> None:
+    """Local macOS TTS provider should build without requiring an API key."""
+
+    service = build_runtime_reply_audio_service(
+        config=SpeechRuntimeConfig(
+            enabled=True,
+            provider="macos_say",
+            voice="Tingting",
+            speed=1.1,
+        ),
+        media=FakeMedia(),
+        speech_driver=FakeSpeechDriver(),
+    )
+
+    assert service is not None
+    assert isinstance(service.synthesizer, MacOSSayReplySpeechSynthesizer)
 
 
 def test_reply_audio_player_pushes_audio_and_feeds_speech_motion() -> None:

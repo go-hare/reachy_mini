@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Sim Front App settings</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="/static/style.css?v=20260329-vision-bridge-1">
+</head>
+
+<body>
+    <div class="shell">
+        <section class="hero card">
+            <div>
+                <p class="eyebrow">Reachy Mini app</p>
+                <h1>Sim Front App</h1>
+                <p class="subtitle">这个页面直接挂在当前用户 app 的入口上，可以把消息送进这个 app 对应的常驻 runtime。</p>
+            </div>
+            <div class="status-wrap">
+                <span class="status-dot" id="status-dot"></span>
+                <span id="status">Checking runtime...</span>
+            </div>
+        </section>
+
+        <section class="layout">
+            <div class="card chat-card">
+                <div class="chat-header">
+                    <h2>Chat</h2>
+                    <p>文本输入和浏览器麦克风转写都会按当前 app 内部的 <code>profiles/</code> 文件来驱动前台和内核。</p>
+                </div>
+
+                <div class="chat-log" id="chat-log">
+                    <div class="message assistant">
+                        <div class="bubble">我已经在这里了。你可以直接发一句话，也可以点 Talk 用浏览器麦克风和我说话。</div>
+                    </div>
+                </div>
+
+                <form class="composer" id="chat-form">
+                    <label class="sr-only" for="message-input">Message</label>
+                    <textarea id="message-input" rows="3" placeholder="比如：帮我看看这个 app 现在的行为对不对"></textarea>
+                    <div class="speech-preview" id="speech-preview" hidden></div>
+                    <div class="composer-bar">
+                        <div class="composer-meta">
+                            <span class="hint" id="composer-hint">Enter 发送，Shift+Enter 换行；Talk 可直接说话</span>
+                            <span class="mic-status" id="mic-status" data-state="idle">麦克风待命</span>
+                        </div>
+                        <div class="composer-actions">
+                            <button type="button" class="secondary-button" id="mic-button">Talk</button>
+                            <button type="submit" id="send-button">Send</button>
+                        </div>
+                    </div>
+                </form>
+            </div>
+
+            <div class="side-panel">
+                <div class="card">
+                    <h2>Editable files</h2>
+                    <ul>
+                        <li><code>profiles/AGENTS.md</code></li>
+                        <li><code>profiles/USER.md</code></li>
+                        <li><code>profiles/SOUL.md</code></li>
+                        <li><code>profiles/TOOLS.md</code></li>
+                        <li><code>profiles/FRONT.md</code></li>
+                        <li><code>profiles/config.jsonl</code></li>
+                    </ul>
+                </div>
+
+                <div class="card">
+                    <h2>Browser Camera</h2>
+                    <p>这里预览的是这台 Mac 当前浏览器授权后的本机摄像头，不走 MuJoCo 仿真相机。</p>
+                    <div class="camera-shell">
+                        <video id="camera-preview" class="camera-preview" autoplay playsinline muted hidden></video>
+                        <div class="camera-placeholder" id="camera-placeholder">点击 Start Camera 预览本机相机</div>
+                    </div>
+                    <div class="camera-bar">
+                        <span class="camera-status" id="camera-status" data-state="idle">相机未启动</span>
+                        <button type="button" class="secondary-button" id="camera-toggle">Start Camera</button>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h2>Detection</h2>
+                    <p>这里显示的是 runtime 检测链送回来的状态，重点看它现在有没有锁住目标、朝哪边在跟。</p>
+                    <div class="vision-overview">
+                        <span class="vision-status" id="vision-status" data-state="idle">等待检测链事件</span>
+                        <span class="vision-source" id="vision-source">tracker: yolo</span>
+                    </div>
+                    <div class="vision-direction-card" id="vision-direction-card" data-direction="front">
+                        <div class="vision-direction-icon"></div>
+                        <div>
+                            <div class="vision-direction-label" id="vision-direction-label">方向：正前方</div>
+                            <div class="vision-direction-subtitle" id="vision-direction-subtitle">还没有收到 reactive vision 更新</div>
+                        </div>
+                    </div>
+                    <dl class="vision-metrics">
+                        <div>
+                            <dt>状态</dt>
+                            <dd id="vision-event-name">idle</dd>
+                        </div>
+                        <div>
+                            <dt>追踪</dt>
+                            <dd id="vision-tracking-enabled">unknown</dd>
+                        </div>
+                        <div>
+                            <dt>释放原因</dt>
+                            <dd id="vision-release-reason">-</dd>
+                        </div>
+                        <div>
+                            <dt>最近更新</dt>
+                            <dd id="vision-last-updated">尚未收到</dd>
+                        </div>
+                    </dl>
+                    <div class="vision-log-wrap">
+                        <div class="vision-log-title">事件流</div>
+                        <div class="vision-log" id="vision-log">
+                            <div class="vision-log-empty" id="vision-log-empty">等待 runtime 推送检测事件</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h2>Flow</h2>
+                    <ol>
+                        <li><code>ReachyMiniApp</code> 常驻托管当前 app 的 runtime</li>
+                        <li>页面通过 <code>/ws/agent</code> 把文本或浏览器语音生命周期事件发进 runtime</li>
+                        <li><code>front</code> 先回一轮可见 hint，再把消息投给 <code>kernel</code></li>
+                        <li><code>kernel</code> 处理完成后，再交给 <code>front</code> 输出 final</li>
+                        <li>页面持续监听 <code>surface_state</code>、hint、final 和错误事件</li>
+                    </ol>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <script src="/static/main.js?v=20260329-vision-bridge-1"></script>
+</body>
+
+</html>

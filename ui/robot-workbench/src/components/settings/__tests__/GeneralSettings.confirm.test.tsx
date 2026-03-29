@@ -2,7 +2,6 @@ import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { GeneralSettings } from '../GeneralSettings'
 import { ToastProvider } from '@/components/ToastProvider'
-import { DEFAULT_MUJOCO_WEB_VIEWER_URL } from '@/lib/reachy-daemon'
 
 function renderWithProviders(ui: React.ReactNode) {
   return render(<ToastProvider>{ui}</ToastProvider>)
@@ -64,33 +63,13 @@ if (typeof document !== 'undefined') describe('GeneralSettings clear recent proj
     })
   })
 
-  it('applies the local MuJoCo viewer preset and clears it', async () => {
-    const onMujocoViewerUrlChange = vi.fn()
-    const onClearRecentProjects = vi.fn(async () => {})
-    const view = renderWithProviders(
-      <GeneralSettings
-        {...baseProps}
-        onClearRecentProjects={onClearRecentProjects}
-        tempMujocoViewerUrl=""
-        onMujocoViewerUrlChange={onMujocoViewerUrlChange}
-      />
+  it('does not render obsolete MuJoCo web viewer settings', async () => {
+    renderWithProviders(
+      <GeneralSettings {...baseProps} onClearRecentProjects={vi.fn(async () => {})} />
     )
 
-    fireEvent.click(screen.getByRole('button', { name: /use local preset/i }))
-    expect(onMujocoViewerUrlChange).toHaveBeenCalledWith(DEFAULT_MUJOCO_WEB_VIEWER_URL)
-
-    view.rerender(
-      <ToastProvider>
-        <GeneralSettings
-          {...baseProps}
-          onClearRecentProjects={onClearRecentProjects}
-          tempMujocoViewerUrl={DEFAULT_MUJOCO_WEB_VIEWER_URL}
-          onMujocoViewerUrlChange={onMujocoViewerUrlChange}
-        />
-      </ToastProvider>
-    )
-
-    fireEvent.click(screen.getAllByRole('button', { name: /^clear$/i })[0])
-    expect(onMujocoViewerUrlChange).toHaveBeenLastCalledWith('')
+    expect(screen.queryByLabelText(/mujoco web viewer url/i)).toBeNull()
+    expect(screen.queryByText(/mujoco web viewer launch command/i)).toBeNull()
+    expect(screen.queryByRole('button', { name: /use local preset/i })).toBeNull()
   })
 })

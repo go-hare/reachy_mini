@@ -266,6 +266,7 @@ class GstMediaServer:
         appsrc = Gst.ElementFactory.make("appsrc", "audio_in")
         appsrc.set_property("format", Gst.Format.TIME)
         appsrc.set_property("is-live", True)
+        appsrc.set_property("do-timestamp", True)
         appsrc.set_property("caps", caps)
 
         rtpopusdepay = Gst.ElementFactory.make("rtpopusdepay")

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import App from '@/App'
 
 const project = {
@@ -76,6 +76,7 @@ const defaultSettings = {
 async function clickRecentProject() {
   const projectButtons = await screen.findAllByTitle('/projects/sample')
   fireEvent.click(projectButtons[0])
+  await screen.findByTestId('project-identity-header')
 }
 
 if (typeof window !== 'undefined' && !window.matchMedia) {
@@ -151,6 +152,108 @@ if (typeof document !== 'undefined') describe('App robot workbench shell', () =>
     expect(screen.getByTestId('reachy-status-panel')).toBeInTheDocument()
     expect(screen.getByText('MuJoCo')).toBeInTheDocument()
     expect(screen.getByText('Reachy Status')).toBeInTheDocument()
+  })
+
+  it('switches to a dedicated robot workbench view from the top header action', async () => {
+    render(<App />)
+
+    await clickRecentProject()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Robot Workbench' }))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('tabs')).toHaveAttribute('data-active-tab', 'robot')
+    })
+
+    expect(screen.getByTestId('robot-workbench-main-panel')).toBeInTheDocument()
+    expect(screen.getByTestId('robot-workbench-main-scroll')).toBeInTheDocument()
+    expect(screen.getByTestId('robot-workbench-immersive-shell')).toBeInTheDocument()
+    expect(screen.getByTestId('robot-workbench-main-panel').className).toContain(
+      'bg-[linear-gradient(180deg,#f8fafc_0%,#eef2f7_100%)]',
+    )
+    expect(screen.getByTestId('robot-workbench-main-scroll').className).toContain('overflow-hidden')
+    expect(screen.getByTestId('robot-workbench-stage-column')).toBeInTheDocument()
+    expect(screen.getByTestId('robot-workbench-stage-column').className).toContain('h-full')
+    expect(screen.getByTestId('robot-workbench-stage-column').className).toContain('px-3')
+    expect(screen.getByTestId('robot-workbench-stage-column').className).toContain('pt-[33px]')
+    expect(screen.getByTestId('robot-workbench-controller-column')).toBeInTheDocument()
+    expect(screen.getByTestId('robot-workbench-controller-column').className).toContain('h-full')
+    expect(screen.getByTestId('robot-workbench-controller-column').className).toContain('pt-[33px]')
+    expect(screen.getByTestId('robot-workbench-controller-scroll')).toBeInTheDocument()
+    expect(screen.getByTestId('robot-workbench-stage-logs').className).toContain('flex-none')
+    expect(screen.getByTestId('robot-workbench-stage-logs-scroll')).toBeInTheDocument()
+    expect(screen.getByTestId('robot-workbench-stage-logs-scroll').className).toContain(
+      'h-[clamp(108px,18vh,140px)]',
+    )
+    expect(screen.getByTestId('robot-workbench-stage-toolbar')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Start Simulation' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Start Simulation' }).className).toContain('h-12')
+    expect(screen.getByRole('button', { name: 'Start Simulation' }).className).toContain('min-w-[148px]')
+    expect(screen.getByRole('button', { name: 'Stop Runtime' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Stop Runtime' }).className).toContain('h-12')
+    expect(screen.getByRole('button', { name: 'Stop Runtime' }).className).toContain('min-w-[148px]')
+    expect(screen.getByRole('button', { name: 'Refresh' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Refresh' }).className).toContain('h-12')
+    expect(screen.getByTestId('robot-workbench-stage-hero')).toBeInTheDocument()
+    expect(screen.getByTestId('robot-workbench-camera-overlay')).toBeInTheDocument()
+    expect(
+      within(screen.getByTestId('robot-workbench-camera-overlay')).getByTestId(
+        'robot-workbench-camera-feed'
+      )
+    ).toBeInTheDocument()
+    expect(screen.getByTestId('robot-workbench-camera-overlay').className).toContain('w-[140px]')
+    expect(screen.getByTestId('robot-workbench-camera-overlay').className).toContain('h-[105px]')
+    expect(screen.getByTestId('robot-workbench-stage-hero').className).not.toContain('pb-16')
+    expect(
+      within(screen.getByTestId('robot-workbench-stage-hero'))
+        .getByTestId('reachy-simulation-viewport')
+        .className,
+    ).toContain('aspect-[4/3]')
+    expect(
+      within(screen.getByTestId('robot-workbench-stage-hero'))
+        .getByTestId('reachy-simulation-viewport')
+        .className,
+    ).toContain('min-h-[250px]')
+    expect(screen.getByTestId('robot-workbench-stage-header')).toBeInTheDocument()
+    expect(screen.getByTestId('robot-workbench-stage-title-block')).toBeInTheDocument()
+    expect(screen.getByTestId('robot-workbench-stage-header').className).toContain(
+      'lg:grid-cols-[minmax(0,1fr)_140px]',
+    )
+    expect(screen.getByTestId('robot-workbench-stage-title-block').className).toContain('min-w-0')
+    expect(screen.getByTestId('robot-workbench-stage-title').className).toContain('text-[20px]')
+    expect(screen.getByTestId('robot-workbench-stage-title').className).toContain('whitespace-nowrap')
+    expect(screen.getByTestId('robot-workbench-stage-camera-slot')).toBeInTheDocument()
+    expect(screen.getByTestId('robot-workbench-stage-version-line')).toHaveTextContent('Daemon')
+    expect(
+      within(screen.getByTestId('robot-workbench-stage-column')).queryByTestId('robot-workbench-audio-controls')
+    ).toBeNull()
+    expect(screen.queryByText(/Project sample/i)).toBeNull()
+    expect(screen.queryByText(/Workbench UI/i)).toBeNull()
+    expect(screen.queryByText(/^State /)).toBeNull()
+    expect(
+      within(screen.getByTestId('robot-workbench-controller-scroll')).getByTestId(
+        'robot-workbench-audio-controls'
+      )
+    ).toBeInTheDocument()
+    expect(screen.getByTestId('robot-workbench-audio-controls').className).toContain('md:grid-cols-2')
+    expect(screen.getByTestId('robot-workbench-speaker-card').className).toContain('h-16')
+    expect(screen.getByTestId('robot-workbench-microphone-card').className).toContain('h-16')
+    expect(screen.getByTestId('robot-workbench-main-layout').className).not.toContain(
+      'xl:grid-cols-[450px_450px]',
+    )
+    expect(screen.getByTestId('robot-workbench-main-layout').className).toContain(
+      'xl:grid-cols-[minmax(420px,520px)_minmax(480px,1fr)]',
+    )
+    expect(screen.getByTestId('robot-workbench-main-layout').className).toContain('h-full')
+    expect(screen.getByTestId('robot-workbench-main-layout').className).toContain('gap-0')
+    expect(screen.getByText('Speaker')).toBeInTheDocument()
+    expect(screen.getByText('Microphone')).toBeInTheDocument()
+    expect(screen.getByText('Logs')).toBeInTheDocument()
+    expect(screen.getByText('Controller')).toBeInTheDocument()
+    expect(screen.getByText('Antennas')).toBeInTheDocument()
+    expect(screen.getByText('Head')).toBeInTheDocument()
+    expect(screen.getByText('Body')).toBeInTheDocument()
+    expect(screen.queryByTestId('robot-side-panel')).toBeNull()
   })
 
   it('collapses the robot side panel into a right rail and expands it again', async () => {

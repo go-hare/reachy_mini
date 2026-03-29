@@ -8,10 +8,6 @@ import type { GeneralSettingsProps } from "@/types/settings";
 import { useState } from "react";
 import { useToast } from "@/components/ToastProvider";
 import {
-  DEFAULT_MUJOCO_WEB_VIEWER_LAUNCH_COMMAND,
-  DEFAULT_MUJOCO_WEB_VIEWER_URL,
-} from "@/lib/reachy-daemon";
-import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -42,13 +38,6 @@ export function GeneralSettings({
   onReachyLiveStatusEnabledChange,
   tempMujocoLiveStatusEnabled = false,
   onMujocoLiveStatusEnabledChange,
-  tempMujocoViewerUrl = "",
-  onMujocoViewerUrlChange,
-  onApplyMujocoViewerPreset,
-  onClearMujocoViewerUrl,
-  tempMujocoViewerLaunchCommand = "",
-  onMujocoViewerLaunchCommandChange,
-  onApplyMujocoViewerLaunchCommandPreset,
   tempReachyDaemonBaseUrl = "http://localhost:8000",
   onReachyDaemonBaseUrlChange,
 }: GeneralSettingsProps) {
@@ -218,90 +207,6 @@ export function GeneralSettings({
                 }
                 aria-label="Enable MuJoCo Live Status"
               />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="mujoco-viewer-url">MuJoCo Web Viewer URL</Label>
-              <Input
-                id="mujoco-viewer-url"
-                placeholder={DEFAULT_MUJOCO_WEB_VIEWER_URL}
-                value={tempMujocoViewerUrl}
-                onChange={(e) => onMujocoViewerUrlChange?.(e.target.value)}
-              />
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={() =>
-                    onApplyMujocoViewerPreset?.() ??
-                    onMujocoViewerUrlChange?.(DEFAULT_MUJOCO_WEB_VIEWER_URL)
-                  }
-                >
-                  Use Local Preset
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  onClick={() =>
-                    onClearMujocoViewerUrl?.() ?? onMujocoViewerUrlChange?.("")
-                  }
-                  disabled={!tempMujocoViewerUrl.trim()}
-                >
-                  Clear
-                </Button>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                这里是 MuJoCo Web Viewer 接入口。默认预设是{" "}
-                <code>{DEFAULT_MUJOCO_WEB_VIEWER_URL}</code>；
-                <code>reachy-mini-daemon --sim</code>{" "}
-                现在仍然会弹原生窗口，只有你单独起了网页
-                viewer，右侧工作台才会嵌这个地址。
-              </p>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="mujoco-viewer-launch-command">
-                MuJoCo Web Viewer Launch Command
-              </Label>
-              <Input
-                id="mujoco-viewer-launch-command"
-                placeholder={DEFAULT_MUJOCO_WEB_VIEWER_LAUNCH_COMMAND}
-                value={tempMujocoViewerLaunchCommand}
-                onChange={(e) =>
-                  onMujocoViewerLaunchCommandChange?.(e.target.value)
-                }
-              />
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={() =>
-                    onApplyMujocoViewerLaunchCommandPreset?.() ??
-                    onMujocoViewerLaunchCommandChange?.(
-                      DEFAULT_MUJOCO_WEB_VIEWER_LAUNCH_COMMAND,
-                    )
-                  }
-                >
-                  Use Launch Preset
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => onMujocoViewerLaunchCommandChange?.("")}
-                  disabled={!tempMujocoViewerLaunchCommand.trim()}
-                >
-                  Clear Launch Command
-                </Button>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                默认预填的是一个模板命令：
-                <code>{DEFAULT_MUJOCO_WEB_VIEWER_LAUNCH_COMMAND}</code>。
-                它已经按当前 <code>reachy</code> conda 环境和 <code>9001</code>{" "}
-                端口对齐了，但你需要把
-                <code>your_web_viewer</code> 换成你真正的 Python viewer 入口。
-              </p>
             </div>
             <div className="space-y-2">
               <Label htmlFor="reachy-daemon-url">Reachy Daemon URL</Label>

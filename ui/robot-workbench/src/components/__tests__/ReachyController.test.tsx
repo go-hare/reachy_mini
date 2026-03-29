@@ -26,6 +26,10 @@ class MockWebSocket {
     this.readyState = MockWebSocket.OPEN
     this.onopen?.(new Event("open"))
   }
+
+  emitError() {
+    this.onerror?.(new Event("error"))
+  }
 }
 
 if (typeof document !== "undefined")
@@ -106,5 +110,24 @@ if (typeof document !== "undefined")
           })
         )
       })
+    })
+
+    it("hides footer status messages when explicitly disabled", async () => {
+      render(
+        <ReachyController
+          daemonBaseUrl="http://localhost:8000"
+          snapshot={null}
+          syncState="disabled"
+          showStatusMessages={false}
+        />
+      )
+
+      expect(screen.queryByText("状态流已关闭，当前只发命令不回读。")).toBeNull()
+
+      await act(async () => {
+        MockWebSocket.instances[0]?.emitError()
+      })
+
+      expect(screen.queryByText(/Unable to reach Reachy daemon/i)).toBeNull()
     })
   })

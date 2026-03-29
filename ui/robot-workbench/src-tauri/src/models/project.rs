@@ -185,12 +185,6 @@ fn default_robot_mujoco_live_status_enabled() -> bool {
 fn default_robot_daemon_base_url() -> String {
     "http://localhost:8000".to_string()
 }
-fn default_robot_mujoco_viewer_url() -> String {
-    String::new()
-}
-fn default_robot_mujoco_viewer_launch_command() -> String {
-    "conda run -n reachy python -m your_web_viewer --host 127.0.0.1 --port 9001".to_string()
-}
 
 fn sanitize_robot_daemon_base_url(value: &str) -> String {
     let trimmed = value.trim().trim_end_matches('/');
@@ -205,23 +199,6 @@ fn sanitize_robot_daemon_base_url(value: &str) -> String {
     }
 }
 
-fn sanitize_robot_mujoco_viewer_url(value: &str) -> String {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return default_robot_mujoco_viewer_url();
-    }
-
-    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-        trimmed.to_string()
-    } else {
-        format!("http://{}", trimmed)
-    }
-}
-
-fn sanitize_robot_mujoco_viewer_launch_command(value: &str) -> String {
-    value.trim().to_string()
-}
-
 fn deserialize_robot_daemon_base_url<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
@@ -231,42 +208,12 @@ where
     Ok(sanitize_robot_daemon_base_url(&raw))
 }
 
-fn deserialize_robot_mujoco_viewer_url<'de, D>(deserializer: D) -> Result<String, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let raw = Option::<String>::deserialize(deserializer)?
-        .unwrap_or_else(default_robot_mujoco_viewer_url);
-    Ok(sanitize_robot_mujoco_viewer_url(&raw))
-}
-
-fn deserialize_robot_mujoco_viewer_launch_command<'de, D>(
-    deserializer: D,
-) -> Result<String, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let raw = Option::<String>::deserialize(deserializer)?
-        .unwrap_or_else(default_robot_mujoco_viewer_launch_command);
-    Ok(sanitize_robot_mujoco_viewer_launch_command(&raw))
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RobotSettings {
     #[serde(default = "default_robot_live_status_enabled")]
     pub live_status_enabled: bool,
     #[serde(default = "default_robot_mujoco_live_status_enabled")]
     pub mujoco_live_status_enabled: bool,
-    #[serde(
-        default = "default_robot_mujoco_viewer_url",
-        deserialize_with = "deserialize_robot_mujoco_viewer_url"
-    )]
-    pub mujoco_viewer_url: String,
-    #[serde(
-        default = "default_robot_mujoco_viewer_launch_command",
-        deserialize_with = "deserialize_robot_mujoco_viewer_launch_command"
-    )]
-    pub mujoco_viewer_launch_command: String,
     #[serde(
         default = "default_robot_daemon_base_url",
         deserialize_with = "deserialize_robot_daemon_base_url"
@@ -279,8 +226,6 @@ impl Default for RobotSettings {
         Self {
             live_status_enabled: default_robot_live_status_enabled(),
             mujoco_live_status_enabled: default_robot_mujoco_live_status_enabled(),
-            mujoco_viewer_url: default_robot_mujoco_viewer_url(),
-            mujoco_viewer_launch_command: default_robot_mujoco_viewer_launch_command(),
             daemon_base_url: default_robot_daemon_base_url(),
         }
     }
@@ -289,9 +234,6 @@ impl Default for RobotSettings {
 impl RobotSettings {
     pub fn normalize(&mut self) {
         self.daemon_base_url = sanitize_robot_daemon_base_url(&self.daemon_base_url);
-        self.mujoco_viewer_url = sanitize_robot_mujoco_viewer_url(&self.mujoco_viewer_url);
-        self.mujoco_viewer_launch_command =
-            sanitize_robot_mujoco_viewer_launch_command(&self.mujoco_viewer_launch_command);
     }
 }
 

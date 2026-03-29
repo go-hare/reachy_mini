@@ -366,14 +366,30 @@ function getViewportBadgeLabel(
   return "Ready";
 }
 
+type ReachySimulationViewportSize = "compact" | "immersive";
+
+function getViewportContainerClassName(
+  size: ReachySimulationViewportSize,
+  backgroundClassName: string,
+) {
+  const heightClassName =
+    size === "immersive"
+      ? "aspect-[4/3] min-h-[250px]"
+      : "h-[220px]";
+
+  return `relative ${heightClassName} overflow-hidden rounded-2xl border border-border/60 ${backgroundClassName}`;
+}
+
 export function ReachySimulationViewport({
   snapshot,
   connectionState,
   runtimeRunning,
+  size = "compact",
 }: {
   snapshot?: ReachyFullState | null;
   connectionState: ReachyConnectionState;
   runtimeRunning: boolean;
+  size?: ReachySimulationViewportSize;
 }) {
   const isJsdom =
     typeof navigator !== "undefined" && /jsdom/i.test(navigator.userAgent);
@@ -448,7 +464,7 @@ export function ReachySimulationViewport({
   if (isJsdom) {
     return (
       <div
-        className="relative h-[220px] overflow-hidden rounded-2xl border border-border/60 bg-background"
+        className={getViewportContainerClassName(size, "bg-background")}
         data-testid="reachy-simulation-viewport"
       >
         <div className="flex h-full items-center justify-center px-6 text-center text-sm text-muted-foreground">
@@ -460,7 +476,7 @@ export function ReachySimulationViewport({
 
   return (
     <div
-      className="relative h-[220px] overflow-hidden rounded-2xl border border-border/60 bg-[#161616]"
+      className={getViewportContainerClassName(size, "bg-[#161616]")}
       data-testid="reachy-simulation-viewport"
     >
       <Canvas
