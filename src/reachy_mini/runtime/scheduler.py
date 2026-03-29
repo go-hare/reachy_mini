@@ -867,7 +867,11 @@ class RuntimeScheduler:
     def _adapt_reactive_vision_signal(self, event: Any) -> FrontSignal | None:
         event_name = str(getattr(event, "name", "") or "").strip()
         metadata = dict(getattr(event, "metadata", {}) or {})
-        if event_name not in {"attention_acquired", "attention_released"}:
+        if event_name not in {
+            "attention_acquired",
+            "attention_updated",
+            "attention_released",
+        }:
             return None
 
         thread_id = self._resolve_reactive_vision_thread_id()
@@ -880,11 +884,17 @@ class RuntimeScheduler:
             "reactive_event_name": event_name,
         }
 
-        if event_name == "attention_acquired":
+        if event_name in {"attention_acquired", "attention_updated"}:
             if metadata.get("direction") is not None:
                 base_metadata["direction"] = metadata.get("direction")
             if metadata.get("tracking_enabled") is not None:
                 base_metadata["tracking_enabled"] = bool(metadata.get("tracking_enabled"))
+            if metadata.get("confidence") is not None:
+                base_metadata["confidence"] = metadata.get("confidence")
+            if isinstance(metadata.get("bbox_norm"), list):
+                base_metadata["bbox_norm"] = list(metadata.get("bbox_norm") or [])
+            if isinstance(metadata.get("head_target_deg"), dict):
+                base_metadata["head_target_deg"] = dict(metadata.get("head_target_deg") or {})
             return FrontSignal(
                 name="vision_attention_updated",
                 thread_id=thread_id,
@@ -1373,11 +1383,11 @@ class RuntimeScheduler:
         reply_text: str,
         tool_calls: list[dict[str, Any]],
     ) -> bool:
+        if str(signal_name or "").strip() in _SURFACED_FRONT_DECISION_SIGNAL_NAMES:
+            return True
         if str(reply_text or "").strip():
             return True
-        if not list(tool_calls or []):
-            return False
-        return str(signal_name or "").strip() in _SURFACED_FRONT_DECISION_SIGNAL_NAMES
+        return bool(list(tool_calls or []))
 
     async def _execute_front_tool_calls(
         self,

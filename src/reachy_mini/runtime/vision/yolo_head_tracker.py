@@ -63,18 +63,40 @@ class HeadTracker:
         norm_y = (center_y / h) * 2.0 - 1.0
         return np.array([norm_x, norm_y], dtype=np.float32)
 
+    @staticmethod
+    def _bbox_to_norm_xywh(
+        bbox: NDArray[np.float32],
+        w: int,
+        h: int,
+    ) -> list[float]:
+        left = float(np.clip(bbox[0] / w, 0.0, 1.0))
+        top = float(np.clip(bbox[1] / h, 0.0, 1.0))
+        right = float(np.clip(bbox[2] / w, 0.0, 1.0))
+        bottom = float(np.clip(bbox[3] / h, 0.0, 1.0))
+        return [
+            round(left, 4),
+            round(top, 4),
+            round(max(right - left, 0.0), 4),
+            round(max(bottom - top, 0.0), 4),
+        ]
+
     def get_head_position(
         self,
         img: NDArray[np.uint8],
     ) -> tuple[NDArray[np.float32] | None, float | None]:
         """Return face center in normalized coordinates and an optional roll."""
-        face_center, roll, _ = self.get_head_observation(img)
+        face_center, roll, _, _ = self.get_head_observation(img)
         return face_center, roll
 
     def get_head_observation(
         self,
         img: NDArray[np.uint8],
-    ) -> tuple[NDArray[np.float32] | None, float | None, float | None]:
+    ) -> tuple[
+        NDArray[np.float32] | None,
+        float | None,
+        float | None,
+        dict[str, Any] | None,
+    ]:
         """Return one richer face observation for reactive-vision emitters."""
         h, w = img.shape[:2]
         try:
@@ -82,13 +104,16 @@ class HeadTracker:
             detections = self._detections_cls.from_ultralytics(results[0])
             face_idx = self._select_best_face(detections)
             if face_idx is None:
-                return None, None, None
+                return None, None, None, None
             bbox = detections.xyxy[face_idx]
             face_center = self._bbox_to_mp_coords(bbox, w, h)
             confidence = None
             if detections.confidence is not None:
                 confidence = float(detections.confidence[face_idx])
-            return face_center, 0.0, confidence
+            observation = {
+                "bbox_norm": self._bbox_to_norm_xywh(bbox, w, h),
+            }
+            return face_center, 0.0, confidence, observation
         except Exception as exc:  # pragma: no cover - runtime fallback
             logger.warning("YOLO head tracking failed: %s", exc)
-            return None, None, None
+            return None, None, None, None

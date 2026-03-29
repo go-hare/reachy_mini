@@ -16,6 +16,10 @@ from reachy_mini.utils.interpolation import linear_pose_interpolation
 
 logger = logging.getLogger(__name__)
 
+_TRACKING_YAW_GAIN_RAD = float(np.deg2rad(52.0))
+_TRACKING_PITCH_GAIN_RAD = float(np.deg2rad(34.0))
+_ATTENTION_UPDATE_INTERVAL_S = 0.12
+
 
 @dataclass(slots=True, frozen=True)
 class ReactiveVisionEvent:
@@ -55,6 +59,7 @@ class CameraWorker:
         self._reactive_target_id = "primary"
         self._reactive_person_visible = False
         self._reactive_attention_active = False
+        self._last_attention_update_at = 0.0
 
     def add_reactive_vision_listener(
         self,
@@ -189,12 +194,13 @@ class CameraWorker:
         self.previous_head_tracking_state = self.is_head_tracking_enabled
 
         if self.is_head_tracking_enabled and self.head_tracker is not None:
-            eye_center, _, confidence = self._get_head_observation(frame)
+            eye_center, _, confidence, observation = self._get_head_observation(frame)
             if eye_center is not None:
                 self._handle_face_detected(
                     eye_center=eye_center,
                     current_time=current_time,
                     confidence=confidence,
+                    observation=observation,
                 )
                 return
 
@@ -206,33 +212,58 @@ class CameraWorker:
         eye_center: NDArray[np.float32],
         current_time: float,
         confidence: float | None,
+        observation: dict[str, Any] | None,
     ) -> None:
-        """Update tracking offsets and emit first-stage discrete attention events."""
+        """Update tracking offsets and emit compact reactive vision updates."""
         self.last_face_detected_time = current_time
         self.interpolation_start_time = None
         direction = self._resolve_attention_direction(eye_center)
+        target_yaw = float(
+            np.clip(
+                -float(eye_center[0]) * _TRACKING_YAW_GAIN_RAD,
+                -_TRACKING_YAW_GAIN_RAD,
+                _TRACKING_YAW_GAIN_RAD,
+            )
+        )
+        target_pitch = float(
+            np.clip(
+                float(eye_center[1]) * _TRACKING_PITCH_GAIN_RAD,
+                -_TRACKING_PITCH_GAIN_RAD,
+                _TRACKING_PITCH_GAIN_RAD,
+            )
+        )
+        attention_metadata = self._build_attention_metadata(
+            direction=direction,
+            tracking_enabled=bool(self.is_head_tracking_enabled),
+            confidence=confidence,
+            observation=observation,
+            target_pitch=target_pitch,
+            target_yaw=target_yaw,
+        )
 
         if not self._reactive_person_visible:
             self._reactive_person_visible = True
             self._emit_reactive_vision_event(
                 "person_detected",
                 target_id=self._reactive_target_id,
-                confidence=float(confidence or 0.0),
-                direction=direction,
-                tracking_enabled=bool(self.is_head_tracking_enabled),
+                **attention_metadata,
             )
 
         if not self._reactive_attention_active:
             self._reactive_attention_active = True
+            self._last_attention_update_at = current_time
             self._emit_reactive_vision_event(
                 "attention_acquired",
                 target_id=self._reactive_target_id,
-                direction=direction,
-                tracking_enabled=bool(self.is_head_tracking_enabled),
+                **attention_metadata,
             )
-
-        target_yaw = (eye_center[0] - 0.5) * -0.8
-        target_pitch = (eye_center[1] - 0.5) * 0.4
+        elif current_time - self._last_attention_update_at >= _ATTENTION_UPDATE_INTERVAL_S:
+            self._last_attention_update_at = current_time
+            self._emit_reactive_vision_event(
+                "attention_updated",
+                target_id=self._reactive_target_id,
+                **attention_metadata,
+            )
 
         with self.face_tracking_lock:
             self.face_tracking_offsets = [
@@ -314,6 +345,7 @@ class CameraWorker:
         if not self._reactive_attention_active:
             return
         self._reactive_attention_active = False
+        self._last_attention_update_at = 0.0
         self._emit_reactive_vision_event(
             "attention_released",
             target_id=self._reactive_target_id,
@@ -349,11 +381,16 @@ class CameraWorker:
     def _get_head_observation(
         self,
         frame: NDArray[np.uint8],
-    ) -> tuple[NDArray[np.float32] | None, float | None, float | None]:
+    ) -> tuple[
+        NDArray[np.float32] | None,
+        float | None,
+        float | None,
+        dict[str, Any] | None,
+    ]:
         """Read one tracker observation while tolerating older tracker interfaces."""
         tracker = self.head_tracker
         if tracker is None:
-            return None, None, None
+            return None, None, None, None
 
         if hasattr(tracker, "get_head_observation"):
             result = tracker.get_head_observation(frame)
@@ -361,12 +398,49 @@ class CameraWorker:
             result = tracker.get_head_position(frame)
 
         if not isinstance(result, tuple):
-            return None, None, None
+            return None, None, None, None
+        if len(result) >= 4:
+            metadata = result[3] if isinstance(result[3], dict) else None
+            return result[0], result[1], result[2], metadata
         if len(result) >= 3:
-            return result[0], result[1], result[2]
+            return result[0], result[1], result[2], None
         if len(result) == 2:
-            return result[0], result[1], None
-        return None, None, None
+            return result[0], result[1], None, None
+        return None, None, None, None
+
+    @staticmethod
+    def _build_attention_metadata(
+        *,
+        direction: str,
+        tracking_enabled: bool,
+        confidence: float | None,
+        observation: dict[str, Any] | None,
+        target_pitch: float,
+        target_yaw: float,
+    ) -> dict[str, Any]:
+        metadata: dict[str, Any] = {
+            "direction": str(direction or "front"),
+            "tracking_enabled": bool(tracking_enabled),
+            "head_target_deg": {
+                "pitch": round(float(np.rad2deg(target_pitch)), 1),
+                "yaw": round(float(np.rad2deg(target_yaw)), 1),
+            },
+        }
+        if confidence is not None:
+            metadata["confidence"] = round(float(confidence), 3)
+        bbox_norm = None
+        if isinstance(observation, dict):
+            raw_bbox = observation.get("bbox_norm")
+            if isinstance(raw_bbox, list) and len(raw_bbox) == 4:
+                bbox_norm = [
+                    round(float(raw_bbox[0]), 4),
+                    round(float(raw_bbox[1]), 4),
+                    round(float(raw_bbox[2]), 4),
+                    round(float(raw_bbox[3]), 4),
+                ]
+        if bbox_norm is not None:
+            metadata["bbox_norm"] = bbox_norm
+        return metadata
 
     @staticmethod
     def _resolve_attention_direction(

@@ -827,6 +827,11 @@ class FrontService:
             )
 
         if signal.name == "vision_attention_updated":
+            if str(metadata.get("source", "") or "").strip().lower() == "reactive_vision":
+                return (
+                    [],
+                    "front accepted reactive vision update without explicit tool call",
+                )
             direction = str(metadata.get("direction", "") or "").strip().lower()
             if direction in {"left", "right", "up", "down", "front"} and "move_head" in tool_names:
                 return (

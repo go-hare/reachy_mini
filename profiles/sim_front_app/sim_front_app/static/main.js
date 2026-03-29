@@ -11,6 +11,10 @@ document.addEventListener("DOMContentLoaded", () => {
     const composerHint = document.getElementById("composer-hint");
     const speechPreview = document.getElementById("speech-preview");
     const cameraPreview = document.getElementById("camera-preview");
+    const cameraOverlay = document.getElementById("camera-overlay");
+    const cameraOverlayCanvas = document.getElementById("camera-overlay-canvas");
+    const detectionBox = document.getElementById("detection-box");
+    const detectionLabel = document.getElementById("detection-label");
     const cameraPlaceholder = document.getElementById("camera-placeholder");
     const cameraStatus = document.getElementById("camera-status");
     const cameraToggle = document.getElementById("camera-toggle");
@@ -50,6 +54,10 @@ document.addEventListener("DOMContentLoaded", () => {
     let cameraStream = null;
     let cameraActive = false;
     let cameraFrameTimer = null;
+    let latestVisionOverlay = null;
+    let lastVisionLogKey = "";
+    const DETECTION_BOX_SCALE_X = 1.14;
+    const DETECTION_BOX_SCALE_Y = 1.18;
 
     function compactText(text) {
         return String(text || "")
@@ -157,6 +165,227 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
+    function humanizeHeadMotion(headTargetDeg) {
+        const pitch = Number(headTargetDeg?.pitch);
+        const yaw = Number(headTargetDeg?.yaw);
+        const parts = [];
+
+        if (!Number.isNaN(yaw) && Math.abs(yaw) >= 2) {
+            parts.push(`${yaw > 0 ? "左转" : "右转"} ${Math.abs(yaw).toFixed(1)}°`);
+        }
+        if (!Number.isNaN(pitch) && Math.abs(pitch) >= 2) {
+            parts.push(`${pitch > 0 ? "低头" : "抬头"} ${Math.abs(pitch).toFixed(1)}°`);
+        }
+        if (!parts.length) {
+            return "头部基本保持中位";
+        }
+        return `机器人头部目标：${parts.join("，")}`;
+    }
+
+    function normalizeBbox(bboxNorm) {
+        if (!Array.isArray(bboxNorm) || bboxNorm.length !== 4) {
+            return null;
+        }
+        const [x, y, width, height] = bboxNorm.map((value) => Number(value));
+        if ([x, y, width, height].some((value) => Number.isNaN(value))) {
+            return null;
+        }
+        if (width <= 0 || height <= 0) {
+            return null;
+        }
+        return {
+            x: Math.min(Math.max(x, 0), 1),
+            y: Math.min(Math.max(y, 0), 1),
+            width: Math.min(Math.max(width, 0), 1),
+            height: Math.min(Math.max(height, 0), 1),
+        };
+    }
+
+    function clearDetectionOverlay() {
+        latestVisionOverlay = null;
+        clearDetectionCanvas();
+        if (cameraOverlay) {
+            cameraOverlay.hidden = true;
+            cameraOverlay.style.display = "none";
+        }
+        if (detectionBox) {
+            detectionBox.hidden = true;
+            detectionBox.style.display = "none";
+            detectionBox.style.left = "";
+            detectionBox.style.top = "";
+            detectionBox.style.width = "";
+            detectionBox.style.height = "";
+            detectionBox.dataset.direction = "front";
+        }
+        if (detectionLabel) {
+            detectionLabel.textContent = "等待检测";
+            detectionLabel.style.display = "none";
+        }
+    }
+
+    function clearDetectionCanvas() {
+        if (!cameraOverlayCanvas) {
+            return;
+        }
+        const context = cameraOverlayCanvas.getContext("2d");
+        if (!context) {
+            return;
+        }
+        context.clearRect(0, 0, cameraOverlayCanvas.width, cameraOverlayCanvas.height);
+    }
+
+    function syncDetectionCanvasSize(width, height) {
+        if (!cameraOverlayCanvas) {
+            return null;
+        }
+        const dpr = Math.max(window.devicePixelRatio || 1, 1);
+        const targetWidth = Math.max(1, Math.round(width * dpr));
+        const targetHeight = Math.max(1, Math.round(height * dpr));
+        if (
+            cameraOverlayCanvas.width !== targetWidth ||
+            cameraOverlayCanvas.height !== targetHeight
+        ) {
+            cameraOverlayCanvas.width = targetWidth;
+            cameraOverlayCanvas.height = targetHeight;
+        }
+        const context = cameraOverlayCanvas.getContext("2d");
+        if (!context) {
+            return null;
+        }
+        context.setTransform(dpr, 0, 0, dpr, 0, 0);
+        context.clearRect(0, 0, width, height);
+        return context;
+    }
+
+    function drawDetectionCanvas({ left, top, width, height, direction }) {
+        if (!cameraOverlayCanvas || !cameraOverlay) {
+            return;
+        }
+        const cameraShell = cameraPreview?.parentElement || cameraOverlay.parentElement;
+        if (!cameraShell) {
+            return;
+        }
+        const shellRect = cameraShell.getBoundingClientRect();
+        const context = syncDetectionCanvasSize(shellRect.width, shellRect.height);
+        if (!context) {
+            return;
+        }
+
+        const strokeColor = ["left", "right", "up", "down"].includes(direction)
+            ? "rgba(255, 206, 92, 0.98)"
+            : "rgba(122, 226, 167, 0.98)";
+        const fillColor = ["left", "right", "up", "down"].includes(direction)
+            ? "rgba(255, 206, 92, 0.10)"
+            : "rgba(122, 226, 167, 0.10)";
+        const lineWidth = 3;
+        const radius = 18;
+
+        context.save();
+        context.fillStyle = fillColor;
+        context.strokeStyle = strokeColor;
+        context.lineWidth = lineWidth;
+        context.beginPath();
+        if (typeof context.roundRect === "function") {
+            context.roundRect(left, top, width, height, radius);
+        } else {
+            context.rect(left, top, width, height);
+        }
+        context.fill();
+        context.stroke();
+        context.restore();
+    }
+
+    function renderDetectionOverlay(overlayState = latestVisionOverlay) {
+        if (!cameraOverlay || !detectionBox || !detectionLabel) {
+            return;
+        }
+        if (!cameraActive || !cameraPreview || cameraPreview.hidden) {
+            cameraOverlay.hidden = true;
+            cameraOverlay.style.display = "none";
+            detectionBox.hidden = true;
+            detectionBox.style.display = "none";
+            return;
+        }
+
+        const bbox = normalizeBbox(overlayState?.bboxNorm);
+        if (!bbox) {
+            cameraOverlay.hidden = true;
+            cameraOverlay.style.display = "none";
+            detectionBox.hidden = true;
+            detectionBox.style.display = "none";
+            return;
+        }
+
+        const cameraShell = cameraPreview.parentElement || cameraOverlay.parentElement;
+        if (!cameraShell) {
+            cameraOverlay.hidden = true;
+            cameraOverlay.style.display = "none";
+            detectionBox.hidden = true;
+            detectionBox.style.display = "none";
+            return;
+        }
+
+        cameraOverlay.hidden = false;
+        cameraOverlay.style.display = "block";
+        const shellRect = cameraShell.getBoundingClientRect();
+        const shellWidth = shellRect.width;
+        const shellHeight = shellRect.height;
+
+        if (!shellWidth || !shellHeight) {
+            cameraOverlay.hidden = true;
+            cameraOverlay.style.display = "none";
+            detectionBox.hidden = true;
+            detectionBox.style.display = "none";
+            return;
+        }
+
+        // The runtime sees frames from the browser bridge canvas (320x180),
+        // so bbox_norm already targets the same 16:9 preview shell.
+        const rawLeft = bbox.x * shellWidth;
+        const rawTop = bbox.y * shellHeight;
+        const rawWidth = bbox.width * shellWidth;
+        const rawHeight = bbox.height * shellHeight;
+        const centerX = rawLeft + rawWidth / 2;
+        const centerY = rawTop + rawHeight / 2;
+        const expandedWidth = rawWidth * DETECTION_BOX_SCALE_X;
+        const expandedHeight = rawHeight * DETECTION_BOX_SCALE_Y;
+        const left = Math.max(0, centerX - expandedWidth / 2);
+        const top = Math.max(0, centerY - expandedHeight / 2);
+        const right = Math.min(shellWidth, centerX + expandedWidth / 2);
+        const bottom = Math.min(shellHeight, centerY + expandedHeight / 2);
+
+        if (right <= left || bottom <= top) {
+            cameraOverlay.hidden = true;
+            cameraOverlay.style.display = "none";
+            detectionBox.hidden = true;
+            detectionBox.style.display = "none";
+            return;
+        }
+
+        const direction = String(overlayState?.direction || "front").toLowerCase();
+        const confidence = Number(overlayState?.confidence);
+        const confidenceText = Number.isFinite(confidence)
+            ? ` · ${(confidence * 100).toFixed(0)}%`
+            : "";
+        const motionText = humanizeHeadMotion(overlayState?.headTargetDeg);
+        detectionBox.style.left = `${left}px`;
+        detectionBox.style.top = `${top}px`;
+        detectionBox.style.width = `${right - left}px`;
+        detectionBox.style.height = `${bottom - top}px`;
+        detectionBox.dataset.direction = direction;
+        detectionBox.hidden = false;
+        detectionBox.style.display = "block";
+        detectionLabel.textContent = "";
+        detectionLabel.style.display = "none";
+        drawDetectionCanvas({
+            left,
+            top,
+            width: right - left,
+            height: bottom - top,
+            direction,
+        });
+    }
+
     function appendVisionLog(title, detail) {
         if (!visionLog) {
             return;
@@ -201,13 +430,27 @@ document.addEventListener("DOMContentLoaded", () => {
         const metadata = Object(decision.signal_metadata || {});
 
         if (signalName === "vision_attention_updated") {
+            const reactiveEventName = String(
+                metadata.reactive_event_name || "attention_updated"
+            );
             const direction = String(metadata.direction || "front").toLowerCase();
             const trackingEnabled = Boolean(metadata.tracking_enabled);
+            const confidence = Number(metadata.confidence);
+            const overlayState = {
+                bboxNorm: metadata.bbox_norm,
+                direction,
+                confidence,
+                headTargetDeg: Object(metadata.head_target_deg || {}),
+            };
+            latestVisionOverlay = overlayState;
+            renderDetectionOverlay(overlayState);
             if (visionSource) {
-                visionSource.textContent = `source: ${String(metadata.source || "reactive_vision")}`;
+                visionSource.textContent = Number.isFinite(confidence)
+                    ? `${String(metadata.source || "reactive_vision")} · conf ${(confidence * 100).toFixed(0)}%`
+                    : `source: ${String(metadata.source || "reactive_vision")}`;
             }
             if (visionEventName) {
-                visionEventName.textContent = "attention_acquired";
+                visionEventName.textContent = reactiveEventName;
             }
             if (visionTrackingEnabled) {
                 visionTrackingEnabled.textContent = trackingEnabled ? "enabled" : "disabled";
@@ -218,18 +461,24 @@ document.addEventListener("DOMContentLoaded", () => {
             setVisionStatus("已检测到目标", "active");
             updateVisionDirection(
                 direction,
-                `检测链正在关注${humanizeDirection(direction)}的人脸，并驱动头部朝向更新`
+                `检测链正在关注${humanizeDirection(direction)}的人脸，${humanizeHeadMotion(overlayState.headTargetDeg)}`
             );
             updateVisionTimestamp();
-            appendVisionLog(
-                `attention_acquired · ${humanizeDirection(direction)}`,
-                `${formatClockTime(new Date())} · tracking ${trackingEnabled ? "enabled" : "disabled"}`
-            );
+            const logKey = `${reactiveEventName}:${direction}:${trackingEnabled}`;
+            if (reactiveEventName === "attention_acquired" || logKey !== lastVisionLogKey) {
+                lastVisionLogKey = logKey;
+                appendVisionLog(
+                    `${reactiveEventName} · ${humanizeDirection(direction)}`,
+                    `${formatClockTime(new Date())} · tracking ${trackingEnabled ? "enabled" : "disabled"} · ${humanizeHeadMotion(overlayState.headTargetDeg)}`
+                );
+            }
             return;
         }
 
         if (signalName === "idle_entered" && String(metadata.source || "") === "reactive_vision") {
             const reason = humanizeReleaseReason(metadata.reason || "released");
+            clearDetectionOverlay();
+            lastVisionLogKey = `released:${reason}`;
             if (visionSource) {
                 visionSource.textContent = `source: ${String(metadata.source || "reactive_vision")}`;
             }
@@ -262,6 +511,7 @@ document.addEventListener("DOMContentLoaded", () => {
             return;
         }
         cameraPlaceholder.hidden = hidden;
+        cameraPlaceholder.style.display = hidden ? "none" : "flex";
         if (!hidden) {
             cameraPlaceholder.textContent = text;
         }
@@ -588,6 +838,7 @@ document.addEventListener("DOMContentLoaded", () => {
             cameraPreview.srcObject = null;
             cameraPreview.hidden = true;
         }
+        clearDetectionOverlay();
         renderCameraPlaceholder("点击 Start Camera 预览本机相机", false);
         setCameraStatus("相机未启动", "idle");
         updateCameraButton();
@@ -619,6 +870,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 cameraPreview.hidden = false;
                 await cameraPreview.play();
             }
+            renderDetectionOverlay();
             renderCameraPlaceholder("", true);
             setCameraStatus("本机摄像头已连接", "ready");
             startBrowserCameraBridge();
@@ -1031,6 +1283,14 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     updateMicButton();
     updateCameraButton();
+    if (cameraPreview) {
+        cameraPreview.addEventListener("loadedmetadata", () => {
+            renderDetectionOverlay();
+        });
+    }
+    window.addEventListener("resize", () => {
+        renderDetectionOverlay();
+    });
     window.addEventListener("beforeunload", () => {
         stopBrowserCameraBridge();
         if (cameraStream) {

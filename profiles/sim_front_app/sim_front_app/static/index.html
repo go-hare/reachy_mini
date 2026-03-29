@@ -5,7 +5,7 @@
     <meta charset="UTF-8">
     <title>Sim Front App settings</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <link rel="stylesheet" href="/static/style.css?v=20260329-vision-bridge-1">
+    <link rel="stylesheet" href="/static/style.css?v=20260329-vision-overlay-10">
 </head>
 
 <body>
@@ -53,23 +53,17 @@
             </div>
 
             <div class="side-panel">
-                <div class="card">
-                    <h2>Editable files</h2>
-                    <ul>
-                        <li><code>profiles/AGENTS.md</code></li>
-                        <li><code>profiles/USER.md</code></li>
-                        <li><code>profiles/SOUL.md</code></li>
-                        <li><code>profiles/TOOLS.md</code></li>
-                        <li><code>profiles/FRONT.md</code></li>
-                        <li><code>profiles/config.jsonl</code></li>
-                    </ul>
-                </div>
-
-                <div class="card">
+                <div class="card camera-card">
                     <h2>Browser Camera</h2>
                     <p>这里预览的是这台 Mac 当前浏览器授权后的本机摄像头，不走 MuJoCo 仿真相机。</p>
                     <div class="camera-shell">
                         <video id="camera-preview" class="camera-preview" autoplay playsinline muted hidden></video>
+                        <div class="camera-overlay" id="camera-overlay" hidden>
+                            <canvas id="camera-overlay-canvas" class="camera-overlay-canvas"></canvas>
+                            <div class="detection-box" id="detection-box" data-direction="front" hidden>
+                                <div class="detection-label" id="detection-label">等待检测</div>
+                            </div>
+                        </div>
                         <div class="camera-placeholder" id="camera-placeholder">点击 Start Camera 预览本机相机</div>
                     </div>
                     <div class="camera-bar">
@@ -132,7 +126,7 @@
         </section>
     </div>
 
-    <script src="/static/main.js?v=20260329-vision-bridge-1"></script>
+    <script src="/static/main.js?v=20260329-vision-overlay-10"></script>
 </body>
 
 </html>
