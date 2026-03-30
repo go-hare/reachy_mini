@@ -23,11 +23,7 @@ import { useViewRouter, ViewRouterWrapper } from '../hooks/system/useViewRouter'
 import { useRobotCommands, useRobotStateWebSocket, useActiveMoves } from '../hooks/robot';
 import { DAEMON_CONFIG, setAppStoreInstance } from '../config/daemon';
 import { isDevMode } from '../utils/devMode';
-import {
-  isSimulationMode,
-  enableSimulationMode,
-  disableSimulationMode,
-} from '../utils/simulationMode';
+import { isSimulationMode, disableSimulationMode } from '../utils/simulationMode';
 import useAppStore from '../store/useAppStore';
 import { useShallow } from 'zustand/react/shallow';
 
@@ -178,7 +174,6 @@ function App() {
   const [isRestarting, setIsRestarting] = useState(false);
   const restartTimerRef = useRef(null);
   const restartStartedRef = useRef(false);
-  const autoSimulationStartedRef = useRef(false);
   // Track if permissions were already granted on the first check (mount)
   const permissionsGrantedOnFirstCheckRef = useRef(null);
 
@@ -270,35 +265,6 @@ function App() {
 
   // 🕐 USB check timing - manages when to start USB check after update view
   const { shouldShowUsbCheck } = useUsbCheckTiming(shouldShowUpdateView);
-
-  // Auto-start the local simulation daemon once per app launch.
-  useEffect(() => {
-    if (autoSimulationStartedRef.current) return;
-    if (!permissionsGranted || isRestarting || shouldShowUpdateView) return;
-    if (connectionMode || isStarting || isStopping || isActive) return;
-    if (hardwareError || startupError) return;
-
-    autoSimulationStartedRef.current = true;
-    enableSimulationMode();
-    useAppStore.getState().startConnection('simulation', { portName: 'simulation' });
-
-    requestAnimationFrame(() => {
-      startDaemon().catch(error => {
-        console.error('[App] Failed to auto-start simulation daemon:', error);
-      });
-    });
-  }, [
-    permissionsGranted,
-    isRestarting,
-    shouldShowUpdateView,
-    connectionMode,
-    isStarting,
-    isStopping,
-    isActive,
-    hardwareError,
-    startupError,
-    startDaemon,
-  ]);
 
   // Daemon health check (GET /api/daemon/status, USB 3s / WiFi 5s)
   // 4 consecutive timeouts → transitionTo.crashed()

@@ -234,12 +234,11 @@ export function usePermissions({ checkInterval = 2000 } = {}) {
     };
   }, [checkInterval, checkPermissions]);
 
+  // Location is only required for WiFi SSID discovery, not for the core app shell.
+  // Keeping it out of the startup gate avoids a restart loop where the app thinks
+  // core permissions are ready, but the optional WiFi-only permission is still pending.
   const allGranted =
-    cameraGranted &&
-    microphoneGranted &&
-    localNetworkGranted &&
-    locationGranted &&
-    bluetoothGranted;
+    cameraGranted && microphoneGranted && localNetworkGranted && bluetoothGranted;
 
   return {
     cameraGranted,
