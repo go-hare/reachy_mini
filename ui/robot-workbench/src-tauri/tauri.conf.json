@@ -1,46 +1,46 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "commander",
-  "version": "0.1.0",
-  "identifier": "ai.autohand.commander",
+  "productName": "Reachy Mini Control",
+  "version": "0.9.20",
+  "identifier": "com.pollen-robotics.reachy-mini",
   "build": {
-    "beforeDevCommand": "bun run dev",
+    "beforeDevCommand": "node node_modules/vite/bin/vite.js",
+    "beforeBuildCommand": "node node_modules/vite/bin/vite.js build",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "bun vite build",
     "frontendDist": "../dist"
   },
   "app": {
-    "trayIcon": {
-      "iconPath": "icons/32x32.png",
-      "iconAsTemplate": true
-    },
+    "withGlobalTauri": true,
     "windows": [
       {
-        "title": "Autohand.ai - Commander",
-        "width": 1280,
-        "height": 800,
-        "minWidth": 800,
-        "minHeight": 600,
+        "label": "main",
+        "title": "Reachy Mini",
+        "width": 450,
+        "height": 670,
+        "resizable": false,
         "center": true,
-        "resizable": true,
-        "fullscreen": false,
         "decorations": true,
-        "transparent": true,
-        "skipTaskbar": false,
-        "alwaysOnTop": false,
-        "visible": true,
-        "titleBarStyle": "Overlay",
-        "hiddenTitle": true
+        "transparent": false,
+        "hiddenTitle": true,
+        "titleBarStyle": "Transparent",
+        "devtools": false,
+        "backgroundThrottling": "disabled"
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self' ipc: asset: https://asset.localhost; script-src 'self' 'unsafe-inline' 'unsafe-eval' http://localhost:* http://127.0.0.1:*; style-src 'self' 'unsafe-inline' http://localhost:* http://127.0.0.1:*; img-src 'self' data: blob: https: asset: https://asset.localhost http://localhost:* http://127.0.0.1:*; font-src 'self' data: asset: https://asset.localhost http://localhost:* http://127.0.0.1:*; media-src 'self' blob: mediastream:; worker-src 'self' blob:; connect-src 'self' ipc: https://ipc.localhost http: https: ws: wss: data: blob:; frame-src http://localhost:* http://127.0.0.1:*",
+      "dangerousDisableAssetCspModification": ["style-src"]
     },
     "macOSPrivateApi": true
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": [
+      "app",
+      "msi",
+      "deb",
+      "appimage"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -48,8 +48,31 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "externalBin": [],
     "resources": [
-      "cli/commander"
+      "../scripts/avast_ssl_fix.py"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "active": true,
+      "endpoints": [
+        "https://pollen-robotics.github.io/reachy-mini-desktop-app/latest.json"
+      ],
+      "dangerousInsecureTransportProtocol": false,
+      "dangerousAllowDowngrades": true,
+      "dialog": false,
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDNBNDFBQUFGQkFCOTY2NQpSV1JsbHF2N3FocWtBM2pkdlhBVUpXNFkwZkc1dWdHK09NcklYNGthR1dHbVR1aDQ0NlIxR3oyUgo=",
+      "windows": {
+        "installMode": "passive"
+      }
+    },
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "reachymini"
+        ]
+      }
+    }
   }
 }

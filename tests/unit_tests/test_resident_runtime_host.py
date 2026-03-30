@@ -35,7 +35,7 @@ class FakeRuntime:
     def unsubscribe_front_outputs(self, queue: asyncio.Queue[FrontOutputPacket]) -> None:
         self.queues.discard(queue)
 
-    async def handle_user_text(
+    async def handle_user_turn(
         self,
         *,
         thread_id: str,
@@ -192,7 +192,7 @@ class ConcurrentFakeRuntime(FakeRuntime):
         self.second_started = threading.Event()
         self.allow_first_finish = threading.Event()
 
-    async def handle_user_text(
+    async def handle_user_turn(
         self,
         *,
         thread_id: str,
@@ -252,7 +252,7 @@ class ConcurrentFakeRuntime(FakeRuntime):
                 )
             return
 
-        await super().handle_user_text(
+        await super().handle_user_turn(
             thread_id=thread_id,
             session_id=session_id,
             user_id=user_id,

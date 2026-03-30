@@ -3,7 +3,6 @@ from __future__ import annotations
 """Reachy Mini application base classes and helpers."""
 
 import asyncio
-import base64
 import importlib
 import logging
 import threading
@@ -17,8 +16,21 @@ from urllib.parse import urlparse
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 
+from .inputs import (
+    handle_runtime_websocket_payload,
+)
+from .inputs.runtime_dispatch import dispatch_user_speech_event, dispatch_user_turn
+from .inputs.speech import (
+    BrowserAudioChunkEvent,
+    BrowserAudioStopEvent,
+    decode_browser_audio_chunk,
+    UserSpeechPartialEvent,
+    UserSpeechStartedEvent,
+    UserSpeechStoppedEvent,
+)
+from .inputs.text import UserTextEvent
 from .runtime_host import AppRuntimeHostAdapter
 
 if TYPE_CHECKING:
@@ -52,54 +64,7 @@ class RuntimeStatusResponse(BaseModel):
 
     ready: bool
     profile_root: str
-
-
-class UserTextEvent(BaseModel):
-    """One browser-to-app user text event over WebSocket."""
-
-    type: Literal["user_text"]
-    text: str = Field(min_length=1)
-    thread_id: str = "app:main"
-    session_id: str | None = None
-    user_id: str = "user"
-
-
-class UserSpeechStartedEvent(BaseModel):
-    """One browser speech-start lifecycle event over WebSocket."""
-
-    type: Literal["user_speech_started"]
-    thread_id: str = "app:main"
-    session_id: str | None = None
-    user_id: str = "user"
-    text: str = ""
-
-
-class UserSpeechPartialEvent(BaseModel):
-    """One browser partial speech-transcript event over WebSocket."""
-
-    type: Literal["user_speech_partial"]
-    thread_id: str = "app:main"
-    session_id: str | None = None
-    user_id: str = "user"
-    text: str = Field(min_length=1)
-
-
-class UserSpeechStoppedEvent(BaseModel):
-    """One browser speech-stop lifecycle event over WebSocket."""
-
-    type: Literal["user_speech_stopped"]
-    thread_id: str = "app:main"
-    session_id: str | None = None
-    user_id: str = "user"
-    text: str = ""
-
-
-class BrowserCameraFrameEvent(BaseModel):
-    """One browser-camera frame sent over WebSocket for runtime-side perception."""
-
-    type: Literal["browser_camera_frame"]
-    image_b64: str = Field(min_length=1)
-    thread_id: str = "app:main"
+    speech_input_enabled: bool = False
 
 
 class ReachyMiniApp:
@@ -140,6 +105,7 @@ class ReachyMiniApp:
         self.runtime_tool_context: Any | None = None
         self.runtime_microphone_bridge: Any | None = None
         self._runtime_speech_input_block_until: float = 0.0
+        self._runtime_browser_speech_sessions: dict[str, Any] = {}
 
         self.settings_app: FastAPI | None = None
         if self.custom_app_url is not None and not self.dont_start_webserver:
@@ -306,6 +272,208 @@ class ReachyMiniApp:
             state,
         )
 
+    async def handle_runtime_browser_audio_chunk(
+        self,
+        event: BrowserAudioChunkEvent,
+        outbound_queue: asyncio.Queue[dict[str, Any]],
+    ) -> None:
+        """Feed one browser microphone audio chunk into the runtime speech session."""
+
+        thread_id = str(event.thread_id or "app:main")
+        session = self._runtime_browser_speech_sessions.get(
+            self._build_runtime_browser_speech_session_key(
+                connection_key=id(outbound_queue),
+                thread_id=thread_id,
+                session_id=str(event.session_id or thread_id),
+                user_id=str(event.user_id or "user"),
+            )
+        )
+        if session is None:
+            session = self._build_runtime_browser_speech_session(event, outbound_queue)
+            if session is None:
+                await outbound_queue.put(
+                    self._build_turn_error_event(
+                        thread_id=thread_id,
+                        error="Speech input is not configured for this runtime.",
+                    )
+                )
+                return
+
+        audio_chunk = decode_browser_audio_chunk(event.audio_b64)
+        if audio_chunk is None or audio_chunk.size == 0:
+            await outbound_queue.put(
+                self._build_turn_error_event(
+                    thread_id=thread_id,
+                    error="Browser audio payload was empty or malformed.",
+                )
+            )
+            return
+
+        try:
+            await session.feed_audio_frame(audio_chunk, int(event.sample_rate_hz))
+        except Exception as exc:
+            await outbound_queue.put(
+                self._build_turn_error_event(
+                    thread_id=thread_id,
+                    error=str(exc),
+                )
+            )
+
+    async def handle_runtime_browser_audio_stop(
+        self,
+        event: BrowserAudioStopEvent,
+        outbound_queue: asyncio.Queue[dict[str, Any]],
+    ) -> None:
+        """Flush the browser microphone session after capture stops."""
+
+        thread_id = str(event.thread_id or "app:main")
+        session = self._runtime_browser_speech_sessions.get(
+            self._build_runtime_browser_speech_session_key(
+                connection_key=id(outbound_queue),
+                thread_id=thread_id,
+                session_id=str(event.session_id or thread_id),
+                user_id=str(event.user_id or "user"),
+            )
+        )
+        if session is None:
+            return
+
+        try:
+            await session.finish_capture()
+        except Exception as exc:
+            await outbound_queue.put(
+                self._build_turn_error_event(
+                    thread_id=thread_id,
+                    error=str(exc),
+                )
+            )
+
+    async def _cleanup_runtime_browser_speech_sessions(
+        self,
+        *,
+        connection_key: int,
+        flush: bool,
+    ) -> None:
+        """Release browser speech sessions owned by one websocket connection."""
+
+        owned_keys = [
+            key
+            for key in self._runtime_browser_speech_sessions
+            if key.startswith(f"{connection_key}:")
+        ]
+        for key in owned_keys:
+            session = self._runtime_browser_speech_sessions.pop(key, None)
+            if session is None:
+                continue
+            try:
+                await session.close(flush=flush)
+            except Exception as exc:
+                self.logger.warning("Failed to close browser speech session %s: %s", key, exc)
+
+    @staticmethod
+    def _build_runtime_browser_speech_session_key(
+        *,
+        connection_key: int,
+        thread_id: str,
+        session_id: str,
+        user_id: str,
+    ) -> str:
+        return f"{connection_key}:{thread_id}:{session_id}:{user_id}"
+
+    def _build_runtime_browser_speech_session(
+        self,
+        event: BrowserAudioChunkEvent,
+        outbound_queue: asyncio.Queue[dict[str, Any]],
+    ) -> Any | None:
+        """Build or reuse the browser microphone session for one websocket client."""
+
+        config = getattr(self.runtime_config, "speech_input", None)
+        if config is None or not getattr(config, "enabled", False):
+            return None
+
+        from reachy_mini.runtime.speech_session import RuntimeSpeechSession
+
+        thread_id = str(event.thread_id or "app:main")
+        session_id = str(event.session_id or thread_id)
+        user_id = str(event.user_id or "user")
+        speech_provider = self._create_runtime_speech_input_provider()
+        if speech_provider is None:
+            return None
+
+        async def on_speech_started(_: str) -> None:
+            await dispatch_user_speech_event(
+                self,
+                UserSpeechStartedEvent(
+                    thread_id=thread_id,
+                    session_id=session_id,
+                    user_id=user_id,
+                    text="",
+                ),
+                outbound_queue,
+            )
+
+        async def on_speech_stopped(_: str) -> None:
+            await dispatch_user_speech_event(
+                self,
+                UserSpeechStoppedEvent(
+                    thread_id=thread_id,
+                    session_id=session_id,
+                    user_id=user_id,
+                    text="",
+                ),
+                outbound_queue,
+            )
+
+        async def on_user_text_partial(transcript: str) -> None:
+            resolved_transcript = str(transcript or "").strip()
+            if not resolved_transcript:
+                return
+            await dispatch_user_speech_event(
+                self,
+                UserSpeechPartialEvent(
+                    thread_id=thread_id,
+                    session_id=session_id,
+                    user_id=user_id,
+                    text=resolved_transcript,
+                ),
+                outbound_queue,
+            )
+
+        async def on_user_text(transcript: str) -> None:
+            resolved_transcript = str(transcript or "").strip()
+            if not resolved_transcript:
+                return
+            await dispatch_user_turn(
+                self,
+                UserTextEvent(
+                    thread_id=thread_id,
+                    session_id=session_id,
+                    user_id=user_id,
+                    text=resolved_transcript,
+                ),
+                outbound_queue,
+            )
+
+        session_key = self._build_runtime_browser_speech_session_key(
+            connection_key=id(outbound_queue),
+            thread_id=thread_id,
+            session_id=session_id,
+            user_id=user_id,
+        )
+        session = RuntimeSpeechSession(
+            provider=speech_provider,
+            config=config,
+            logger=self.logger,
+            on_speech_started=on_speech_started,
+            on_speech_stopped=on_speech_stopped,
+            on_user_text=on_user_text,
+            on_user_text_partial=on_user_text_partial,
+            input_blocked=self._runtime_speech_input_is_blocked,
+            source_name="browser-microphone",
+        )
+        self._runtime_browser_speech_sessions[session_key] = session
+        return session
+
     def stop(self) -> None:
         """Stop the app gracefully."""
         self.stop_event.set()
@@ -447,6 +615,10 @@ class ReachyMiniApp:
                     await ready_task
                 except asyncio.CancelledError:
                     pass
+            await self._cleanup_runtime_browser_speech_sessions(
+                connection_key=id(outbound_queue),
+                flush=False,
+            )
             front_output_task.cancel()
             try:
                 await front_output_task
@@ -496,6 +668,36 @@ class ReachyMiniApp:
             finally:
                 self.runtime = None
 
+    def _create_runtime_speech_input_provider(self) -> Any | None:
+        """Build one streaming speech-input provider for the current runtime config."""
+
+        config = getattr(self.runtime_config, "speech_input", None)
+        if config is None or not getattr(config, "enabled", False):
+            return None
+
+        try:
+            from reachy_mini.runtime.speech_session import (
+                build_runtime_speech_session_provider,
+            )
+
+            return build_runtime_speech_session_provider(config=config)
+        except Exception as exc:
+            self.logger.warning("Failed to build speech input provider: %s", exc)
+            return None
+
+    def _runtime_speech_input_is_blocked(self) -> bool:
+        """Whether user speech capture should stay blocked during runtime playback."""
+
+        if time.monotonic() < self._runtime_speech_input_block_until:
+            return True
+        context = self.runtime_tool_context
+        speech_driver = getattr(context, "speech_driver", None)
+        if speech_driver is not None and getattr(speech_driver, "speech_active", False):
+            return True
+        reply_audio_service = getattr(context, "reply_audio_service", None)
+        active_playback_task = getattr(reply_audio_service, "_active_playback_task", None)
+        return active_playback_task is not None and not active_playback_task.done()
+
     def _build_runtime_microphone_bridge(self, runtime: "RuntimeScheduler") -> Any | None:
         """Build the optional robot-microphone bridge for the resident runtime."""
 
@@ -511,27 +713,13 @@ class ReachyMiniApp:
             return None
 
         try:
-            from reachy_mini.runtime.speech_input import (
-                RuntimeMicrophoneBridge,
-                build_runtime_speech_input_transcriber,
-            )
-
-            transcriber = build_runtime_speech_input_transcriber(
-                config=config,
-                fallback_api_key=str(
-                    getattr(getattr(self.runtime_config, "front_model", None), "api_key", "")
-                    or ""
-                ),
-                fallback_base_url=str(
-                    getattr(getattr(self.runtime_config, "front_model", None), "base_url", "")
-                    or ""
-                ),
-            )
+            from reachy_mini.runtime.speech_session import RuntimeMicrophoneBridge
         except Exception as exc:
-            self.logger.warning("Failed to build speech input transcriber: %s", exc)
+            self.logger.warning("Failed to load speech session runtime bridge: %s", exc)
             return None
 
-        if transcriber is None:
+        speech_provider = self._create_runtime_speech_input_provider()
+        if speech_provider is None:
             return None
 
         thread_id = "app:main"
@@ -559,11 +747,23 @@ class ReachyMiniApp:
                 surface_state_handler=surface_state_handler,
             )
 
+        async def on_user_text_partial(transcript: str) -> None:
+            resolved_transcript = str(transcript or "").strip()
+            if not resolved_transcript:
+                return
+            await runtime.handle_user_speech_partial(
+                thread_id=thread_id,
+                session_id=session_id,
+                user_id=user_id,
+                user_text=resolved_transcript,
+                surface_state_handler=surface_state_handler,
+            )
+
         async def on_user_text(transcript: str) -> None:
             resolved_transcript = str(transcript or "").strip()
             if not resolved_transcript:
                 return
-            await runtime.handle_user_text(
+            await runtime.handle_user_turn(
                 thread_id=thread_id,
                 session_id=session_id,
                 user_id=user_id,
@@ -572,26 +772,16 @@ class ReachyMiniApp:
                 final_reply_handler=self.play_runtime_reply_audio,
             )
 
-        def input_blocked() -> bool:
-            if time.monotonic() < self._runtime_speech_input_block_until:
-                return True
-            context = self.runtime_tool_context
-            speech_driver = getattr(context, "speech_driver", None)
-            if speech_driver is not None and getattr(speech_driver, "speech_active", False):
-                return True
-            reply_audio_service = getattr(context, "reply_audio_service", None)
-            active_playback_task = getattr(reply_audio_service, "_active_playback_task", None)
-            return active_playback_task is not None and not active_playback_task.done()
-
         return RuntimeMicrophoneBridge(
             media=media,
-            transcriber=transcriber,
+            provider=speech_provider,
             config=config,
             logger=self.logger,
             on_speech_started=on_speech_started,
             on_speech_stopped=on_speech_stopped,
             on_user_text=on_user_text,
-            input_blocked=input_blocked,
+            on_user_text_partial=on_user_text_partial,
+            input_blocked=self._runtime_speech_input_is_blocked,
         )
 
     def _get_runtime_speech_input_playback_cooldown_s(self) -> float:
@@ -617,7 +807,7 @@ class ReachyMiniApp:
             self.apply_runtime_surface_state(state)
 
         try:
-            await runtime.handle_user_text(
+            await runtime.handle_user_turn(
                 thread_id=thread_id,
                 session_id=session_id,
                 user_id=user_id,
@@ -733,71 +923,12 @@ class ReachyMiniApp:
         """Receive browser messages and dispatch resident-runtime turns."""
         while True:
             payload = await websocket.receive_json()
-            event_type = str(payload.get("type", "") or "").strip()
-
-            if event_type == "ping":
-                await outbound_queue.put({"type": "pong"})
-                continue
-
-            if event_type == "user_text":
-                try:
-                    event = UserTextEvent.model_validate(payload)
-                except ValidationError as exc:
-                    await outbound_queue.put(
-                        self._build_turn_error_event(
-                            thread_id=str(payload.get("thread_id", "app:main") or "app:main"),
-                            error=str(exc),
-                        )
-                    )
-                    continue
-
-                tracked_thread_ids.add(str(event.thread_id or "app:main"))
-                asyncio.create_task(self._dispatch_user_text_turn(event, outbound_queue))
-                continue
-
-            if event_type in {
-                "user_speech_started",
-                "user_speech_partial",
-                "user_speech_stopped",
-            }:
-                try:
-                    if event_type == "user_speech_started":
-                        speech_event = UserSpeechStartedEvent.model_validate(payload)
-                    elif event_type == "user_speech_partial":
-                        speech_event = UserSpeechPartialEvent.model_validate(payload)
-                    else:
-                        speech_event = UserSpeechStoppedEvent.model_validate(payload)
-                except ValidationError as exc:
-                    await outbound_queue.put(
-                        self._build_turn_error_event(
-                            thread_id=str(payload.get("thread_id", "app:main") or "app:main"),
-                            error=str(exc),
-                        )
-                    )
-                    continue
-
-                tracked_thread_ids.add(str(speech_event.thread_id or "app:main"))
-                await self._dispatch_user_speech_event(speech_event, outbound_queue)
-                continue
-
-            if event_type == "browser_camera_frame":
-                try:
-                    frame_event = BrowserCameraFrameEvent.model_validate(payload)
-                    self._ingest_browser_camera_frame(frame_event)
-                except ValidationError as exc:
-                    self.logger.warning("Invalid browser camera frame payload: %s", exc)
-                except Exception as exc:
-                    self.logger.warning("Failed to ingest browser camera frame: %s", exc)
-                continue
-
-            else:
-                await outbound_queue.put(
-                    self._build_turn_error_event(
-                        thread_id=str(payload.get("thread_id", "app:main") or "app:main"),
-                        error=f"Unsupported WebSocket event type: {event_type or '<empty>'}",
-                    )
-                )
-                continue
+            await handle_runtime_websocket_payload(
+                self,
+                payload=payload,
+                outbound_queue=outbound_queue,
+                tracked_thread_ids=tracked_thread_ids,
+            )
 
     async def _runtime_websocket_front_output_loop(
         self,
@@ -833,237 +964,18 @@ class ReachyMiniApp:
             if runtime is not None and runtime_queue is not None:
                 runtime.unsubscribe_front_outputs(runtime_queue)
 
-    async def _dispatch_user_text_turn(
-        self,
-        event: UserTextEvent,
-        outbound_queue: asyncio.Queue[dict[str, Any]],
-    ) -> None:
-        """Dispatch one resident-runtime turn without waiting for kernel completion."""
-        runtime = self.runtime
-        thread_id = str(event.thread_id or "app:main")
-        runtime_loop = self.runtime_loop
-        if runtime is None or runtime_loop is None or not self.runtime_ready.is_set():
-            await outbound_queue.put(
-                self._build_turn_error_event(
-                    thread_id=thread_id,
-                    error="Runtime is not ready yet.",
-                )
-            )
-            return
-
-        try:
-            future = asyncio.run_coroutine_threadsafe(
-                self._dispatch_user_text_turn_on_runtime_loop(
-                    thread_id=thread_id,
-                    session_id=str(event.session_id or thread_id),
-                    user_id=str(event.user_id or "user"),
-                    user_text=str(event.text),
-                    outbound_queue=outbound_queue,
-                    outbound_loop=asyncio.get_running_loop(),
-                ),
-                runtime_loop,
-            )
-            await asyncio.wrap_future(future)
-        except Exception as exc:
-            await outbound_queue.put(
-                self._build_turn_error_event(
-                    thread_id=thread_id,
-                    error=str(exc),
-                )
-            )
-
-    async def _dispatch_user_speech_event(
-        self,
-        event: UserSpeechStartedEvent | UserSpeechPartialEvent | UserSpeechStoppedEvent,
-        outbound_queue: asyncio.Queue[dict[str, Any]],
-    ) -> None:
-        """Dispatch one speech lifecycle event onto the resident runtime."""
-
-        runtime = self.runtime
-        thread_id = str(event.thread_id or "app:main")
-        runtime_loop = self.runtime_loop
-        if runtime is None or runtime_loop is None or not self.runtime_ready.is_set():
-            await outbound_queue.put(
-                self._build_turn_error_event(
-                    thread_id=thread_id,
-                    error="Runtime is not ready yet.",
-                )
-            )
-            return
-
-        try:
-            future = asyncio.run_coroutine_threadsafe(
-                self._dispatch_user_speech_event_on_runtime_loop(
-                    event_type=str(event.type),
-                    thread_id=thread_id,
-                    session_id=str(event.session_id or thread_id),
-                    user_id=str(event.user_id or "user"),
-                    user_text=str(event.text or ""),
-                    outbound_queue=outbound_queue,
-                    outbound_loop=asyncio.get_running_loop(),
-                ),
-                runtime_loop,
-            )
-            await asyncio.wrap_future(future)
-        except Exception as exc:
-            await outbound_queue.put(
-                self._build_turn_error_event(
-                    thread_id=thread_id,
-                    error=str(exc),
-                )
-            )
-
-    async def _dispatch_user_text_turn_on_runtime_loop(
-        self,
-        *,
-        thread_id: str,
-        session_id: str,
-        user_id: str,
-        user_text: str,
-        outbound_queue: asyncio.Queue[dict[str, Any]],
-        outbound_loop: asyncio.AbstractEventLoop,
-    ) -> None:
-        """Dispatch one turn on the runtime loop and return after front delivery."""
-        runtime = self.runtime
-        if runtime is None:
-            raise RuntimeError("Runtime is not ready yet.")
-
-        async def publish_event(event: dict[str, Any]) -> None:
-            put_future = asyncio.run_coroutine_threadsafe(
-                outbound_queue.put(event),
-                outbound_loop,
-            )
-            await asyncio.wrap_future(put_future)
-
-        async def surface_state_handler(state: dict[str, Any]) -> None:
-            self.apply_runtime_surface_state(state)
-            await publish_event(
-                {
-                    "type": "surface_state",
-                    "thread_id": thread_id,
-                    "state": dict(state),
-                }
-            )
-
-        await runtime.handle_user_text(
-            thread_id=thread_id,
-            session_id=session_id,
-            user_id=user_id,
-            user_text=user_text,
-            surface_state_handler=surface_state_handler,
-            final_reply_handler=self.play_runtime_reply_audio,
-        )
-
-    async def _dispatch_user_speech_event_on_runtime_loop(
-        self,
-        *,
-        event_type: str,
-        thread_id: str,
-        session_id: str,
-        user_id: str,
-        user_text: str,
-        outbound_queue: asyncio.Queue[dict[str, Any]],
-        outbound_loop: asyncio.AbstractEventLoop,
-    ) -> None:
-        """Dispatch one speech lifecycle event on the runtime loop."""
-
-        runtime = self.runtime
-        if runtime is None:
-            raise RuntimeError("Runtime is not ready yet.")
-
-        async def publish_event(event: dict[str, Any]) -> None:
-            put_future = asyncio.run_coroutine_threadsafe(
-                outbound_queue.put(event),
-                outbound_loop,
-            )
-            await asyncio.wrap_future(put_future)
-
-        async def surface_state_handler(state: dict[str, Any]) -> None:
-            self.apply_runtime_surface_state(state)
-            await publish_event(
-                {
-                    "type": "surface_state",
-                    "thread_id": thread_id,
-                    "state": dict(state),
-                }
-            )
-
-        if event_type == "user_speech_started":
-            await runtime.handle_user_speech_started(
-                thread_id=thread_id,
-                session_id=session_id,
-                user_id=user_id,
-                user_text=user_text,
-                surface_state_handler=surface_state_handler,
-            )
-            return
-
-        if event_type == "user_speech_partial":
-            await runtime.handle_user_speech_partial(
-                thread_id=thread_id,
-                session_id=session_id,
-                user_id=user_id,
-                user_text=user_text,
-                surface_state_handler=surface_state_handler,
-            )
-            return
-
-        if event_type == "user_speech_stopped":
-            await runtime.handle_user_speech_stopped(
-                thread_id=thread_id,
-                session_id=session_id,
-                user_id=user_id,
-                user_text=user_text,
-                surface_state_handler=surface_state_handler,
-            )
-            return
-
-        raise RuntimeError(f"Unsupported speech event type: {event_type or '<empty>'}")
-
     def _build_runtime_status_event(self) -> dict[str, Any]:
         """Build one small runtime readiness event."""
+        speech_input_config = getattr(self.runtime_config, "speech_input", None)
+        speech_input_enabled = False
+        if speech_input_config is not None and getattr(speech_input_config, "enabled", False):
+            speech_input_enabled = self._create_runtime_speech_input_provider() is not None
         return {
             "type": "runtime_status",
             "ready": self.runtime_ready.is_set(),
             "profile_root": str(self.profile_root) if self.profile_root is not None else "",
+            "speech_input_enabled": speech_input_enabled,
         }
-
-    def _ingest_browser_camera_frame(self, event: BrowserCameraFrameEvent) -> None:
-        """Decode one browser frame and inject it into the camera worker."""
-        context = self.runtime_tool_context
-        camera_worker = getattr(context, "camera_worker", None) if context is not None else None
-        if camera_worker is None or not hasattr(camera_worker, "ingest_external_frame"):
-            return
-
-        frame = self._decode_browser_camera_frame(event.image_b64)
-        if frame is None:
-            return
-        camera_worker.ingest_external_frame(frame)
-
-    @staticmethod
-    def _decode_browser_camera_frame(image_b64: str) -> Any | None:
-        """Decode one JPEG base64 payload from the browser into a BGR frame."""
-        payload = str(image_b64 or "").strip()
-        if not payload:
-            return None
-        if payload.startswith("data:") and "," in payload:
-            payload = payload.split(",", 1)[1]
-
-        try:
-            import cv2
-            import numpy as np
-        except ImportError:
-            return None
-
-        try:
-            raw = base64.b64decode(payload)
-        except Exception:
-            return None
-
-        buffer = np.frombuffer(raw, dtype=np.uint8)
-        if buffer.size == 0:
-            return None
-        return cv2.imdecode(buffer, cv2.IMREAD_COLOR)
 
     @staticmethod
     def _build_turn_error_event(*, thread_id: str, error: str) -> dict[str, Any]:

@@ -35,6 +35,7 @@ class FrontToolExecution:
     reason: str = ""
     success: bool = False
     result: str = ""
+    payload: Any = None
 
 
 @dataclass(slots=True, frozen=True)

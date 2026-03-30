@@ -1,7 +1,7 @@
 {"kind":"profile","name":"sim_front_app"}
 {"kind":"front","mode":"text","style":"friendly_concise","history_limit":6}
 {"kind":"vision","no_camera":false,"head_tracker":"yolo","local_vision":false}
-{"kind":"speech","enabled":true,"provider":"macos_say","voice":"Tingting","speed":1.0}
-{"kind":"speech_input","enabled":true,"provider":"mlx_whisper","model":"mlx-community/whisper-small-mlx","language":"zh","vad_db_on":-30.0,"vad_db_off":-40.0,"vad_attack_ms":220,"vad_release_ms":900,"min_utterance_ms":600,"max_utterance_ms":15000,"playback_block_cooldown_ms":900}
+{"kind":"speech","enabled":true,"provider":"kokoro","model":"hexgrad/Kokoro-82M-v1.1-zh","voice":"zf_001","speed":1.0}
+{"kind":"speech_input","enabled":true,"provider":"funasr","base_url":"ws://127.0.0.1:10096","model":"2pass","language":"zh","playback_block_cooldown_ms":900,"stream_chunk_size":[5,10,5],"stream_chunk_interval":10,"stream_encoder_chunk_look_back":4,"stream_decoder_chunk_look_back":0,"stream_finish_timeout_s":6.0,"stream_itn":true}
 {"kind":"front_model","provider":"openai","model":"deepseek-chat","base_url":"https://api.deepseek.com/v1","api_key":"sk-5e7333b1a1e147d88f6bfba20cfc4ae7","temperature":0.4}
 {"kind":"kernel_model","provider":"openai","model":"deepseek-chat","base_url":"https://api.deepseek.com/v1","api_key":"sk-5e7333b1a1e147d88f6bfba20cfc4ae7","temperature":0.2}

@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Network permissions for Python daemon -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+		<key>NSAllowsArbitraryLoadsInWebContent</key>
+		<true/>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
+	
+	<!-- Description for local network usage (avoids popups) -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>This app needs to accept local network connections to communicate with the Reachy Mini robot daemon on port 8000.</string>
+	
+	<!-- Disable network permission request on startup -->
+	<!-- Network permissions will only be requested when needed -->
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_reachy-mini._tcp</string>
+		<string>_http._tcp</string>
+	</array>
+	
+	<!-- Description for file system access -->
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>This app needs access to the file system to install and manage Reachy Mini robot applications.</string>
+	
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>This app needs access to the Downloads folder to download and install robot applications.</string>
+	
+	<!-- Description for location access (needed for WiFi scanning on macOS) -->
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>This app needs location access to scan for nearby WiFi networks and detect the Reachy Mini robot hotspot.</string>
+
+	<!-- Description for camera access (for apps that use the camera) -->
+	<key>NSCameraUsageDescription</key>
+	<string>This app needs camera access for certain Reachy Mini robot features (such as hand tracking).</string>
+	
+	<!-- Support for continuity cameras (iPhone/iPad as webcam) -->
+	<key>NSCameraUseContinuityCameraDeviceType</key>
+	<true/>
+	
+	<!-- Description for microphone access (for apps that use audio) -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>This app needs microphone access for certain Reachy Mini robot features (such as speech recognition).</string>
+	
+	<!-- Allow child process execution (Python sidecar) -->
+	<key>LSEnvironment</key>
+	<dict>
+		<key>PYTHONUNBUFFERED</key>
+		<string>1</string>
+	</dict>
+	
+	<!-- Bluetooth permission for BLE troubleshooting -->
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Reachy Mini uses Bluetooth to troubleshoot and restore your robot when WiFi is unavailable</string>
+
+	<!-- Minimum system version -->
+	<key>LSMinimumSystemVersion</key>
+	<string>10.15</string>
+	
+	<!-- Application category -->
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.utilities</string>
+	
+	<!-- Allow child process execution without strict sandbox -->
+	<!-- Important for embedded Python sidecar -->
+	<key>LSRequiresNativeExecution</key>
+	<false/>
+</dict>
+</plist>
+

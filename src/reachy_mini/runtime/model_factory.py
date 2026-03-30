@@ -28,6 +28,8 @@ class MockFrontModel:
         prompt = extract_message_text(messages[-1]) if messages else ""
         if "## user_turn_response" in prompt:
             return self._render_user_turn_response(prompt)
+        if "## camera_followup_response" in prompt:
+            return self._render_camera_followup_response(prompt)
         if "## idle_tool_decision" in prompt:
             return self._render_idle_tool_decision(prompt)
         kernel_output = (
@@ -197,6 +199,14 @@ class MockFrontModel:
             },
             ensure_ascii=False,
         )
+
+    @classmethod
+    def _render_camera_followup_response(cls, prompt: str) -> str:
+        user_text = cls._extract_section(prompt, "当前用户输入") or cls._extract_user_text(prompt)
+        resolved_user_text = str(user_text or "").strip()
+        if resolved_user_text:
+            return f"我已经看了一眼当前画面。就这次 mock 结果来说，我会围绕“{resolved_user_text}”继续回答。"
+        return "我已经看了一眼当前画面。"
 
     @classmethod
     def _extract_user_text(cls, prompt: str) -> str:

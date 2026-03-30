@@ -1,476 +1,445 @@
-// Suppress false-positive dead_code/unused_imports warnings in test builds.
-// Tauri command functions are registered via invoke_handler! at runtime and
-// appear "unused" to the compiler during test compilation.
-#![cfg_attr(test, allow(dead_code, unused_imports))]
+// Allow unexpected_cfgs from the objc crate's msg_send! macro
+#![allow(unexpected_cfgs)]
 
+// Modules
+#[macro_use]
+mod daemon;
+mod discovery;
+mod local_proxy;
+mod network;
+mod permissions;
+mod python;
+mod signing;
+mod update;
+mod usb;
+mod wifi;
+mod window;
+
+use daemon::{
+    add_log, cleanup_system_daemons, kill_daemon, set_external_mode, spawn_and_monitor_sidecar,
+    transition_and_emit, transition_status, DaemonState, DaemonStatus,
+};
+
+/// Cross-platform path for the crash marker file.
+/// Uses the OS-standard data/log directory instead of hardcoded macOS paths.
+fn crash_marker_path() -> Option<std::path::PathBuf> {
+    dirs::data_local_dir().map(|d| {
+        d.join("com.pollen-robotics.reachy-mini")
+            .join(".crash_marker")
+    })
+}
+use discovery::DiscoveryState;
+use local_proxy::LocalProxyState;
 use std::sync::Arc;
-use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
-use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{Emitter, Manager};
+use tauri::{Manager, State};
+use tauri_plugin_log::{Target, TargetKind};
 
-// Import all modules
-mod commands;
-mod error;
-mod models;
-mod services;
+#[cfg(not(windows))]
+use signal_hook::{consts::TERM_SIGNALS, iterator::Signals};
 
-use commands::*;
-
-// Test modules (only compiled during testing)
-#[cfg(test)]
-mod tests;
-
-// Utility commands
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
+// ============================================================================
+// TAURI COMMANDS
+// ============================================================================
 
 #[tauri::command]
-async fn start_drag(window: tauri::Window) -> Result<(), String> {
-    window.start_dragging().map_err(|e| e.to_string())
+fn start_daemon(
+    app_handle: tauri::AppHandle,
+    state: State<DaemonState>,
+    sim_mode: Option<bool>,
+    connection_mode: Option<String>,
+) -> Result<String, String> {
+    let sim_mode = sim_mode.unwrap_or(false);
+
+    // Reset external mode flag (handles external → USB reconnect without app restart)
+    set_external_mode(false);
+
+    // Track which frontend connection mode initiated this daemon
+    match state.connection_mode.lock() {
+        Ok(mut mode) => *mode = connection_mode,
+        Err(e) => log::warn!("[daemon] connection_mode mutex poisoned on start: {}", e),
+    }
+
+    if sim_mode {
+        add_log(
+            &state,
+            "Starting simulation mode (--sim)...".to_string(),
+        );
+    }
+
+    add_log(&state, "Cleaning up existing daemons...".to_string());
+    kill_daemon(&state);
+
+    transition_and_emit(&state, DaemonStatus::Starting, &app_handle).map_err(|e| {
+        add_log(&state, format!("Transition error: {}", e));
+        e
+    })?;
+
+    if let Err(e) = spawn_and_monitor_sidecar(app_handle.clone(), &state, sim_mode) {
+        if let Err(te) = transition_and_emit(&state, DaemonStatus::Crashed, &app_handle) {
+            log::warn!(
+                "[daemon] Failed to transition to Crashed after spawn failure: {}",
+                te
+            );
+        }
+        add_log(&state, format!("Spawn failed: {}", e));
+        return Err(e);
+    }
+
+    if let Err(te) = transition_and_emit(&state, DaemonStatus::Running, &app_handle) {
+        log::warn!(
+            "[daemon] Failed to transition to Running after spawn: {}",
+            te
+        );
+    }
+
+    let success_msg = if sim_mode {
+        "Daemon started in simulation mode (--sim)"
+    } else {
+        "Daemon started via local reachy-mini-daemon"
+    };
+    add_log(&state, success_msg.to_string());
+    Ok("Daemon started successfully".to_string())
 }
 
-// Helper function to create the native menu structure
-fn create_native_menu(app: &tauri::App) -> Result<tauri::menu::Menu<tauri::Wry>, tauri::Error> {
-    use tauri::menu::PredefinedMenuItem;
-    // Create standard Edit submenu so Cmd/Ctrl+C/V work in inputs
-    let edit_submenu = SubmenuBuilder::new(app, "Edit")
-        .item(&PredefinedMenuItem::undo(app, None)?)
-        .item(&PredefinedMenuItem::redo(app, None)?)
-        .separator()
-        .item(&PredefinedMenuItem::cut(app, None)?)
-        .item(&PredefinedMenuItem::copy(app, None)?)
-        .item(&PredefinedMenuItem::paste(app, None)?)
-        .item(&PredefinedMenuItem::select_all(app, None)?)
-        .build()?;
+#[tauri::command]
+fn stop_daemon(app_handle: tauri::AppHandle, state: State<DaemonState>) -> Result<String, String> {
+    if let Err(e) = transition_and_emit(&state, DaemonStatus::Stopping, &app_handle) {
+        log::warn!("[daemon] Failed to transition to Stopping: {}", e);
+    }
+    kill_daemon(&state);
+    if let Err(e) = transition_and_emit(&state, DaemonStatus::Idle, &app_handle) {
+        log::warn!("[daemon] Failed to transition to Idle after stop: {}", e);
+    }
 
-    // Create the app menu (Commander) - this will be the first menu on macOS
-    let app_submenu = SubmenuBuilder::new(app, "Commander")
-        .item(&MenuItemBuilder::with_id("about", "About Commander").build(app)?)
-        .separator()
-        .item(&MenuItemBuilder::with_id("preferences", "Preferences...").build(app)?)
-        .separator()
-        .item(&PredefinedMenuItem::quit(app, Some("Quit Commander"))?)
-        .build()?;
+    match state.connection_mode.lock() {
+        Ok(mut mode) => *mode = None,
+        Err(e) => log::warn!("[daemon] connection_mode mutex poisoned on stop: {}", e),
+    }
 
-    // Create Projects submenu as a separate menu
-    let projects_submenu = SubmenuBuilder::new(app, "Projects")
-        .item(&MenuItemBuilder::with_id("new_project", "New Project").build(app)?)
-        .separator()
-        .item(&MenuItemBuilder::with_id("clone_project", "Clone Project").build(app)?)
-        .item(&MenuItemBuilder::with_id("open_project", "Open Project...").build(app)?)
-        .separator()
-        .item(&MenuItemBuilder::with_id("close_project", "Close Project").build(app)?)
-        .separator()
-        .item(&MenuItemBuilder::with_id("delete_project", "Delete Current Project").build(app)?)
-        .build()?;
-
-    // Create Help submenu
-    let help_submenu = SubmenuBuilder::new(app, "Help")
-        .item(&MenuItemBuilder::with_id("documentation", "Documentation").build(app)?)
-        .separator()
-        .item(&MenuItemBuilder::with_id("report_issue", "Report Issue").build(app)?)
-        .build()?;
-
-    // Create main menu - order matters on macOS
-    let menu = MenuBuilder::new(app)
-        .item(&app_submenu) // Commander menu (first)
-        .item(&projects_submenu) // Projects menu (second)
-        .item(&edit_submenu) // Edit menu (third) enables keyboard copy/paste
-        .item(&help_submenu) // Help menu (fourth)
-        .build()?;
-
-    Ok(menu)
+    add_log(&state, "Daemon stopped".to_string());
+    Ok("Daemon stopped successfully".to_string())
 }
 
-/// Build the tray context menu for the desktop shell.
-fn build_tray_menu(app: &tauri::AppHandle) -> Result<tauri::menu::Menu<tauri::Wry>, tauri::Error> {
-    let show_item = MenuItemBuilder::with_id("show_commander", "Show Commander").build(app)?;
-    let settings_item = MenuItemBuilder::with_id("tray_preferences", "Settings...").build(app)?;
-    let updates_item = MenuItemBuilder::with_id("check_updates", "Check for Updates").build(app)?;
-    let quit_item = MenuItemBuilder::with_id("tray_quit", "Quit Commander").build(app)?;
-
-    let mut builder = MenuBuilder::new(app)
-        .item(&show_item)
-        .item(&settings_item)
-        .separator();
-
-    builder = builder
-        .separator()
-        .item(&updates_item)
-        .separator()
-        .item(&quit_item);
-
-    builder.build()
+#[tauri::command]
+fn set_daemon_external_mode(external: bool) {
+    set_external_mode(external);
 }
 
-/// Create the system tray icon with initial menu.
-fn create_tray(app: &tauri::App) -> Result<(), tauri::Error> {
-    let handle = app.handle();
-    let menu = build_tray_menu(handle)?;
+#[tauri::command]
+fn get_daemon_status(state: State<DaemonState>) -> Result<serde_json::Value, String> {
+    let status = *state
+        .status
+        .lock()
+        .map_err(|e| format!("Failed to read daemon status: {}", e))?;
+    let mode = state
+        .connection_mode
+        .lock()
+        .map_err(|e| format!("Failed to read connection mode: {}", e))?
+        .clone();
+    Ok(serde_json::json!({
+        "status": format!("{:?}", status),
+        "connectionMode": mode,
+    }))
+}
 
-    let _tray = TrayIconBuilder::with_id("main")
-        .menu(&menu)
-        .show_menu_on_left_click(true)
-        .tooltip("Commander")
-        .on_menu_event(|app, event| match event.id().as_ref() {
-            "show_commander" => {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.unminimize();
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                }
-            }
-            "tray_preferences" => {
-                let _ = app.emit("tray://open-settings", ());
-            }
-            "check_updates" => {
-                let _ = app.emit("tray://check-updates", ());
-            }
-            "tray_quit" => {
-                app.exit(0);
-            }
-            _ => {}
+#[tauri::command]
+fn get_logs(state: State<DaemonState>) -> Result<Vec<String>, String> {
+    let logs = state
+        .logs
+        .lock()
+        .map_err(|e| format!("Failed to read logs: {}", e))?;
+    Ok(logs.iter().cloned().collect())
+}
+
+// ============================================================================
+// CRASH MARKER COMMANDS
+// ============================================================================
+
+/// Read and delete the crash marker left by the panic hook.
+/// Returns `{ panic_info, log_tail }` if a marker was found, or null.
+#[tauri::command]
+fn check_crash_marker(app_handle: tauri::AppHandle) -> Option<serde_json::Value> {
+    let marker_path = crash_marker_path()?;
+
+    if !marker_path.exists() {
+        return None;
+    }
+
+    let panic_info = std::fs::read_to_string(&marker_path).unwrap_or_default();
+    let _ = std::fs::remove_file(&marker_path);
+
+    // Try to read the last 100 lines of the most recent log file
+    let log_tail = app_handle
+        .path()
+        .app_log_dir()
+        .ok()
+        .and_then(|log_dir| {
+            let mut entries: Vec<_> = std::fs::read_dir(&log_dir)
+                .ok()?
+                .filter_map(|e| e.ok())
+                .filter(|e| {
+                    e.path()
+                        .extension()
+                        .map(|ext| ext == "log")
+                        .unwrap_or(false)
+                })
+                .collect();
+            entries.sort_by_key(|e| {
+                std::cmp::Reverse(
+                    e.metadata()
+                        .and_then(|m| m.modified())
+                        .unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+                )
+            });
+            entries.first().map(|e| e.path())
         })
-        .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click {
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
-                ..
-            } = event
-            {
-                let app = tray.app_handle();
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.unminimize();
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                }
-            }
+        .and_then(|path| std::fs::read_to_string(&path).ok())
+        .map(|content| {
+            content
+                .lines()
+                .rev()
+                .take(100)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join("\n")
         })
-        .build(app)?;
+        .unwrap_or_default();
 
+    log::info!("Previous crash detected, reporting to telemetry");
+
+    Some(serde_json::json!({
+        "panic_info": panic_info,
+        "log_tail": log_tail,
+    }))
+}
+
+// ============================================================================
+// LOCAL PROXY COMMANDS
+// ============================================================================
+
+#[tauri::command]
+async fn set_local_proxy_target(
+    state: State<'_, Arc<LocalProxyState>>,
+    host: String,
+) -> Result<(), String> {
+    local_proxy::set_target_host(&state, host).await
+}
+
+#[tauri::command]
+async fn clear_local_proxy_target(state: State<'_, Arc<LocalProxyState>>) -> Result<(), String> {
+    local_proxy::clear_target_host(&state).await;
     Ok(())
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-#[cfg(not(test))]
-pub fn run() {
-    let builder = tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_http::init())
-        .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_store::Builder::new().build())
-        .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![
-            greet,
-            start_drag,
-            execute_cli_command,
-            execute_persistent_cli_command,
-            execute_claude_command,
-            execute_codex_command,
-            execute_gemini_command,
-            execute_ollama_command,
-            execute_test_command,
-            get_active_sessions,
-            terminate_session,
-            terminate_all_sessions,
-            send_quit_command_to_session,
-            cleanup_sessions,
-            validate_git_repository_url,
-            clone_repository,
-            get_user_home_directory,
-            get_default_projects_folder,
-            ensure_directory_exists,
-            save_projects_folder,
-            select_projects_folder,
-            load_projects_folder,
-            save_app_settings,
-            load_app_settings,
-            get_show_recent_projects_setting,
-            set_show_recent_projects_setting,
-            set_window_theme,
-            get_code_auto_collapse_sidebar_setting,
-            set_code_auto_collapse_sidebar_setting,
-            fetch_openrouter_models,
-            fetch_openai_models,
-            check_ollama_installation,
-            fetch_ollama_models,
-            open_ollama_website,
-            save_llm_settings,
-            load_llm_settings,
-            get_default_llm_settings,
-            fetch_claude_models,
-            fetch_codex_models,
-            fetch_gemini_models,
-            fetch_agent_models,
-            detect_cli_agents,
-            generate_plan,
-            load_prompts,
-            save_prompts,
-            get_default_prompts,
-            update_prompt,
-            delete_prompt,
-            create_prompt_category,
-            save_agent_settings,
-            load_agent_settings,
-            save_all_agent_settings,
-            load_all_agent_settings,
-            list_recent_projects,
-            add_project_to_recent,
-            refresh_recent_projects,
-            clear_recent_projects,
-            open_project_directory,
-            get_available_project_applications,
-            open_project_with_application,
-            delete_project,
-            open_existing_project,
-            check_project_name_conflict,
-            create_new_project_with_git,
-            load_all_sub_agents,
-            load_sub_agents_for_cli,
-            load_sub_agents_grouped,
-            save_sub_agent,
-            create_sub_agent,
-            delete_sub_agent,
-            get_git_global_config,
-            get_git_local_config,
-            get_git_aliases,
-            get_git_branches,
-            get_git_worktree_enabled,
-            get_git_worktree_preference,
-            set_git_worktree_enabled,
-            get_git_worktrees,
-            get_project_git_worktrees,
-            create_workspace_worktree,
-            remove_workspace_worktree,
-            switch_project_git_branch,
-            create_project_git_branch,
-            get_git_log,
-            diff_workspace_vs_main,
-            merge_workspace_to_main,
-            get_git_commit_dag,
-            get_commit_diff_files,
-            get_commit_diff_text,
-            get_file_at_commit,
-            load_project_chat,
-            save_project_chat,
-            append_project_chat_message,
-            save_chat_session,
-            load_chat_sessions,
-            get_session_messages,
-            delete_chat_session,
-            archive_chat_session,
-            unarchive_chat_session,
-            fork_chat_session,
-            rename_chat_session,
-            update_session_summary,
-            get_chat_history_stats,
-            get_dashboard_stats,
-            export_chat_history,
-            migrate_legacy_chat_data,
-            append_chat_message,
-            search_chat_history,
-            cleanup_old_sessions,
-            validate_chat_history_structure,
-            load_unified_chat_sessions,
-            load_indexed_session_messages,
-            migrate_project_chat_to_enhanced,
-            check_migration_needed,
-            backup_existing_chat_data,
-            auto_migrate_chat_data,
-            save_enhanced_chat_message,
-            get_unified_chat_history,
-            diff_workspace_file,
-            get_current_working_directory,
-            set_current_working_directory,
-            list_files_in_directory,
-            search_files_by_name,
-            get_file_info,
-            read_file_content,
-            write_file_content,
-            create_default_agents_docs,
-            menu_new_project,
-            menu_clone_project,
-            menu_open_project,
-            menu_close_project,
-            menu_delete_project,
-            validate_git_repository,
-            select_git_project_folder,
-            open_project_from_path,
-            get_cli_project_path,
-            clear_cli_project_path,
-            open_file_in_editor,
-            store_auth_token,
-            get_auth_token,
-            get_auth_user,
-            clear_auth_token,
-            get_autohand_config,
-            save_autohand_config,
-            get_autohand_hooks,
-            save_autohand_hook,
-            delete_autohand_hook,
-            toggle_autohand_hook,
-            get_autohand_mcp_servers,
-            save_autohand_mcp_server,
-            delete_autohand_mcp_server,
-            respond_autohand_permission,
-            execute_autohand_command,
-            terminate_autohand_session,
-            get_autohand_state,
-            get_robot_sim_daemon_status,
-            start_robot_sim_daemon,
-            stop_robot_sim_daemon,
-            get_indexer_status,
-            trigger_reindex,
-            sync_autohand_docs,
-            search_autohand_docs,
-            get_autohand_doc,
-            get_autohand_docs_status,
-            clear_autohand_docs_cache,
-            respond_permission
-        ])
-        .setup(|app| {
-            // Handle command line arguments for opening projects
-            let args: Vec<String> = std::env::args().collect();
-            println!("🔍 Command line args received: {:?}", args);
-            if args.len() > 1 {
-                let path_arg = args[1].clone(); // Clone the string to avoid borrowing issues
+// ============================================================================
+// ENTRY POINT
+// ============================================================================
 
-                // Spawn async task to handle project opening
-                tauri::async_runtime::spawn(async move {
-                    // Wait longer for frontend to fully initialize and set up event listeners
-                    println!("⏳ Waiting for frontend to initialize...");
-                    tokio::time::sleep(tokio::time::Duration::from_millis(2000)).await;
-
-                    println!("🚀 Processing CLI project path: {}", path_arg);
-
-                    // Resolve and store the project path for frontend to pick up
-                    let absolute_path = if std::path::Path::new(&path_arg).is_absolute() {
-                        std::path::PathBuf::from(&path_arg)
-                    } else {
-                        std::env::current_dir().unwrap_or_default().join(&path_arg)
-                    };
-
-                    let path_str = absolute_path.to_string_lossy().to_string();
-
-                    if let Some(git_root) =
-                        crate::services::git_service::resolve_git_project_path(&path_str)
-                    {
-                        println!("✅ CLI git root found: {}", git_root);
-                        commands::git_commands::set_cli_project_path(git_root);
-                    } else {
-                        println!("❌ CLI path '{}' is not a git repository", path_arg);
-                    }
-                });
-            }
-            // Create and set the native menu
-            println!("🍎 Creating native menu...");
-            let menu = create_native_menu(app)?;
-            app.set_menu(menu.clone())?;
-            println!("✅ Native menu created and set successfully!");
-
-            // Create system tray icon
-            println!("🔧 Creating system tray icon...");
-            create_tray(app)?;
-            println!("✅ System tray icon created successfully!");
-
-            // Handle menu events
-            app.on_menu_event({
-                let app_handle = app.handle().clone();
-                move |_app, event| {
-                    let app_clone = app_handle.clone();
-                    tauri::async_runtime::spawn(async move {
-                        println!("🎯 Menu event triggered: {}", event.id().as_ref());
-                        match event.id().as_ref() {
-                            // Projects menu items
-                            "new_project" => {
-                                println!("📝 Creating new project via menu...");
-                                let _ = menu_new_project(app_clone).await;
-                            }
-                            "clone_project" => {
-                                println!("🌿 Cloning project via menu...");
-                                let _ = menu_clone_project(app_clone).await;
-                            }
-                            "open_project" => {
-                                println!("📂 Opening project via menu...");
-                                let _ = menu_open_project(app_clone).await;
-                            }
-                            "close_project" => {
-                                println!("❌ Closing project via menu...");
-                                let _ = menu_close_project(app_clone).await;
-                            }
-                            "delete_project" => {
-                                println!("🗑️ Deleting project via menu...");
-                                let _ = menu_delete_project(app_clone).await;
-                            }
-                            // Settings menu items
-                            "preferences" => {
-                                println!("⚙️ Opening preferences via menu...");
-                                app_clone.emit("menu://open-settings", ()).unwrap();
-                            }
-                            // Help menu items
-                            "about" => {
-                                println!("ℹ️ Opening about dialog via menu...");
-                                app_clone.emit("menu://open-about", ()).unwrap();
-                            }
-                            "documentation" => {
-                                println!("📚 Opening documentation via menu...");
-                                app_clone.emit("menu://open-docs", ()).unwrap();
-                            }
-                            "report_issue" => {
-                                println!("🐛 Opening issue reporter via menu...");
-                                app_clone.emit("menu://report-issue", ()).unwrap();
-                            }
-                            _ => {
-                                println!("Unhandled menu event: {:?}", event.id());
-                            }
-                        }
-                    });
-                }
-            });
-
-            // Start session cleanup task
-            tauri::async_runtime::spawn(async move {
-                loop {
-                    let _ = cleanup_cli_sessions().await;
-                    // Cleanup every 5 minutes
-                    tokio::time::sleep(tokio::time::Duration::from_secs(300)).await;
-                }
-            });
-
-            // Initialize SQLite indexer database
-            let app_data_dir = app.path().app_data_dir().map_err(|e| {
-                Box::new(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    e.to_string(),
-                )) as Box<dyn std::error::Error>
-            })?;
-            let db_path = app_data_dir.join("commander_index.db");
-            let index_db =
-                Arc::new(services::indexer::db::IndexDb::open(&db_path).map_err(|e| {
-                    Box::new(std::io::Error::new(std::io::ErrorKind::Other, e))
-                        as Box<dyn std::error::Error>
-                })?);
-            app.manage(index_db.clone());
-            app.manage(services::robot_daemon_service::RobotDaemonManager::default());
-
-            // Spawn background indexer loop
-            let indexer_app_handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                services::indexer::indexer_service::run_indexer_loop(index_db, indexer_app_handle)
-                    .await;
-            });
-
-            Ok(())
-        });
-
-    // Run the app loop
-    builder
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+#[cfg(target_os = "linux")]
+extern "C" {
+    fn XInitThreads() -> std::ffi::c_int;
 }
 
-// In test builds, provide a no-op run() to avoid unused builder warnings
-#[cfg(test)]
-pub fn run() {}
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    // On Linux/X11, XInitThreads must be called before ANY other X11/GTK call
+    // to prevent "[xcb] Unknown sequence number" crashes in multi-threaded apps.
+    // This must happen before panic hooks, signal handlers, and Tauri builder.
+    #[cfg(target_os = "linux")]
+    {
+        let result = unsafe { XInitThreads() };
+        if result == 0 {
+            eprintln!("Warning: XInitThreads() failed");
+        }
+    }
+
+    // Custom panic hook: log the panic and write a crash marker for next-startup detection
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        log::error!("PANIC: {}", info);
+        if let Some(marker) = crash_marker_path() {
+            if let Some(parent) = marker.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::write(&marker, format!("{}", info));
+        }
+        default_hook(info);
+    }));
+
+    // Setup signal handler for brutal kill (SIGTERM, SIGINT, etc.) - Unix only
+    #[cfg(not(windows))]
+    {
+        std::thread::spawn(|| match Signals::new(TERM_SIGNALS) {
+            Ok(mut signals) => {
+                if let Some(sig) = signals.forever().next() {
+                    log::error!("Signal {:?} received - cleaning up daemon", sig);
+                    cleanup_system_daemons();
+                    std::process::exit(0);
+                }
+            }
+            Err(e) => {
+                log::warn!("Failed to register signal handlers: {} — daemon cleanup on SIGTERM will not work", e);
+            }
+        });
+    }
+
+    // PostHog Analytics (EU Cloud) - Project ID: 115674
+    // Override with POSTHOG_KEY env var for self-hosted instances
+    let posthog_key =
+        option_env!("POSTHOG_KEY").unwrap_or("phc_oFlHvjvOT6aWXQ4Fot7A1VSAOHtGv9L2M9BZRZcyYQm");
+    let posthog_host = option_env!("POSTHOG_HOST").unwrap_or("https://eu.i.posthog.com");
+
+    let builder = tauri::Builder::default()
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .targets([
+                    Target::new(TargetKind::Stdout),
+                    Target::new(TargetKind::LogDir { file_name: None }),
+                    Target::new(TargetKind::Webview),
+                ])
+                .max_file_size(5_000_000) // 5 MB per log file
+                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepOne)
+                .level(log::LevelFilter::Info)
+                .build(),
+        )
+        .plugin(tauri_plugin_posthog::init(
+            tauri_plugin_posthog::PostHogConfig {
+                api_key: posthog_key.to_string(),
+                api_host: posthog_host.to_string(),
+                ..Default::default()
+            },
+        ))
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_positioner::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_http::init())
+        .plugin(tauri_plugin_os::init())
+        .plugin(tauri_plugin_deep_link::init());
+
+    let builder = if cfg!(target_os = "macos") {
+        builder.plugin(tauri_plugin_macos_permissions::init())
+    } else {
+        builder
+    };
+
+    // Add automation plugin for E2E testing (macOS requires CrabNebula driver)
+    // This plugin is only active when the app is launched via WebDriver
+    let builder = builder.plugin(tauri_plugin_automation::init());
+
+    // Create shared local proxy state (proxy starts on-demand when WiFi target is set)
+    let local_proxy_state = Arc::new(LocalProxyState::new());
+
+    // Create discovery state (mDNS + cache + static peers)
+    let discovery_state = DiscoveryState::new();
+
+    builder
+        .manage(DaemonState {
+            process: std::sync::Mutex::new(None),
+            logs: std::sync::Mutex::new(std::collections::VecDeque::new()),
+            status: std::sync::Mutex::new(DaemonStatus::Idle),
+            generation: std::sync::Mutex::new(0),
+            connection_mode: std::sync::Mutex::new(None),
+        })
+        .manage(local_proxy_state)
+        .manage(discovery_state)
+        .setup(
+            move |#[cfg(target_os = "macos")] app, #[cfg(not(target_os = "macos"))] _app| {
+                // 🔌 Start USB device monitor (Windows: event-driven, no polling, no terminal flicker)
+                if let Err(e) = usb::start_monitor() {
+                    log::warn!("Failed to start USB monitor: {}", e);
+                }
+
+                #[cfg(target_os = "macos")]
+                {
+                    if let Some(win) = app.get_webview_window("main") {
+                        window::setup_transparent_titlebar(&win);
+                        window::setup_content_process_handler(&win);
+                    }
+                    permissions::request_all_permissions();
+                }
+
+                Ok(())
+            },
+        )
+        .invoke_handler(tauri::generate_handler![
+            start_daemon,
+            stop_daemon,
+            set_daemon_external_mode,
+            get_daemon_status,
+            get_logs,
+            check_crash_marker,
+            usb::check_usb_robot,
+            window::apply_transparent_titlebar,
+            window::close_window,
+            signing::sign_python_binaries,
+            permissions::open_camera_settings,
+            permissions::open_microphone_settings,
+            permissions::open_wifi_settings,
+            permissions::open_files_settings,
+            permissions::open_local_network_settings,
+            permissions::check_local_network_permission,
+            permissions::request_local_network_permission,
+            permissions::check_location_permission,
+            permissions::request_location_permission,
+            permissions::open_location_settings,
+            permissions::check_bluetooth_permission,
+            permissions::request_bluetooth_permission,
+            permissions::open_bluetooth_settings,
+            wifi::scan_local_wifi_networks,
+            wifi::get_current_wifi_ssid,
+            update::check_daemon_update,
+            update::update_daemon,
+            set_local_proxy_target,
+            clear_local_proxy_target,
+            // Robot discovery (mDNS + manual IP)
+            discovery::discover_robots,
+            discovery::connect_to_ip,
+            discovery::add_static_peer,
+            discovery::remove_static_peer,
+            discovery::get_static_peers,
+            discovery::clear_discovery_cache,
+            // Network detection (VPN)
+            network::detect_vpn
+        ])
+        .on_window_event(|window, event| match event {
+            tauri::WindowEvent::CloseRequested { .. } => {
+                if window.label() == "main" {
+                    log::info!("[tauri] Main window close requested - killing daemon");
+                    let state: tauri::State<DaemonState> = window.state();
+                    let _ = transition_status(&state.status, DaemonStatus::Stopping);
+                    kill_daemon(&state);
+                    let _ = transition_status(&state.status, DaemonStatus::Idle);
+                }
+            }
+            tauri::WindowEvent::Destroyed => {
+                if window.label() == "main" {
+                    log::info!("[tauri] Main window destroyed - final cleanup");
+                    cleanup_system_daemons();
+                }
+            }
+            _ => {}
+        })
+        .build(tauri::generate_context!())
+        .unwrap_or_else(|e| {
+            eprintln!("Fatal: failed to build Tauri application: {}", e);
+            std::process::exit(1);
+        })
+        .run(|_app_handle, event| {
+            match event {
+                tauri::RunEvent::ExitRequested { .. } => {
+                    log::info!("ExitRequested (Cmd+Q) - killing daemon");
+                    cleanup_system_daemons();
+                }
+                tauri::RunEvent::Exit => {
+                    // Final cleanup when app is about to exit
+                    log::info!("Exit event - final cleanup");
+                    cleanup_system_daemons();
+                }
+                _ => {}
+            }
+        });
+}

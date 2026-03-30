@@ -24,6 +24,8 @@ if TYPE_CHECKING:
     from reachy_mini.runtime.speech_driver import SpeechDriver
 
 PCM_SAMPLE_RATE_HZ = 24_000
+KOKORO_DEFAULT_REPO_ID = "hexgrad/Kokoro-82M-v1.1-zh"
+KOKORO_DEFAULT_VOICE = "zf_001"
 ReplyAudioEventCallback = Callable[[], Awaitable[None] | None]
 ReplyAudioDeltaCallback = Callable[[str], Awaitable[None] | None]
 ReplyAudioFinishedCallback = Callable[[bool], Awaitable[None] | None]
@@ -42,6 +44,25 @@ class ReplySpeechSynthesizer(Protocol):
 
     async def synthesize_pcm16(self, text: str) -> bytes:
         """Return 24 kHz mono PCM16 audio bytes for one text reply."""
+
+
+def _float_audio_to_pcm16(audio: NDArray[np.float32]) -> bytes:
+    """Convert normalized float audio into mono 24 kHz PCM16 bytes."""
+
+    if audio.size == 0:
+        return b""
+    pcm = np.clip(audio.astype(np.float32, copy=False) * 32768.0, -32768.0, 32767.0)
+    return pcm.astype(np.int16, copy=False).tobytes()
+
+
+def _coerce_audio_array(audio: Any) -> NDArray[np.float32]:
+    """Coerce one Kokoro audio segment into a flat float32 numpy array."""
+
+    if hasattr(audio, "detach"):
+        audio = audio.detach()
+    if hasattr(audio, "cpu"):
+        audio = audio.cpu()
+    return np.asarray(audio, dtype=np.float32).reshape(-1)
 
 
 @dataclass(slots=True)
@@ -185,6 +206,78 @@ class MacOSSayReplySpeechSynthesizer:
             return bytes(ffmpeg_stdout or b"")
         finally:
             output_path.unlink(missing_ok=True)
+
+
+@dataclass(slots=True)
+class KokoroReplySpeechSynthesizer:
+    """Local Kokoro TTS adapter returning one whole reply as 24 kHz mono PCM16."""
+
+    repo_id: str = KOKORO_DEFAULT_REPO_ID
+    voice: str = KOKORO_DEFAULT_VOICE
+    speed: float = 1.0
+    device: str | None = None
+    _pipeline: Any = field(default=None, init=False, repr=False)
+
+    def _get_pipeline(self) -> Any:
+        if self._pipeline is not None:
+            return self._pipeline
+
+        try:
+            from kokoro import KPipeline
+        except ImportError as exc:
+            raise RuntimeError(
+                "Speech provider 'kokoro' requires `kokoro`, `misaki[zh]`, and `soundfile`."
+            ) from exc
+
+        self._pipeline = KPipeline(
+            lang_code="z",
+            repo_id=self.repo_id,
+            device=self.device,
+        )
+        return self._pipeline
+
+    def _synthesize_blocking(self, text: str) -> bytes:
+        segments: list[NDArray[np.float32]] = []
+        for result in self._get_pipeline()(
+            text,
+            voice=self.voice,
+            speed=float(self.speed),
+        ):
+            audio = getattr(result, "audio", None)
+            if audio is None:
+                continue
+            segment = _coerce_audio_array(audio)
+            if segment.size > 0:
+                segments.append(segment)
+
+        if not segments:
+            return b""
+
+        audio = segments[0] if len(segments) == 1 else np.concatenate(segments)
+        return _float_audio_to_pcm16(audio)
+
+    async def synthesize_pcm16(self, text: str) -> bytes:
+        """Render one whole reply with Kokoro and return PCM16 bytes."""
+
+        resolved_text = str(text or "").strip()
+        if not resolved_text:
+            return b""
+
+        LOGGER.info(
+            "Kokoro synthesis started: repo=%s voice=%s chars=%s speed=%.2f",
+            self.repo_id,
+            self.voice,
+            len(resolved_text),
+            float(self.speed),
+        )
+        pcm = await asyncio.to_thread(self._synthesize_blocking, resolved_text)
+        LOGGER.info(
+            "Kokoro synthesis finished: repo=%s voice=%s pcm_bytes=%s",
+            self.repo_id,
+            self.voice,
+            len(pcm),
+        )
+        return pcm
 
 
 @dataclass(slots=True)
@@ -546,6 +639,22 @@ def build_runtime_reply_audio_service(
             voice=str(config.voice or "").strip() or "Tingting",
             speed=float(config.speed),
         )
+    elif provider == "kokoro":
+        configured_model = str(config.model or "").strip()
+        configured_voice = str(config.voice or "").strip()
+        synthesizer = KokoroReplySpeechSynthesizer(
+            repo_id=(
+                configured_model
+                if configured_model and configured_model != SpeechRuntimeConfig().model
+                else KOKORO_DEFAULT_REPO_ID
+            ),
+            voice=(
+                configured_voice
+                if configured_voice and configured_voice != SpeechRuntimeConfig().voice
+                else KOKORO_DEFAULT_VOICE
+            ),
+            speed=float(config.speed),
+        )
     else:
         raise RuntimeError(
             f"Unsupported speech provider: {config.provider or '<empty>'}"
@@ -562,6 +671,9 @@ def build_runtime_reply_audio_service(
 
 
 __all__ = [
+    "KOKORO_DEFAULT_REPO_ID",
+    "KOKORO_DEFAULT_VOICE",
+    "KokoroReplySpeechSynthesizer",
     "MacOSSayReplySpeechSynthesizer",
     "OpenAIReplySpeechSynthesizer",
     "PCM_SAMPLE_RATE_HZ",

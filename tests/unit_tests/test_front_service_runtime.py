@@ -1,6 +1,7 @@
 """Tests for the front runtime pieces."""
 
 import asyncio
+import json
 from pathlib import Path
 
 from langchain_core.messages import AIMessage
@@ -427,5 +428,85 @@ def test_front_service_reply_prompt_keeps_memory_blocks_for_non_verification(tmp
         assert "## long_term_summary" in prompt
         assert "## verification_mode" not in prompt
         assert "## 关系信号" not in prompt
+
+    asyncio.run(_exercise())
+
+
+def test_front_service_uses_camera_image_followup_when_only_raw_frame_is_available(
+    tmp_path: Path,
+) -> None:
+    """camera tool results with b64 images should trigger one multimodal front follow-up."""
+
+    class CameraTurnModel:
+        def __init__(self) -> None:
+            self.calls = []
+
+        async def ainvoke(self, messages):
+            self.calls.append(messages)
+            content = messages[-1].content if messages else ""
+            if isinstance(content, str) and "## user_turn_response" in content:
+                return AIMessage(
+                    content=json.dumps(
+                        {
+                            "complete_turn": True,
+                            "reply_text": "",
+                            "tool_calls": [
+                                {
+                                    "tool_name": "camera",
+                                    "arguments": {"question": "你看到了什么"},
+                                    "reason": "user asked for a direct visual observation",
+                                }
+                            ],
+                            "reason": "camera follow-up required",
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+            return AIMessage(content="我看到桌上有一个红杯子。")
+
+    class FakeCameraTool:
+        name = "camera"
+        context = type(
+            "CameraContext",
+            (),
+            {"camera_worker": object(), "vision_processor": None},
+        )()
+
+        def execute(self, **kwargs):
+            _ = kwargs
+            return {"b64_im": "ZmFrZS1pbWFnZQ=="}
+
+    async def _exercise() -> None:
+        profile_root = tmp_path / "demo"
+        profile_root.mkdir()
+        _write_profile(profile_root)
+
+        profile = load_profile_bundle(profile_root)
+        model = CameraTurnModel()
+        service = FrontService(profile, model, tools=[FakeCameraTool()])
+
+        result = await service.handle_user_turn(
+            user_text="你看到了什么",
+            memory=MemoryView(),
+        )
+
+        assert result.completes_turn is True
+        assert result.reply_text == "我看到桌上有一个红杯子。"
+        assert len(result.tool_results) == 1
+        assert result.tool_results[0].tool_name == "camera"
+        assert result.tool_results[0].success is True
+        assert isinstance(result.tool_results[0].payload, dict)
+        assert result.tool_results[0].payload["b64_im"] == "ZmFrZS1pbWFnZQ=="
+
+        assert len(model.calls) == 2
+        followup_content = model.calls[1][1].content
+        assert isinstance(followup_content, list)
+        assert followup_content[0]["type"] == "text"
+        assert "## camera_followup_response" in followup_content[0]["text"]
+        assert followup_content[1]["type"] == "image_url"
+        assert (
+            followup_content[1]["image_url"]["url"]
+            == "data:image/jpeg;base64,ZmFrZS1pbWFnZQ=="
+        )
 
     asyncio.run(_exercise())

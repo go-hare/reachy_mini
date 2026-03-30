@@ -8,6 +8,9 @@ import numpy as np
 
 from reachy_mini.runtime.config import SpeechRuntimeConfig
 from reachy_mini.runtime.reply_audio import (
+    KOKORO_DEFAULT_REPO_ID,
+    KOKORO_DEFAULT_VOICE,
+    KokoroReplySpeechSynthesizer,
     MacOSSayReplySpeechSynthesizer,
     OpenAIReplySpeechSynthesizer,
     ReplyAudioPlayer,
@@ -199,6 +202,46 @@ def test_build_runtime_reply_audio_service_supports_macos_say() -> None:
 
     assert service is not None
     assert isinstance(service.synthesizer, MacOSSayReplySpeechSynthesizer)
+
+
+def test_build_runtime_reply_audio_service_supports_kokoro_defaults() -> None:
+    """Kokoro provider should fall back to the zh repo and voice for v0."""
+
+    service = build_runtime_reply_audio_service(
+        config=SpeechRuntimeConfig(
+            enabled=True,
+            provider="kokoro",
+        ),
+        media=FakeMedia(),
+        speech_driver=FakeSpeechDriver(),
+    )
+
+    assert service is not None
+    assert isinstance(service.synthesizer, KokoroReplySpeechSynthesizer)
+    assert service.synthesizer.repo_id == KOKORO_DEFAULT_REPO_ID
+    assert service.synthesizer.voice == KOKORO_DEFAULT_VOICE
+
+
+def test_kokoro_reply_speech_synthesizer_converts_audio_to_pcm16() -> None:
+    """Kokoro synthesis should concatenate segments and emit PCM16 bytes."""
+
+    synthesizer = KokoroReplySpeechSynthesizer(
+        repo_id="hexgrad/Kokoro-82M-v1.1-zh",
+        voice="zf_001",
+        speed=1.2,
+    )
+
+    def _fake_pipeline(text: str, *, voice: str, speed: float):
+        assert text == "你好，Reachy"
+        assert voice == "zf_001"
+        assert speed == 1.2
+        yield SimpleNamespace(audio=np.array([0.0, 0.5, -1.5], dtype=np.float32))
+        yield SimpleNamespace(audio=np.array([1.0], dtype=np.float32))
+
+    synthesizer._pipeline = _fake_pipeline
+    pcm = asyncio.run(synthesizer.synthesize_pcm16("你好，Reachy"))
+
+    assert np.frombuffer(pcm, dtype=np.int16).tolist() == [0, 16384, -32768, 32767]
 
 
 def test_reply_audio_player_pushes_audio_and_feeds_speech_motion() -> None:

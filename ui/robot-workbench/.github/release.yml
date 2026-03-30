@@ -1,0 +1,39 @@
+# Configuration for automatically generated release notes
+# https://docs.github.com/en/repositories/releasing-projects-on-github/automatically-generated-release-notes
+
+changelog:
+  # Exclude certain labels or authors from release notes
+  exclude:
+    labels:
+      - skip-changelog
+      - dependencies
+    authors:
+      - dependabot
+      - dependabot[bot]
+
+  # Categorize commits/PRs based on labels or title prefixes
+  categories:
+    - title: "🚀 New Features"
+      labels:
+        - enhancement
+        - feature
+    - title: "🐛 Bug Fixes"
+      labels:
+        - bug
+        - fix
+    - title: "🔧 Improvements"
+      labels:
+        - improvement
+        - refactor
+    - title: "📦 Build & CI"
+      labels:
+        - build
+        - ci
+    - title: "📝 Documentation"
+      labels:
+        - documentation
+        - docs
+    - title: "🔄 Other Changes"
+      labels:
+        - "*"
+

@@ -35,9 +35,18 @@ When this app is running, `ReachyMiniApp` hosts the resident runtime directly an
 The dialogue flow is streamed over WebSocket:
 
 - browser sends `user_text`
-- browser can also emit `user_speech_started` / `user_speech_stopped`
-- supported browsers can turn microphone speech into the final `user_text`
+- browser microphone streams raw `browser_audio_chunk` PCM16 audio and ends with `browser_audio_stop`
+- runtime turns browser or robot microphone audio into `speech_preview` partial text and then the final `user_text`
+- runtime emits `user_speech_started` / `user_speech_stopped` as surface-state transitions
 - runtime emits `front_hint_*`
 - runtime keeps pushing `surface_state`
 - runtime emits `front_final_*`
 - errors are emitted as `turn_error`
+
+For a FunASR-style streaming speech input chain, `profiles/config.jsonl` can use:
+
+```json
+{"kind":"speech_input","enabled":true,"provider":"funasr","base_url":"ws://127.0.0.1:10096","model":"2pass","language":"zh","stream_chunk_size":[5,10,5],"stream_chunk_interval":10,"stream_encoder_chunk_look_back":4,"stream_decoder_chunk_look_back":0,"stream_finish_timeout_s":6.0,"stream_itn":true}
+```
+
+The speech-input lane is now streaming-first. The current provider is `funasr`, and future streaming ASR backends should reuse the same provider/session contract in `runtime/speech_session.py`.

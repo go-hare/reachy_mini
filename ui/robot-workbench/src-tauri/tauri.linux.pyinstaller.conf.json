@@ -1,0 +1,18 @@
+{
+  "bundle": {
+    "externalBin": [
+      "binaries/reachy-mini-daemon"
+    ],
+    "linux": {
+      "deb": {
+        "depends": [
+          "libwebkit2gtk-4.1-0",
+          "libportaudio2"
+        ],
+        "files": {
+          "/etc/udev/rules.d/99-reachy-mini.rules": "linux/99-reachy-mini.rules"
+        }
+      }
+    }
+  }
+}

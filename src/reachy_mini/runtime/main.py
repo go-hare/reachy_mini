@@ -280,7 +280,7 @@ async def run_one_turn(
         pump_cli_front_outputs(queue=queue, printer=printer, thread_id=thread_id)
     )
     try:
-        await runtime.handle_user_text(
+        await runtime.handle_user_turn(
             thread_id=thread_id,
             session_id=thread_id,
             user_id="user",

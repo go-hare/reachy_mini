@@ -113,14 +113,14 @@ def test_load_profile_runtime_config_reads_speech_settings(tmp_path: Path) -> No
 
 
 def test_load_profile_runtime_config_reads_speech_input_settings(tmp_path: Path) -> None:
-    """Parse optional robot-microphone speech-input settings from config.jsonl."""
+    """Parse optional streaming speech-input settings from config.jsonl."""
 
     profile_root = tmp_path / "demo"
     profile_root.mkdir()
     _write_profile(
         profile_root,
         config_jsonl=(
-            '{"kind":"speech_input","enabled":true,"provider":"mlx_whisper","model":"mlx-community/whisper-small-mlx","language":"zh","vad_db_on":-34.0,"vad_db_off":-44.0,"vad_attack_ms":100,"vad_release_ms":900,"min_utterance_ms":420,"max_utterance_ms":18000,"playback_block_cooldown_ms":950}\n'
+            '{"kind":"speech_input","enabled":true,"provider":"funasr","base_url":"ws://127.0.0.1:10096","model":"2pass","language":"zh","playback_block_cooldown_ms":950,"stream_chunk_size":[6,12,6],"stream_chunk_interval":12,"stream_encoder_chunk_look_back":5,"stream_decoder_chunk_look_back":1,"stream_finish_timeout_s":7.5,"stream_itn":false}\n'
         ),
     )
 
@@ -128,13 +128,14 @@ def test_load_profile_runtime_config_reads_speech_input_settings(tmp_path: Path)
     config = load_profile_runtime_config(profile)
 
     assert config.speech_input.enabled is True
-    assert config.speech_input.provider == "mlx_whisper"
-    assert config.speech_input.model == "mlx-community/whisper-small-mlx"
+    assert config.speech_input.provider == "funasr"
+    assert config.speech_input.base_url == "ws://127.0.0.1:10096"
+    assert config.speech_input.model == "2pass"
     assert config.speech_input.language == "zh"
-    assert config.speech_input.vad_db_on == -34.0
-    assert config.speech_input.vad_db_off == -44.0
-    assert config.speech_input.vad_attack_ms == 100
-    assert config.speech_input.vad_release_ms == 900
-    assert config.speech_input.min_utterance_ms == 420
-    assert config.speech_input.max_utterance_ms == 18000
     assert config.speech_input.playback_block_cooldown_ms == 950
+    assert config.speech_input.stream_chunk_size == (6, 12, 6)
+    assert config.speech_input.stream_chunk_interval == 12
+    assert config.speech_input.stream_encoder_chunk_look_back == 5
+    assert config.speech_input.stream_decoder_chunk_look_back == 1
+    assert config.speech_input.stream_finish_timeout_s == 7.5
+    assert config.speech_input.stream_itn is False

@@ -37,7 +37,7 @@ async def _collect_final_reply(runtime: RuntimeScheduler, *, thread_id: str, use
     queue = runtime.subscribe_front_outputs()
     final_reply = ""
     try:
-        await runtime.handle_user_text(
+        await runtime.handle_user_turn(
             thread_id=thread_id,
             session_id=thread_id,
             user_id="user",
@@ -499,7 +499,7 @@ def test_runtime_scheduler_publishes_front_tool_result_packets(tmp_path: Path) -
         queue = runtime.subscribe_front_outputs()
         try:
             await runtime.start()
-            await runtime.handle_user_text(
+            await runtime.handle_user_turn(
                 thread_id="cli:main",
                 session_id="cli:main",
                 user_id="user",
@@ -718,7 +718,7 @@ def test_runtime_scheduler_emits_assistant_audio_lifecycle_signals(tmp_path: Pat
 
         await runtime.start()
         try:
-            await runtime.handle_user_text(
+            await runtime.handle_user_turn(
                 thread_id="cli:main",
                 session_id="cli:main",
                 user_id="user",
@@ -782,7 +782,7 @@ def test_runtime_scheduler_reuses_front_reply_for_audio_when_kernel_returns_none
 
         await runtime.start()
         try:
-            await runtime.handle_user_text(
+            await runtime.handle_user_turn(
                 thread_id="cli:main",
                 session_id="cli:main",
                 user_id="user",
@@ -834,7 +834,7 @@ def test_runtime_scheduler_emits_idle_tick_signals_while_thread_stays_idle(
 
         await runtime.start()
         try:
-            await runtime.handle_user_text(
+            await runtime.handle_user_turn(
                 thread_id="cli:main",
                 session_id="cli:main",
                 user_id="user",
@@ -984,7 +984,7 @@ def test_runtime_scheduler_interrupts_reply_audio_when_user_speech_starts(
         await runtime.start()
         try:
             turn_task = asyncio.create_task(
-                runtime.handle_user_text(
+                runtime.handle_user_turn(
                     thread_id="cli:main",
                     session_id="cli:main",
                     user_id="user",
@@ -1094,7 +1094,7 @@ def test_runtime_scheduler_keeps_reply_audio_when_user_speech_stops_within_grace
         await runtime.start()
         try:
             turn_task = asyncio.create_task(
-                runtime.handle_user_text(
+                runtime.handle_user_turn(
                     thread_id="cli:main",
                     session_id="cli:main",
                     user_id="user",

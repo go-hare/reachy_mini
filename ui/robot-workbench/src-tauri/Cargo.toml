@@ -1,8 +1,8 @@
 [package]
-name = "commander"
-version = "0.1.0"
-description = "Command any ai code cli agent"
-authors = ["autohand.ai"]
+name = "reachy-mini-control"
+version = "0.9.20"
+description = "Reachy Mini Control Application"
+authors = ["Reachy Mini Contributors"]
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -11,41 +11,63 @@ edition = "2021"
 # The `_lib` suffix may seem redundant but it is necessary
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
-name = "commander_lib"
+name = "reachy_mini_control_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+cc = "1"
 
 [dependencies]
-tauri = { version = "2", features = ["macos-private-api", "test", "tray-icon"] }
+tauri = { version = "2", features = ["macos-private-api"] }
 tauri-plugin-opener = "2"
-tauri-plugin-http = "2"
 tauri-plugin-shell = "2"
-tauri-plugin-store = "2"
+tauri-plugin-positioner = "2"
+tauri-plugin-process = "2"
+tauri-plugin-updater = "2.0"
+tauri-plugin-macos-permissions = "2.3"
+tauri-plugin-http = "2"
+tauri-plugin-deep-link = "2"
+tauri-plugin-blec = "0.8"
+tauri-plugin-posthog = "0.2"
+tauri-plugin-automation = "0.1"
+tauri-plugin-os = "2"
+tauri-plugin-log = "2"
+log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-reqwest = { version = "0.12", features = ["json"] }
-tokio = { version = "1", features = ["full"] }
-tauri-plugin-dialog = "2"
-dirs = "5.0"
-filetime = "0.2"
-once_cell = "1.19"
-chrono = { version = "0.4", features = ["serde"] }
-home = "0.5"
-portable-pty = "0.8"
-which = "6"
-uuid = { version = "1.0", features = ["v4", "serde"] }
-regex = "1.10"
-async-trait = "0.1"
-semver = "1"
-futures = "0.3.32"
-rusqlite = { version = "0.31", features = ["bundled"] }
+serialport = "4.8"
+signal-hook = "0.3"
+reqwest = { version = "0.11", features = ["json"] }
+semver = "1.0"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "net", "io-util", "process"] }
+tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
+futures-util = "0.3"
+lazy_static = "1.4"
+# Network discovery
+mdns-sd = "0.11"
+default-net = "0.22"
+dirs = "6.0.0"
 
-[dev-dependencies]
-tokio-test = "0.4"
-mockall = "0.12"
-tempfile = "3.8"
-assert_cmd = "2.0"
-serial_test = "3.0"
-test-case = "3.3"
+# Local patch for btleplug CoreBluetooth panic
+# See: https://github.com/deviceplug/btleplug/issues/397
+[patch.crates-io]
+btleplug = { path = "btleplug-patch" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+cocoa = "0.25"
+objc = "0.2"
+block = "0.1"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+    "Win32_Devices_DeviceAndDriverInstallation",
+    "Win32_Devices_Usb",
+] }
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-cli = "2"

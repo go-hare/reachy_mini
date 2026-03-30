@@ -142,6 +142,7 @@ class FrontOutputPacket:
             "front_hint_done",
             "front_final_chunk",
             "front_final_done",
+            "speech_preview",
         }:
             event["text"] = self.text
         elif self.type == "turn_error":
@@ -286,7 +287,7 @@ class RuntimeScheduler:
             await self._cancel_idle_tick_tasks()
             await self._cancel_reply_audio_interrupt_tasks()
 
-    async def handle_user_text(
+    async def handle_user_turn(
         self,
         *,
         thread_id: str,
@@ -301,6 +302,11 @@ class RuntimeScheduler:
         self._ensure_running()
         self._raise_if_listener_failed()
         await self._mark_thread_active(thread_id)
+        self._publish_speech_preview(
+            thread_id=thread_id,
+            turn_id="",
+            text="",
+        )
         delivery_registered = False
         turn_id = make_id("turn")
 
@@ -417,6 +423,11 @@ class RuntimeScheduler:
     ) -> None:
         _ = session_id
         _ = user_id
+        self._publish_speech_preview(
+            thread_id=thread_id,
+            turn_id="",
+            text="",
+        )
         await self._handle_user_speech_signal(
             signal_name="user_speech_started",
             thread_id=thread_id,
@@ -467,6 +478,11 @@ class RuntimeScheduler:
             surface_state_handler=surface_state_handler,
             apply_surface_patch=current_phase != "listening",
         )
+        self._publish_speech_preview(
+            thread_id=thread_id,
+            turn_id="",
+            text=resolved_user_text,
+        )
 
     async def handle_user_speech_stopped(
         self,
@@ -479,6 +495,11 @@ class RuntimeScheduler:
     ) -> None:
         _ = session_id
         _ = user_id
+        self._publish_speech_preview(
+            thread_id=thread_id,
+            turn_id="",
+            text="",
+        )
         await self._handle_user_speech_signal(
             signal_name="user_speech_stopped",
             thread_id=thread_id,
@@ -1190,6 +1211,16 @@ class RuntimeScheduler:
     def _publish_front_output(self, packet: FrontOutputPacket) -> None:
         for subscriber in list(self._front_output_subscribers):
             subscriber.put_nowait(packet)
+
+    def _publish_speech_preview(self, *, thread_id: str, turn_id: str, text: str) -> None:
+        self._publish_front_output(
+            FrontOutputPacket(
+                type="speech_preview",
+                thread_id=thread_id,
+                turn_id=turn_id,
+                text=str(text or ""),
+            )
+        )
 
     @staticmethod
     def _extract_front_result_value(result: Any, key: str, default: Any = None) -> Any:

@@ -7,6 +7,33 @@ from dataclasses import dataclass, field, replace
 from reachy_mini.runtime.profile_loader import ProfileBundle
 
 
+def _parse_stream_chunk_size(
+    value: object,
+    default: tuple[int, int, int],
+) -> tuple[int, int, int]:
+    """Parse one FunASR chunk-size triple from JSONL config."""
+
+    if isinstance(value, str):
+        raw_parts = [part.strip() for part in value.split(",")]
+    elif isinstance(value, (list, tuple)):
+        raw_parts = [str(part).strip() for part in value]
+    else:
+        return default
+
+    if len(raw_parts) != 3:
+        return default
+
+    parsed: list[int] = []
+    for part in raw_parts:
+        if not part:
+            return default
+        try:
+            parsed.append(max(1, int(part)))
+        except (TypeError, ValueError):
+            return default
+    return (parsed[0], parsed[1], parsed[2])
+
+
 @dataclass(slots=True)
 class FrontModelConfig:
     """How the front layer should talk to a model."""
@@ -57,21 +84,21 @@ class SpeechRuntimeConfig:
 
 @dataclass(slots=True)
 class SpeechInputRuntimeConfig:
-    """How optional robot-microphone capture and transcription should start."""
+    """How optional robot-microphone capture and streaming transcription should start."""
 
     enabled: bool = False
     provider: str = ""
-    model: str = "gpt-4o-mini-transcribe"
+    model: str = "2pass"
     base_url: str = ""
     api_key: str = ""
     language: str = "zh"
-    vad_db_on: float = -36.0
-    vad_db_off: float = -46.0
-    vad_attack_ms: int = 80
-    vad_release_ms: int = 700
-    min_utterance_ms: int = 350
-    max_utterance_ms: int = 15_000
     playback_block_cooldown_ms: int = 700
+    stream_chunk_size: tuple[int, int, int] = (5, 10, 5)
+    stream_chunk_interval: int = 10
+    stream_encoder_chunk_look_back: int = 4
+    stream_decoder_chunk_look_back: int = 0
+    stream_finish_timeout_s: float = 6.0
+    stream_itn: bool = True
 
 
 @dataclass(slots=True)
@@ -144,6 +171,10 @@ def load_profile_runtime_config(profile: ProfileBundle) -> ProfileRuntimeConfig:
             continue
 
         if kind == "speech_input":
+            stream_chunk_size = _parse_stream_chunk_size(
+                record.get("stream_chunk_size", config.speech_input.stream_chunk_size),
+                config.speech_input.stream_chunk_size,
+            )
             config.speech_input = SpeechInputRuntimeConfig(
                 enabled=bool(record.get("enabled", config.speech_input.enabled)),
                 provider=str(
@@ -160,36 +191,6 @@ def load_profile_runtime_config(profile: ProfileBundle) -> ProfileRuntimeConfig:
                     record.get("language", config.speech_input.language)
                     or config.speech_input.language
                 ),
-                vad_db_on=float(record.get("vad_db_on", config.speech_input.vad_db_on)),
-                vad_db_off=float(
-                    record.get("vad_db_off", config.speech_input.vad_db_off)
-                ),
-                vad_attack_ms=max(
-                    20,
-                    int(record.get("vad_attack_ms", config.speech_input.vad_attack_ms)),
-                ),
-                vad_release_ms=max(
-                    100,
-                    int(record.get("vad_release_ms", config.speech_input.vad_release_ms)),
-                ),
-                min_utterance_ms=max(
-                    100,
-                    int(
-                        record.get(
-                            "min_utterance_ms",
-                            config.speech_input.min_utterance_ms,
-                        )
-                    ),
-                ),
-                max_utterance_ms=max(
-                    1000,
-                    int(
-                        record.get(
-                            "max_utterance_ms",
-                            config.speech_input.max_utterance_ms,
-                        )
-                    ),
-                ),
                 playback_block_cooldown_ms=max(
                     0,
                     int(
@@ -198,6 +199,49 @@ def load_profile_runtime_config(profile: ProfileBundle) -> ProfileRuntimeConfig:
                             config.speech_input.playback_block_cooldown_ms,
                         )
                     ),
+                ),
+                stream_chunk_size=stream_chunk_size,
+                stream_chunk_interval=max(
+                    1,
+                    int(
+                        record.get(
+                            "stream_chunk_interval",
+                            config.speech_input.stream_chunk_interval,
+                        )
+                    ),
+                ),
+                stream_encoder_chunk_look_back=max(
+                    0,
+                    int(
+                        record.get(
+                            "stream_encoder_chunk_look_back",
+                            config.speech_input.stream_encoder_chunk_look_back,
+                        )
+                    ),
+                ),
+                stream_decoder_chunk_look_back=max(
+                    0,
+                    int(
+                        record.get(
+                            "stream_decoder_chunk_look_back",
+                            config.speech_input.stream_decoder_chunk_look_back,
+                        )
+                    ),
+                ),
+                stream_finish_timeout_s=max(
+                    0.5,
+                    float(
+                        record.get(
+                            "stream_finish_timeout_s",
+                            config.speech_input.stream_finish_timeout_s,
+                        )
+                    ),
+                ),
+                stream_itn=bool(
+                    record.get(
+                        "stream_itn",
+                        config.speech_input.stream_itn,
+                    )
                 ),
             )
             continue

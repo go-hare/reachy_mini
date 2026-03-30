@@ -1,14 +1,79 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Tauri</title>
+    <title>Reachy Mini Control</title>
+    <style>
+      /* Disable slide animations - only fade in */
+      #root > * {
+        animation: fadeIn 0.2s ease-in-out !important;
+      }
+      
+      @keyframes fadeIn {
+        from { opacity: 0; }
+        to { opacity: 1; }
+      }
+      
+      /* Disable native view transitions */
+      * {
+        view-transition-name: none !important;
+      }
+      
+      /* Make entire app unselectable except forms */
+      * {
+        -webkit-user-select: none !important;
+        -moz-user-select: none !important;
+        -ms-user-select: none !important;
+        user-select: none !important;
+      }
+      
+      /* Re-enable selection for form elements */
+      input,
+      textarea,
+      select,
+      [contenteditable="true"],
+      [contenteditable],
+      .MuiInputBase-input,
+      .MuiInputBase-root,
+      .MuiTextField-root input,
+      .MuiTextField-root textarea,
+      .MuiSelect-select,
+      .MuiAutocomplete-input {
+        -webkit-user-select: text !important;
+        -moz-user-select: text !important;
+        -ms-user-select: text !important;
+        user-select: text !important;
+      }
+      
+      /* Re-enable selection for log boxes */
+      .log-console,
+      .log-console *,
+      .log-console *::before,
+      .log-console *::after {
+        -webkit-user-select: text !important;
+        -moz-user-select: text !important;
+        -ms-user-select: text !important;
+        user-select: text !important;
+        -webkit-touch-callout: default !important;
+      }
+    </style>
   </head>
-
   <body>
     <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
+    <script>
+      // Filter out Tauri callback warnings that are harmless race conditions
+      // This happens when React unmounts components while Tauri async operations are pending
+      const originalWarn = console.warn;
+      console.warn = function(...args) {
+        const message = args[0];
+        if (typeof message === 'string' && message.includes("Couldn't find callback id")) {
+          return; // Suppress this specific warning
+        }
+        originalWarn.apply(console, args);
+      };
+    </script>
+    <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>
+

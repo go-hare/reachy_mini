@@ -29,7 +29,7 @@ async def _collect_final_reply(runtime: RuntimeScheduler, *, thread_id: str, use
     queue = runtime.subscribe_front_outputs()
     final_reply = ""
     try:
-        await runtime.handle_user_text(
+        await runtime.handle_user_turn(
             thread_id=thread_id,
             session_id=thread_id,
             user_id="user",

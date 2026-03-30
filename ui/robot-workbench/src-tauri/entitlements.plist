@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Allow incoming network connections (for daemon on port 8000) -->
+	<key>com.apple.security.network.server</key>
+	<true/>
+	
+	<!-- Allow outgoing network connections -->
+	<key>com.apple.security.network.client</key>
+	<true/>
+	
+	<!-- Allow file system access (for app installation) -->
+	<key>com.apple.security.files.user-selected.read-write</key>
+	<true/>
+	
+	<key>com.apple.security.files.downloads.read-write</key>
+	<true/>
+	
+	<!-- Allow child process execution (Python sidecar) -->
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+	
+	<!-- Allow JIT compilation (Python scripts) -->
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+	
+	<!-- Disable library validation for embedded Python daemon -->
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+	
+	<!-- Allow serial port access (USB) -->
+	<key>com.apple.security.device.serial</key>
+	<true/>
+	
+	<!-- Allow USB device access -->
+	<key>com.apple.security.device.usb</key>
+	<true/>
+	
+	<!-- Allow camera access (required for permission request) -->
+	<key>com.apple.security.device.camera</key>
+	<true/>
+	
+	<!-- Allow microphone access (required for permission request) -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+
+	<!-- Allow location access (required for CoreWLAN WiFi SSID scanning) -->
+	<key>com.apple.security.personal-information.location</key>
+	<true/>
+</dict>
+</plist>

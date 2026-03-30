@@ -395,7 +395,7 @@ def test_runtime_microphone_bridge_blocks_input_during_reply_audio_cooldown(
         profile_root,
         config_jsonl=(
             '{"kind":"front","mode":"text","style":"friendly_concise","history_limit":4}\n'
-            '{"kind":"speech_input","enabled":true,"provider":"mlx_whisper","model":"mlx-community/whisper-small-mlx","playback_block_cooldown_ms":900}\n'
+            '{"kind":"speech_input","enabled":true,"provider":"funasr","base_url":"ws://127.0.0.1:10096","model":"2pass","playback_block_cooldown_ms":900}\n'
             '{"kind":"front_model","provider":"mock","model":"reachy_mini_front_mock","temperature":0.4}\n'
             '{"kind":"kernel_model","provider":"mock","model":"reachy_mini_kernel_mock","temperature":0.2}\n'
         ),
@@ -405,8 +405,9 @@ def test_runtime_microphone_bridge_blocks_input_during_reply_audio_cooldown(
     app.runtime_config = SimpleNamespace(
         speech_input=SimpleNamespace(
             enabled=True,
-            provider="mlx_whisper",
-            model="mlx-community/whisper-small-mlx",
+            provider="funasr",
+            base_url="ws://127.0.0.1:10096",
+            model="2pass",
             language="zh",
             playback_block_cooldown_ms=900,
         ),
@@ -437,10 +438,10 @@ def test_runtime_microphone_bridge_blocks_input_during_reply_audio_cooldown(
     )
 
     with patch(
-        "reachy_mini.runtime.speech_input.build_runtime_speech_input_transcriber",
+        "reachy_mini.runtime.speech_session.build_runtime_speech_session_provider",
         return_value=object(),
     ), patch(
-        "reachy_mini.runtime.speech_input.RuntimeMicrophoneBridge",
+        "reachy_mini.runtime.speech_session.RuntimeMicrophoneBridge",
         side_effect=_build_bridge,
     ):
         bridge = app._build_runtime_microphone_bridge(runtime=SimpleNamespace())

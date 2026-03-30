@@ -1,0 +1,1 @@
+export { useInternetHealthcheck } from './useInternetHealthcheck';

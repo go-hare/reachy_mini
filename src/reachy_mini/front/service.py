@@ -27,7 +27,7 @@ from reachy_mini.front.events import (
     FrontUserTurnResult,
 )
 from reachy_mini.front.prompt import FrontPromptBuilder
-from reachy_mini.utils.llm_utils import extract_message_text
+from reachy_mini.utils.llm_utils import blocks_to_llm_content, extract_message_text
 
 if TYPE_CHECKING:
     from reachy_mini.runtime.profile_loader import ProfileBundle
@@ -157,9 +157,11 @@ class FrontService:
             return turn_result
 
         tool_results = await self.execute_tool_calls(turn_result.tool_calls)
-        final_reply = self.render_user_turn_reply(
-            user_text=resolved_user_text,
-            tool_results=tool_results,
+        final_reply = (
+            await self.build_user_turn_reply(
+                user_text=resolved_user_text,
+                tool_results=tool_results,
+            )
         ).strip()
         return FrontUserTurnResult(
             reply_text=final_reply or turn_result.reply_text,
@@ -304,6 +306,39 @@ class FrontService:
             return fragments[0]
         return "这一步我已经处理好了：" + "；".join(fragments)
 
+    async def build_user_turn_reply(
+        self,
+        *,
+        user_text: str,
+        tool_results: list[FrontToolExecution],
+    ) -> str:
+        """Build the final front-owned reply after tool execution."""
+        results = list(tool_results or [])
+        first_failure = next((result for result in results if not result.success), None)
+        if first_failure is not None:
+            return self.render_user_turn_reply(
+                user_text=user_text,
+                tool_results=results,
+            )
+
+        image_url = self._extract_camera_image_url(results)
+        if image_url:
+            try:
+                reply_text = await self._reply_from_camera_image(
+                    user_text=user_text,
+                    image_url=image_url,
+                )
+            except Exception:
+                reply_text = ""
+            if reply_text:
+                return reply_text
+            return "我已经看到了当前画面，但这次还没顺利读出来。你可以再让我看一次。"
+
+        return self.render_user_turn_reply(
+            user_text=user_text,
+            tool_results=results,
+        )
+
     async def run(
         self,
         messages: list[SystemMessage | HumanMessage],
@@ -343,6 +378,7 @@ class FrontService:
             reason = str(tool_call.reason or "")
             success = False
             result_text = ""
+            execution_result: Any = None
 
             tool = self.get_tool(tool_name)
             if tool is None:
@@ -379,6 +415,7 @@ class FrontService:
                         f"Error executing front tool '{tool_name}': "
                         f"{type(exc).__name__}: {exc}"
                     )
+                    execution_result = None
 
             results.append(
                 FrontToolExecution(
@@ -387,6 +424,7 @@ class FrontService:
                     reason=reason,
                     success=success,
                     result=result_text,
+                    payload=execution_result if tool is not None else None,
                 )
             )
         return results
@@ -430,8 +468,6 @@ class FrontService:
 
         if tool_name == "camera":
             if getattr(context, "camera_worker", None) is None:
-                return False
-            if for_user_turn and getattr(context, "vision_processor", None) is None:
                 return False
             return True
 
@@ -713,13 +749,60 @@ class FrontService:
             if tool_name == "camera" and "image_description" in execution_result:
                 return str(execution_result.get("image_description", "") or "").strip()
             if tool_name == "camera" and "b64_im" in execution_result:
-                b64_payload = str(execution_result.get("b64_im", "") or "")
-                return (
-                    "Error: camera captured an image but no local vision description is available "
-                    f"(b64_im length={len(b64_payload)})."
-                )
+                return ""
             return json.dumps(execution_result, ensure_ascii=False, sort_keys=True)
         return str(execution_result or "").strip()
+
+    @staticmethod
+    def _extract_camera_image_url(tool_results: list[FrontToolExecution]) -> str:
+        for result in list(tool_results or []):
+            if str(result.tool_name or "").strip() != "camera":
+                continue
+            payload = getattr(result, "payload", None)
+            if not isinstance(payload, dict):
+                continue
+            b64_payload = str(payload.get("b64_im", "") or "").strip()
+            if b64_payload:
+                return f"data:image/jpeg;base64,{b64_payload}"
+        return ""
+
+    async def _reply_from_camera_image(
+        self,
+        *,
+        user_text: str,
+        image_url: str,
+    ) -> str:
+        prompt = self._build_camera_followup_prompt(user_text=user_text)
+        content = blocks_to_llm_content(
+            [
+                {"type": "text", "text": prompt},
+                {"type": "image", "url": image_url},
+            ]
+        )
+        return (
+            await self.run(
+                [
+                    SystemMessage(content=self._front_system_text()),
+                    HumanMessage(content=content),
+                ],
+                None,
+            )
+        ).strip()
+
+    @staticmethod
+    def _build_camera_followup_prompt(*, user_text: str) -> str:
+        return "\n".join(
+            [
+                "## camera_followup_response",
+                "你刚通过 camera 工具拿到了一张最新画面。",
+                "请直接根据图片回答用户这轮问题。",
+                "如果画面不清楚、信息不足，或者你无法判断，就直接诚实说明。",
+                "不要提工具、JSON、base64、内部流程。",
+                "",
+                "## 当前用户输入",
+                str(user_text or "").strip(),
+            ]
+        ).strip()
 
     async def _derive_tool_calls(
         self,
