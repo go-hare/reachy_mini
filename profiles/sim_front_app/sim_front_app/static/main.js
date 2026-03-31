@@ -1,7 +1,27 @@
 document.addEventListener("DOMContentLoaded", () => {
     const THREAD_ID = "app:main";
+    const queryParams = new URLSearchParams(window.location.search);
+    const isDesktopPetView = queryParams.get("view") === "desktop-pet";
     const status = document.getElementById("status");
     const statusDot = document.getElementById("status-dot");
+    const appLayout = document.getElementById("app-layout");
+    const petModeStack = document.getElementById("pet-mode-stack");
+    const petStageCard = document.getElementById("pet-stage-card");
+    const petSprite = document.getElementById("pet-sprite");
+    const petFigure = document.getElementById("pet-figure");
+    const petSpeechBubble = document.getElementById("pet-speech-bubble");
+    const petStateLabel = document.getElementById("pet-state-label");
+    const petStateCopy = document.getElementById("pet-state-copy");
+    const petRuntimeChip = document.getElementById("pet-runtime-chip");
+    const petAttentionChip = document.getElementById("pet-attention-chip");
+    const petConnectionText = document.getElementById("pet-connection-text");
+    const petVoiceText = document.getElementById("pet-voice-text");
+    const petVisionText = document.getElementById("pet-vision-text");
+    const petLastUpdated = document.getElementById("pet-last-updated");
+    const petFocusInputButton = document.getElementById("pet-focus-input");
+    const chatCard = document.getElementById("chat-card");
+    const chatTitle = document.getElementById("chat-title");
+    const chatSubtitle = document.getElementById("chat-subtitle");
     const chatLog = document.getElementById("chat-log");
     const chatForm = document.getElementById("chat-form");
     const messageInput = document.getElementById("message-input");
@@ -36,6 +56,16 @@ document.addEventListener("DOMContentLoaded", () => {
     const cameraSupported =
         Boolean(navigator.mediaDevices) &&
         typeof navigator.mediaDevices.getUserMedia === "function";
+    const DESKTOP_PET_POSITION_KEY = "reachy-mini.desktop-pet.position.v1";
+    const DESKTOP_PET_MARGIN = 24;
+    const PET_SPRITES = Object.freeze({
+        idle: "/static/assets/desktop-pet/idle.png?v=20260331-desktop-pet-3",
+        listen: "/static/assets/desktop-pet/listen.png?v=20260331-desktop-pet-3",
+        think: "/static/assets/desktop-pet/think.png?v=20260331-desktop-pet-3",
+        speak: "/static/assets/desktop-pet/speak.png?v=20260331-desktop-pet-3",
+        sleep: "/static/assets/desktop-pet/sleep.png?v=20260331-desktop-pet-3",
+        drag: "/static/assets/desktop-pet/drag.png?v=20260331-desktop-pet-3",
+    });
 
     let socket = null;
     let socketReady = false;
@@ -56,6 +86,12 @@ document.addEventListener("DOMContentLoaded", () => {
     let cameraFrameTimer = null;
     let latestVisionOverlay = null;
     let lastVisionLogKey = "";
+    let petIdleTimer = null;
+    let desktopPetLayer = null;
+    let petShell = null;
+    let desktopPetDrag = null;
+    let desktopPetHoverActive = false;
+    let desktopPetChatHideTimer = null;
     const DETECTION_BOX_SCALE_X = 1.14;
     const DETECTION_BOX_SCALE_Y = 1.18;
 
@@ -88,6 +124,10 @@ document.addEventListener("DOMContentLoaded", () => {
     function setStatus(text, ready) {
         status.textContent = text;
         statusDot.dataset.ready = ready ? "true" : "false";
+        if (petConnectionText) {
+            petConnectionText.textContent = text;
+        }
+        setPetRuntimeState(ready ? "已连接" : "连接中", ready ? "ready" : "starting");
     }
 
     function setMicStatus(text, state = "idle") {
@@ -96,6 +136,9 @@ document.addEventListener("DOMContentLoaded", () => {
         }
         micStatus.textContent = text;
         micStatus.dataset.state = state;
+        if (petVoiceText) {
+            petVoiceText.textContent = text;
+        }
     }
 
     function setSpeechPreview(text) {
@@ -121,6 +164,9 @@ document.addEventListener("DOMContentLoaded", () => {
         }
         visionStatus.textContent = text;
         visionStatus.dataset.state = state;
+        if (petVisionText) {
+            petVisionText.textContent = text;
+        }
     }
 
     function formatClockTime(value) {
@@ -133,6 +179,218 @@ document.addEventListener("DOMContentLoaded", () => {
             minute: "2-digit",
             second: "2-digit",
         }).format(date);
+    }
+
+    function truncatePetText(text, maxLength = 88) {
+        const normalized = compactText(text);
+        if (!normalized) {
+            return "";
+        }
+        if (normalized.length <= maxLength) {
+            return normalized;
+        }
+        return `${normalized.slice(0, maxLength - 1)}…`;
+    }
+
+    function updatePetTimestamp(value = new Date()) {
+        if (!petLastUpdated) {
+            return;
+        }
+        petLastUpdated.textContent = formatClockTime(value);
+    }
+
+    function setPetSpeech(text) {
+        if (!petSpeechBubble) {
+            return;
+        }
+        const normalized = truncatePetText(text);
+        petSpeechBubble.textContent = normalized || "我会在这里等你下一句。";
+        updatePetTimestamp();
+    }
+
+    function setPetRuntimeState(text, state = "starting") {
+        if (petRuntimeChip) {
+            petRuntimeChip.textContent = text;
+            petRuntimeChip.dataset.state = state;
+        }
+    }
+
+    function setPetAttention(direction = "front", detail = null) {
+        const normalizedDirection = ["left", "right", "up", "down", "front"].includes(
+            String(direction || "").toLowerCase()
+        )
+            ? String(direction).toLowerCase()
+            : "front";
+        if (petAttentionChip) {
+            petAttentionChip.dataset.state = normalizedDirection;
+            petAttentionChip.textContent = humanizeDirection(normalizedDirection);
+        }
+        if (petVisionText && detail) {
+            petVisionText.textContent = detail;
+        }
+        updatePetTimestamp();
+    }
+
+    function setPetPose(pose = "idle", options = {}) {
+        const normalizedPose = PET_SPRITES[pose] ? pose : "idle";
+
+        if (petSprite) {
+            petSprite.src = PET_SPRITES[normalizedPose];
+            petSprite.dataset.pose = normalizedPose;
+        }
+
+        if (petFigure) {
+            petFigure.dataset.pose = normalizedPose;
+        }
+
+        if (petStateLabel && options.label) {
+            petStateLabel.textContent = options.label;
+        }
+
+        if (petStateCopy && options.copy) {
+            petStateCopy.textContent = options.copy;
+        }
+
+        if (typeof options.speech === "string") {
+            setPetSpeech(options.speech);
+        }
+
+        updatePetTimestamp();
+    }
+
+    function clearPetIdleTimer() {
+        if (petIdleTimer !== null) {
+            window.clearTimeout(petIdleTimer);
+            petIdleTimer = null;
+        }
+    }
+
+    function schedulePetIdle(delayMs = 1200) {
+        if (!isDesktopPetView) {
+            return;
+        }
+        clearPetIdleTimer();
+        petIdleTimer = window.setTimeout(() => {
+            if (!runtimeReady) {
+                setPetPose("sleep", {
+                    label: "连接中",
+                    copy: "桌宠窗口正在等待 runtime 恢复。",
+                });
+                return;
+            }
+            if (recognitionActive) {
+                return;
+            }
+            setPetPose("idle", {
+                label: "桌宠待命",
+                copy: "我会在这里等你下一句，也会继续盯着 runtime 状态。",
+            });
+        }, delayMs);
+    }
+
+    function clearDesktopPetChatHideTimer() {
+        if (desktopPetChatHideTimer !== null) {
+            window.clearTimeout(desktopPetChatHideTimer);
+            desktopPetChatHideTimer = null;
+        }
+    }
+
+    function hasDesktopPetDraft() {
+        return Boolean(messageInput && compactText(messageInput.value));
+    }
+
+    function isDesktopPetChatFocused() {
+        if (!chatCard) {
+            return false;
+        }
+        const activeElement = document.activeElement;
+        return Boolean(activeElement && chatCard.contains(activeElement));
+    }
+
+    function shouldKeepDesktopPetChatOpen() {
+        return Boolean(
+            desktopPetHoverActive ||
+            recognitionActive ||
+            hasDesktopPetDraft() ||
+            isDesktopPetChatFocused()
+        );
+    }
+
+    function setDesktopPetChatVisible(visible, options = {}) {
+        if (!isDesktopPetView || !chatCard) {
+            return;
+        }
+
+        const nextVisible = Boolean(visible);
+        chatCard.dataset.open = nextVisible ? "true" : "false";
+        if (petShell) {
+            petShell.dataset.chatVisible = nextVisible ? "true" : "false";
+        }
+
+        if (
+            nextVisible &&
+            options.focusInput &&
+            messageInput &&
+            !messageInput.disabled
+        ) {
+            window.setTimeout(() => {
+                if (chatCard.dataset.open === "true") {
+                    messageInput.focus();
+                }
+            }, 0);
+        }
+    }
+
+    function scheduleDesktopPetChatHide(delayMs = 1400) {
+        if (!isDesktopPetView || !chatCard) {
+            return;
+        }
+
+        clearDesktopPetChatHideTimer();
+        if (shouldKeepDesktopPetChatOpen()) {
+            setDesktopPetChatVisible(true);
+            return;
+        }
+
+        desktopPetChatHideTimer = window.setTimeout(() => {
+            desktopPetChatHideTimer = null;
+            if (shouldKeepDesktopPetChatOpen()) {
+                setDesktopPetChatVisible(true);
+                return;
+            }
+            setDesktopPetChatVisible(false);
+        }, delayMs);
+    }
+
+    function syncDesktopPetChatVisibility(options = {}) {
+        if (!isDesktopPetView || !chatCard) {
+            return;
+        }
+
+        const preferOpen = Boolean(options.preferOpen);
+        if (preferOpen || shouldKeepDesktopPetChatOpen()) {
+            clearDesktopPetChatHideTimer();
+            setDesktopPetChatVisible(true, { focusInput: Boolean(options.focusInput) });
+            return;
+        }
+
+        scheduleDesktopPetChatHide(
+            typeof options.hideDelay === "number" ? options.hideDelay : 900
+        );
+    }
+
+    function trimDesktopPetMessages(maxCount = 4) {
+        if (!isDesktopPetView || !chatLog) {
+            return;
+        }
+
+        const messages = Array.from(chatLog.children).filter(
+            (node) => node instanceof HTMLElement && node.classList.contains("message")
+        );
+        while (messages.length > maxCount) {
+            const oldest = messages.shift();
+            oldest?.remove();
+        }
     }
 
     function humanizeDirection(direction) {
@@ -204,6 +462,7 @@ document.addEventListener("DOMContentLoaded", () => {
     function clearDetectionOverlay() {
         latestVisionOverlay = null;
         clearDetectionCanvas();
+        setPetAttention("front", "等待检测链事件");
         if (cameraOverlay) {
             cameraOverlay.hidden = true;
             cameraOverlay.style.display = "none";
@@ -406,6 +665,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const normalized = ["left", "right", "up", "down", "front"].includes(String(direction))
             ? String(direction)
             : "front";
+        setPetAttention(normalized, subtitle);
         if (visionDirectionCard) {
             visionDirectionCard.dataset.direction = normalized;
         }
@@ -527,12 +787,18 @@ document.addEventListener("DOMContentLoaded", () => {
 
         wrapper.appendChild(bubble);
         chatLog.appendChild(wrapper);
+        trimDesktopPetMessages();
         chatLog.scrollTop = chatLog.scrollHeight;
         return bubble;
     }
 
     function appendMessage(role, text) {
         createMessage(role, text);
+        if (role === "assistant") {
+            setPetSpeech(text);
+        }
+        syncDesktopPetChatVisibility({ preferOpen: true });
+        scheduleDesktopPetChatHide(role === "assistant" ? 5200 : 3600);
     }
 
     function setComposerEnabled(enabled) {
@@ -617,14 +883,332 @@ document.addEventListener("DOMContentLoaded", () => {
 
         const bubble = ensureStageBubble(turnId, stage);
         bubble.textContent = turnView[textKey];
+        trimDesktopPetMessages();
         chatLog.scrollTop = chatLog.scrollHeight;
+        syncDesktopPetChatVisibility({ preferOpen: true });
+        scheduleDesktopPetChatHide(5200);
+
+        if (stage === "hint") {
+            setPetPose("think", {
+                label: "正在组织回应",
+                copy: "Front 已经先给出一轮 hint，内核还在继续处理。",
+                speech: turnView[textKey],
+            });
+            return;
+        }
+
+        setPetPose("speak", {
+            label: "正在回复",
+            copy: "桌宠窗口已经开始把这一轮最终回复吐出来了。",
+            speech: turnView[textKey],
+        });
     }
 
     function finishTurn() {
         syncComposerState();
-        if (!recognitionActive) {
+        if (!recognitionActive && !isDesktopPetView) {
             messageInput.focus();
         }
+        if (isDesktopPetView) {
+            syncDesktopPetChatVisibility({ hideDelay: 1100 });
+        }
+        schedulePetIdle();
+    }
+
+    function applySurfaceStateToPet(phase) {
+        if (!isDesktopPetView) {
+            return;
+        }
+
+        switch (phase) {
+            case "listening":
+            case "attending":
+                setPetPose("listen", {
+                    label: "正在听你说话",
+                    copy: "Front 已经接住这一轮输入了。",
+                });
+                return;
+            case "listening_wait":
+            case "replying":
+                setPetPose("think", {
+                    label: "正在思考",
+                    copy: "我正在等前后链路把这一轮整理完整。",
+                });
+                return;
+            case "settling":
+                setPetPose("speak", {
+                    label: "准备收尾",
+                    copy: "最终回复已经差不多了，马上回到待命。",
+                });
+                schedulePetIdle(1400);
+                return;
+            case "idle":
+                schedulePetIdle(300);
+                return;
+            default:
+                return;
+        }
+    }
+
+    function readDesktopPetPosition() {
+        try {
+            const raw = window.localStorage.getItem(DESKTOP_PET_POSITION_KEY);
+            if (!raw) {
+                return null;
+            }
+            const parsed = JSON.parse(raw);
+            const x = Number(parsed?.x);
+            const y = Number(parsed?.y);
+            if (Number.isNaN(x) || Number.isNaN(y)) {
+                return null;
+            }
+            return { x, y };
+        } catch {
+            return null;
+        }
+    }
+
+    function writeDesktopPetPosition(position) {
+        try {
+            window.localStorage.setItem(
+                DESKTOP_PET_POSITION_KEY,
+                JSON.stringify(position)
+            );
+        } catch {
+            // Persistence is best-effort.
+        }
+    }
+
+    function ensureDesktopPetShell() {
+        if (!isDesktopPetView || !appLayout || !petModeStack || !chatCard) {
+            return null;
+        }
+
+        if (!desktopPetLayer || !desktopPetLayer.isConnected) {
+            desktopPetLayer = document.createElement("div");
+            desktopPetLayer.id = "desktop-pet-layer";
+            desktopPetLayer.className = "desktop-pet-layer";
+            appLayout.prepend(desktopPetLayer);
+        }
+
+        if (!petShell || !petShell.isConnected) {
+            petShell = document.createElement("div");
+            petShell.id = "pet-shell";
+            petShell.className = "pet-shell";
+            desktopPetLayer.appendChild(petShell);
+        }
+
+        if (petModeStack.parentElement !== petShell) {
+            petShell.appendChild(petModeStack);
+        }
+        if (chatCard.parentElement !== petShell) {
+            petShell.appendChild(chatCard);
+        }
+
+        return petShell;
+    }
+
+    function clampDesktopPetPosition(x, y) {
+        const shell = petShell || ensureDesktopPetShell();
+        if (!shell) {
+            return { x: DESKTOP_PET_MARGIN, y: DESKTOP_PET_MARGIN };
+        }
+
+        const maxX = Math.max(
+            DESKTOP_PET_MARGIN,
+            window.innerWidth - shell.offsetWidth - DESKTOP_PET_MARGIN
+        );
+        const maxY = Math.max(
+            DESKTOP_PET_MARGIN,
+            window.innerHeight - shell.offsetHeight - DESKTOP_PET_MARGIN
+        );
+
+        return {
+            x: Math.min(Math.max(Number(x) || DESKTOP_PET_MARGIN, DESKTOP_PET_MARGIN), maxX),
+            y: Math.min(Math.max(Number(y) || DESKTOP_PET_MARGIN, DESKTOP_PET_MARGIN), maxY),
+        };
+    }
+
+    function positionDesktopPetShell(x, y, persist = true) {
+        const shell = petShell || ensureDesktopPetShell();
+        if (!shell) {
+            return;
+        }
+
+        const nextPosition = clampDesktopPetPosition(x, y);
+        shell.style.left = `${nextPosition.x}px`;
+        shell.style.top = `${nextPosition.y}px`;
+
+        if (persist) {
+            writeDesktopPetPosition(nextPosition);
+        }
+    }
+
+    function placeDesktopPetShell() {
+        const shell = ensureDesktopPetShell();
+        if (!shell) {
+            return;
+        }
+
+        const savedPosition = readDesktopPetPosition();
+        if (savedPosition) {
+            positionDesktopPetShell(savedPosition.x, savedPosition.y, false);
+            return;
+        }
+
+        positionDesktopPetShell(
+            window.innerWidth - shell.offsetWidth - DESKTOP_PET_MARGIN,
+            window.innerHeight - shell.offsetHeight - DESKTOP_PET_MARGIN
+        );
+    }
+
+    function setDesktopPetDragging(active) {
+        const shell = petShell || ensureDesktopPetShell();
+        if (!shell) {
+            return;
+        }
+        shell.dataset.dragging = active ? "true" : "false";
+    }
+
+    function handleDesktopPetPointerMove(event) {
+        if (!desktopPetDrag) {
+            return;
+        }
+
+        positionDesktopPetShell(
+            event.clientX - desktopPetDrag.pointerOffsetX,
+            event.clientY - desktopPetDrag.pointerOffsetY,
+            false
+        );
+    }
+
+    function finishDesktopPetDrag() {
+        if (!desktopPetDrag) {
+            return;
+        }
+
+        const shell = petShell || ensureDesktopPetShell();
+        desktopPetDrag = null;
+        setDesktopPetDragging(false);
+        window.removeEventListener("pointermove", handleDesktopPetPointerMove);
+        window.removeEventListener("pointerup", finishDesktopPetDrag);
+        window.removeEventListener("pointercancel", finishDesktopPetDrag);
+
+        if (shell) {
+            const rect = shell.getBoundingClientRect();
+            positionDesktopPetShell(rect.left, rect.top);
+        }
+    }
+
+    function beginDesktopPetDrag(event) {
+        if (!isDesktopPetView || event.button !== 0) {
+            return;
+        }
+
+        const target = event.target instanceof Element ? event.target : null;
+        if (target?.closest("button, textarea, input, a, label")) {
+            return;
+        }
+
+        const shell = petShell || ensureDesktopPetShell();
+        if (!shell) {
+            return;
+        }
+
+        const rect = shell.getBoundingClientRect();
+        desktopPetDrag = {
+            pointerOffsetX: event.clientX - rect.left,
+            pointerOffsetY: event.clientY - rect.top,
+        };
+        setDesktopPetDragging(true);
+        window.addEventListener("pointermove", handleDesktopPetPointerMove);
+        window.addEventListener("pointerup", finishDesktopPetDrag);
+        window.addEventListener("pointercancel", finishDesktopPetDrag);
+        event.preventDefault();
+    }
+
+    function configureDesktopPetView() {
+        document.body.dataset.view = isDesktopPetView ? "desktop-pet" : "default";
+        if (petModeStack) {
+            petModeStack.hidden = !isDesktopPetView;
+        }
+        if (!isDesktopPetView) {
+            return;
+        }
+
+        const shell = ensureDesktopPetShell();
+        if (petModeStack) {
+            petModeStack.hidden = false;
+        }
+        if (
+            petStageCard &&
+            petStageCard.dataset.desktopPetDragBound !== "true"
+        ) {
+            petStageCard.addEventListener("pointerdown", beginDesktopPetDrag);
+            petStageCard.dataset.desktopPetDragBound = "true";
+        }
+
+        if (chatTitle) {
+            chatTitle.textContent = "气泡对话";
+        }
+        if (chatSubtitle) {
+            chatSubtitle.textContent =
+                "这里还是同一个 app runtime，但会直接用桌面气泡来对话。";
+        }
+        if (messageInput) {
+            messageInput.rows = 2;
+            messageInput.placeholder = "放上来和我说句话";
+        }
+        if (chatCard) {
+            chatCard.dataset.open = "false";
+        }
+        if (petFocusInputButton) {
+            petFocusInputButton.addEventListener("click", () => {
+                syncDesktopPetChatVisibility({ preferOpen: true, focusInput: true });
+            });
+        }
+        if (shell && shell.dataset.desktopPetHoverBound !== "true") {
+            shell.addEventListener("pointerenter", () => {
+                desktopPetHoverActive = true;
+                syncDesktopPetChatVisibility({ preferOpen: true });
+            });
+            shell.addEventListener("pointerleave", () => {
+                desktopPetHoverActive = false;
+                syncDesktopPetChatVisibility({ hideDelay: 320 });
+            });
+            shell.addEventListener("focusin", () => {
+                syncDesktopPetChatVisibility({ preferOpen: true });
+            });
+            shell.addEventListener("focusout", () => {
+                window.setTimeout(() => {
+                    syncDesktopPetChatVisibility({ hideDelay: 320 });
+                }, 0);
+            });
+            shell.dataset.desktopPetHoverBound = "true";
+        }
+        if (petSpeechBubble && petSpeechBubble.dataset.desktopPetFocusBound !== "true") {
+            petSpeechBubble.addEventListener("click", () => {
+                syncDesktopPetChatVisibility({ preferOpen: true, focusInput: true });
+            });
+            petSpeechBubble.dataset.desktopPetFocusBound = "true";
+        }
+        if (petFigure && petFigure.dataset.desktopPetFocusBound !== "true") {
+            petFigure.addEventListener("click", () => {
+                syncDesktopPetChatVisibility({ preferOpen: true, focusInput: true });
+            });
+            petFigure.dataset.desktopPetFocusBound = "true";
+        }
+
+        setPetRuntimeState("连接中", "starting");
+        setPetAttention("front", "等待检测链事件");
+        setPetPose("sleep", {
+            label: "连接中",
+            copy: "桌宠窗口正在等待 runtime 启动。",
+            speech: "我先在这里待命，等内核连上。",
+        });
+
+        placeDesktopPetShell();
+        syncDesktopPetChatVisibility({ hideDelay: 0 });
     }
 
     function formatSurfaceStatus(state) {
@@ -824,6 +1408,14 @@ document.addEventListener("DOMContentLoaded", () => {
             thread_id: THREAD_ID,
             text: message,
         });
+        syncDesktopPetChatVisibility({ preferOpen: true });
+        scheduleDesktopPetChatHide(4200);
+        clearPetIdleTimer();
+        setPetPose("think", {
+            label: "正在思考",
+            copy: "我已经收到你的话了，正在把这一轮投给 front 和 kernel。",
+            speech: `收到：${message}`,
+        });
         return true;
     }
 
@@ -926,6 +1518,12 @@ document.addEventListener("DOMContentLoaded", () => {
                 submitted ? "本轮语音已转成文本并送入 runtime。" : "语音已识别，但当前连接还没恢复。",
                 submitted ? "idle" : "error"
             );
+            if (!submitted) {
+                setPetPose("idle", {
+                    label: "等待重连",
+                    copy: "这轮语音已经转好了，但还没成功送进 runtime。",
+                });
+            }
             return;
         }
 
@@ -937,10 +1535,15 @@ document.addEventListener("DOMContentLoaded", () => {
                     ? "error"
                     : "idle";
             setMicStatus(formatRecognitionError(errorCode), errorState);
+            setPetPose("idle", {
+                label: "语音暂不可用",
+                copy: formatRecognitionError(errorCode),
+            });
             return;
         }
 
         setMicStatus("麦克风待命，可继续说话，也可直接输入。", "idle");
+        schedulePetIdle(200);
     }
 
     function buildRecognition() {
@@ -961,6 +1564,12 @@ document.addEventListener("DOMContentLoaded", () => {
             lastStoppedText = "";
             setMicStatus("麦克风已开启，请开始说话。", "listening");
             setSpeechPreview("");
+            clearPetIdleTimer();
+            setPetPose("listen", {
+                label: "正在听",
+                copy: "麦克风已经打开，你可以直接对我说话。",
+                speech: "我在听。",
+            });
         });
 
         instance.addEventListener("speechstart", () => {
@@ -976,6 +1585,10 @@ document.addEventListener("DOMContentLoaded", () => {
             emitUserSpeechStopped(currentRecognitionText());
             setStatus("检测到你停止说话，正在等待最终文本。", true);
             setMicStatus("已停止收音，正在整理文字...", "processing");
+            setPetPose("think", {
+                label: "整理语音",
+                copy: "我在等浏览器把最后一版文字交出来。",
+            });
         });
 
         instance.addEventListener("result", (event) => {
@@ -1012,12 +1625,23 @@ document.addEventListener("DOMContentLoaded", () => {
                         : "已听到你的话，正在等待结束。",
                     recognitionInterimText ? "listening" : "processing"
                 );
+                if (!speechCaptureEnded) {
+                    setPetPose("listen", {
+                        label: "正在听",
+                        copy: "继续说，我会把它实时转成文字。",
+                        speech: previewText,
+                    });
+                }
             }
         });
 
         instance.addEventListener("nomatch", () => {
             recognitionError = "nomatch";
             setMicStatus(formatRecognitionError("nomatch"), "idle");
+            setPetPose("idle", {
+                label: "没听清",
+                copy: formatRecognitionError("nomatch"),
+            });
         });
 
         instance.addEventListener("error", (event) => {
@@ -1030,6 +1654,10 @@ document.addEventListener("DOMContentLoaded", () => {
                         ? "error"
                         : "idle";
                 setMicStatus(formatRecognitionError(recognitionError), errorState);
+                setPetPose("idle", {
+                    label: "语音出错",
+                    copy: formatRecognitionError(recognitionError),
+                });
             }
         });
 
@@ -1098,6 +1726,18 @@ document.addEventListener("DOMContentLoaded", () => {
                     : "App runtime is starting...",
                 runtimeReady
             );
+            if (runtimeReady) {
+                setPetPose("idle", {
+                    label: "桌宠已上线",
+                    copy: "runtime 已经准备好了，可以直接和我对话。",
+                    speech: "我已经连上内核了。",
+                });
+            } else {
+                setPetPose("sleep", {
+                    label: "连接中",
+                    copy: "runtime 还在启动，这会儿我先安静待命。",
+                });
+            }
             syncComposerState();
             return;
         }
@@ -1108,6 +1748,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 return;
             }
             setStatus(formatSurfaceStatus(payload.state), runtimeReady);
+            applySurfaceStateToPet(phase);
             return;
         }
 
@@ -1149,6 +1790,11 @@ document.addEventListener("DOMContentLoaded", () => {
             turnCompleted = false;
             appendMessage("assistant", `请求失败：${payload.error || "unknown error"}`);
             setStatus("Runtime error", false);
+            setPetRuntimeState("运行出错", "error");
+            setPetPose("idle", {
+                label: "这轮出错了",
+                copy: payload.error || "runtime 返回了错误，可以直接再试一轮。",
+            });
             finishTurn();
             return;
         }
@@ -1175,6 +1821,10 @@ document.addEventListener("DOMContentLoaded", () => {
         socket.addEventListener("open", () => {
             socketReady = true;
             setStatus("WebSocket connected, waiting runtime...", false);
+            setPetPose("sleep", {
+                label: "等待 runtime",
+                copy: "WebSocket 已连上，正在等 runtime 报 ready。",
+            });
             if (cameraActive) {
                 startBrowserCameraBridge();
             }
@@ -1195,6 +1845,11 @@ document.addEventListener("DOMContentLoaded", () => {
             stopBrowserCameraBridge();
             syncComposerState();
             setStatus("WebSocket disconnected, retrying...", false);
+            setPetRuntimeState("已断开", "error");
+            setPetPose("sleep", {
+                label: "连接断开",
+                copy: "WebSocket 掉线了，我会继续自动重连。",
+            });
             if (recognitionActive) {
                 setMicStatus("连接已断开，本轮语音可能没有送达。", "error");
             }
@@ -1208,6 +1863,7 @@ document.addEventListener("DOMContentLoaded", () => {
         });
         socket.addEventListener("error", () => {
             setStatus("WebSocket error", false);
+            setPetRuntimeState("连接异常", "error");
         });
     }
 
@@ -1226,6 +1882,29 @@ document.addEventListener("DOMContentLoaded", () => {
             event.preventDefault();
             chatForm.requestSubmit();
         }
+    });
+    messageInput.addEventListener("input", () => {
+        if (!isDesktopPetView) {
+            return;
+        }
+        syncDesktopPetChatVisibility({
+            preferOpen: hasDesktopPetDraft(),
+            hideDelay: hasDesktopPetDraft() ? 0 : 900,
+        });
+    });
+    messageInput.addEventListener("focus", () => {
+        if (!isDesktopPetView) {
+            return;
+        }
+        syncDesktopPetChatVisibility({ preferOpen: true });
+    });
+    messageInput.addEventListener("blur", () => {
+        if (!isDesktopPetView) {
+            return;
+        }
+        window.setTimeout(() => {
+            syncDesktopPetChatVisibility({ hideDelay: 320 });
+        }, 0);
     });
 
     if (micButton) {
@@ -1247,6 +1926,7 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     }
 
+    configureDesktopPetView();
     setComposerEnabled(false);
     if (!recognitionSupported && composerHint) {
         composerHint.textContent = "Enter 发送，Shift+Enter 换行；语音输入需使用支持 SpeechRecognition 的浏览器";
@@ -1281,6 +1961,9 @@ document.addEventListener("DOMContentLoaded", () => {
     if (visionLastUpdated) {
         visionLastUpdated.textContent = "尚未收到";
     }
+    if (petLastUpdated) {
+        petLastUpdated.textContent = "尚未收到";
+    }
     updateMicButton();
     updateCameraButton();
     if (cameraPreview) {
@@ -1290,8 +1973,20 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     window.addEventListener("resize", () => {
         renderDetectionOverlay();
+        if (isDesktopPetView) {
+            const shell = petShell || ensureDesktopPetShell();
+            if (shell) {
+                const rect = shell.getBoundingClientRect();
+                positionDesktopPetShell(rect.left, rect.top, false);
+            }
+        }
     });
     window.addEventListener("beforeunload", () => {
+        clearPetIdleTimer();
+        window.removeEventListener("pointermove", handleDesktopPetPointerMove);
+        window.removeEventListener("pointerup", finishDesktopPetDrag);
+        window.removeEventListener("pointercancel", finishDesktopPetDrag);
+        clearDesktopPetChatHideTimer();
         stopBrowserCameraBridge();
         if (cameraStream) {
             cameraStream.getTracks().forEach((track) => track.stop());

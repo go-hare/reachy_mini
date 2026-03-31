@@ -15,6 +15,7 @@ mod usb;
 mod wifi;
 mod window;
 
+use base64::Engine;
 use daemon::{
     add_log, cleanup_system_daemons, kill_daemon, set_external_mode, spawn_and_monitor_sidecar,
     transition_and_emit, transition_status, DaemonState, DaemonStatus,
@@ -47,6 +48,7 @@ fn start_daemon(
     state: State<DaemonState>,
     sim_mode: Option<bool>,
     connection_mode: Option<String>,
+    simulation_backend: Option<String>,
 ) -> Result<String, String> {
     let sim_mode = sim_mode.unwrap_or(false);
 
@@ -62,7 +64,10 @@ fn start_daemon(
     if sim_mode {
         add_log(
             &state,
-            "Starting simulation mode (--sim)...".to_string(),
+            format!(
+                "Starting simulation mode ({})...",
+                daemon::simulation_backend_flag(simulation_backend.as_deref())
+            ),
         );
     }
 
@@ -74,7 +79,12 @@ fn start_daemon(
         e
     })?;
 
-    if let Err(e) = spawn_and_monitor_sidecar(app_handle.clone(), &state, sim_mode) {
+    if let Err(e) = spawn_and_monitor_sidecar(
+        app_handle.clone(),
+        &state,
+        sim_mode,
+        simulation_backend.as_deref(),
+    ) {
         if let Err(te) = transition_and_emit(&state, DaemonStatus::Crashed, &app_handle) {
             log::warn!(
                 "[daemon] Failed to transition to Crashed after spawn failure: {}",
@@ -93,11 +103,14 @@ fn start_daemon(
     }
 
     let success_msg = if sim_mode {
-        "Daemon started in simulation mode (--sim)"
+        format!(
+            "Daemon started in simulation mode ({})",
+            daemon::simulation_backend_flag(simulation_backend.as_deref())
+        )
     } else {
-        "Daemon started via local reachy-mini-daemon"
+        "Daemon started via local reachy-mini-daemon".to_string()
     };
-    add_log(&state, success_msg.to_string());
+    add_log(&state, success_msg);
     Ok("Daemon started successfully".to_string())
 }
 
@@ -149,6 +162,85 @@ fn get_logs(state: State<DaemonState>) -> Result<Vec<String>, String> {
         .lock()
         .map_err(|e| format!("Failed to read logs: {}", e))?;
     Ok(logs.iter().cloned().collect())
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SpriteFramePayload {
+    file_name: String,
+    data_url: String,
+    pose_id: Option<String>,
+    label: Option<String>,
+}
+
+fn resolve_sprite_export_dir(
+    app_handle: &tauri::AppHandle,
+    export_name: &str,
+) -> Result<std::path::PathBuf, String> {
+    let base_dir = match std::env::current_dir() {
+        Ok(cwd) => cwd.join(".codex-runtime").join("sprite-export"),
+        Err(_) => app_handle
+            .path()
+            .app_data_dir()
+            .map_err(|e| format!("Failed to resolve app data directory: {}", e))?
+            .join("sprite-export"),
+    };
+
+    let export_dir = base_dir.join(export_name);
+    std::fs::create_dir_all(&export_dir)
+        .map_err(|e| format!("Failed to create export directory: {}", e))?;
+    Ok(export_dir)
+}
+
+#[tauri::command]
+fn export_sprite_frames(
+    app_handle: tauri::AppHandle,
+    export_name: String,
+    frames: Vec<SpriteFramePayload>,
+) -> Result<serde_json::Value, String> {
+    if frames.is_empty() {
+        return Err("No frames provided for export".to_string());
+    }
+
+    let export_dir = resolve_sprite_export_dir(&app_handle, &export_name)?;
+    let base64_engine = base64::engine::general_purpose::STANDARD;
+    let mut manifest = Vec::new();
+
+    for frame in frames {
+        let (_, payload) = frame
+            .data_url
+            .split_once(',')
+            .ok_or_else(|| format!("Invalid data URL for {}", frame.file_name))?;
+        let bytes = base64_engine
+            .decode(payload)
+            .map_err(|e| format!("Failed to decode {}: {}", frame.file_name, e))?;
+
+        let output_path = export_dir.join(&frame.file_name);
+        std::fs::write(&output_path, bytes)
+            .map_err(|e| format!("Failed to write {}: {}", output_path.display(), e))?;
+
+        manifest.push(serde_json::json!({
+            "id": frame.pose_id,
+            "label": frame.label,
+            "fileName": frame.file_name,
+        }));
+    }
+
+    let manifest_path = export_dir.join("manifest.json");
+    let manifest_body = serde_json::to_vec_pretty(&serde_json::json!({
+        "exportName": export_name,
+        "frames": manifest,
+    }))
+    .map_err(|e| format!("Failed to serialize manifest: {}", e))?;
+
+    std::fs::write(&manifest_path, manifest_body)
+        .map_err(|e| format!("Failed to write manifest: {}", e))?;
+
+    Ok(serde_json::json!({
+        "outputDir": export_dir.display().to_string(),
+        "manifestPath": manifest_path.display().to_string(),
+        "count": manifest.len(),
+    }))
 }
 
 // ============================================================================
@@ -371,6 +463,7 @@ pub fn run() {
             set_daemon_external_mode,
             get_daemon_status,
             get_logs,
+            export_sprite_frames,
             check_crash_marker,
             usb::check_usb_robot,
             window::apply_transparent_titlebar,

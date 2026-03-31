@@ -58,6 +58,58 @@ export function mergeAppsData(websiteApps, daemonApps) {
  * Falls back to daemon for installed apps only
  */
 export function useAppFetching() {
+  const isWorkspaceProfileApp = useCallback(
+    app => app?.source_kind === 'local' || app?.extra?.local_profile === true,
+    []
+  );
+
+  const fetchAppsBySource = useCallback(async (sourceKind, retryCount = 0) => {
+    const MAX_RETRIES = 3;
+    const RETRY_DELAYS = [1000, 2000, 3000];
+
+    try {
+      const url = buildApiUrl(`/api/apps/list-available/${sourceKind}`);
+      const response = await fetchWithTimeout(url, {}, DAEMON_CONFIG.TIMEOUTS.APPS_LIST, {
+        silent: true,
+      });
+
+      if (response.ok) {
+        const rawApps = await response.json();
+        const apps = rawApps.map(app => ({
+          ...app,
+          source_kind: app.source_kind || sourceKind,
+        }));
+        return { apps, error: null };
+      }
+
+      if (response.status >= 500) {
+        if (retryCount < MAX_RETRIES) {
+          await new Promise(resolve => setTimeout(resolve, RETRY_DELAYS[retryCount]));
+          return fetchAppsBySource(sourceKind, retryCount + 1);
+        }
+        return { apps: [], error: `Server error: ${response.status}` };
+      }
+
+      return { apps: [], error: `HTTP ${response.status}` };
+    } catch (err) {
+      const isRetryableError =
+        err.name === 'TimeoutError' ||
+        err.name === 'AbortError' ||
+        err.message?.includes('timeout') ||
+        err.message?.includes('Load failed') ||
+        err.message?.includes('Failed to fetch') ||
+        err.message?.includes('network') ||
+        err.message?.includes('ECONNREFUSED');
+
+      if (retryCount < MAX_RETRIES && isRetryableError) {
+        await new Promise(resolve => setTimeout(resolve, RETRY_DELAYS[retryCount]));
+        return fetchAppsBySource(sourceKind, retryCount + 1);
+      }
+
+      return { apps: [], error: err.message };
+    }
+  }, []);
+
   /**
    * Fetch all available apps from the website API
    * This is the primary source - returns pre-enriched data with:
@@ -111,57 +163,17 @@ export function useAppFetching() {
   }, []);
 
   /**
-   * Fetch installed apps from daemon
+   * Fetch workspace-local profile apps from daemon
    */
-  const fetchInstalledApps = useCallback(async (retryCount = 0) => {
-    const MAX_RETRIES = 3;
-    const RETRY_DELAYS = [1000, 2000, 3000];
+  const fetchInstalledApps = useCallback(async () => {
+    const localResult = await fetchAppsBySource('local');
+    const workspaceProfiles = (localResult.apps || []).filter(isWorkspaceProfileApp);
 
-    try {
-      const installedUrl = buildApiUrl('/api/apps/list-available/installed');
-      const installedResponse = await fetchWithTimeout(
-        installedUrl,
-        {},
-        DAEMON_CONFIG.TIMEOUTS.APPS_LIST,
-        { silent: true }
-      );
-
-      if (installedResponse.ok) {
-        const rawInstalledApps = await installedResponse.json();
-        const installedApps = rawInstalledApps.map(app => ({
-          ...app,
-          source_kind: app.source_kind || 'local',
-        }));
-        return { apps: installedApps, error: null };
-      }
-
-      if (installedResponse.status >= 500) {
-        if (retryCount < MAX_RETRIES) {
-          await new Promise(resolve => setTimeout(resolve, RETRY_DELAYS[retryCount]));
-          return fetchInstalledApps(retryCount + 1);
-        }
-        return { apps: [], error: `Server error: ${installedResponse.status}` };
-      }
-
-      return { apps: [], error: `HTTP ${installedResponse.status}` };
-    } catch (err) {
-      const isRetryableError =
-        err.name === 'TimeoutError' ||
-        err.name === 'AbortError' ||
-        err.message?.includes('timeout') ||
-        err.message?.includes('Load failed') ||
-        err.message?.includes('Failed to fetch') ||
-        err.message?.includes('network') ||
-        err.message?.includes('ECONNREFUSED');
-
-      if (retryCount < MAX_RETRIES && isRetryableError) {
-        await new Promise(resolve => setTimeout(resolve, RETRY_DELAYS[retryCount]));
-        return fetchInstalledApps(retryCount + 1);
-      }
-
-      return { apps: [], error: err.message };
-    }
-  }, []);
+    return {
+      apps: workspaceProfiles,
+      error: localResult.error,
+    };
+  }, [fetchAppsBySource, isWorkspaceProfileApp]);
 
   return {
     fetchAppsFromWebsite,

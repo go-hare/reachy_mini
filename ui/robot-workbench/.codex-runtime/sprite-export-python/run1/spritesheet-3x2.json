@@ -1,0 +1,50 @@
+{
+  "cellWidth": 376,
+  "cellHeight": 270,
+  "columns": 3,
+  "rows": 2,
+  "frames": [
+    {
+      "id": "idle",
+      "x": 0,
+      "y": 0,
+      "width": 376,
+      "height": 270
+    },
+    {
+      "id": "listen",
+      "x": 376,
+      "y": 0,
+      "width": 376,
+      "height": 270
+    },
+    {
+      "id": "think",
+      "x": 752,
+      "y": 0,
+      "width": 376,
+      "height": 270
+    },
+    {
+      "id": "speak",
+      "x": 0,
+      "y": 270,
+      "width": 376,
+      "height": 270
+    },
+    {
+      "id": "sleep",
+      "x": 376,
+      "y": 270,
+      "width": 376,
+      "height": 270
+    },
+    {
+      "id": "drag",
+      "x": 752,
+      "y": 270,
+      "width": 376,
+      "height": 270
+    }
+  ]
+}

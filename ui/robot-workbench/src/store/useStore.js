@@ -58,6 +58,7 @@ export const useStore = create(
         ...buildDerivedState(ROBOT_STATUS.DISCONNECTED),
         // Connection
         connectionMode: null,
+        connectionVariant: null,
         remoteHost: null,
         isUsbConnected: false,
         usbPortName: null,

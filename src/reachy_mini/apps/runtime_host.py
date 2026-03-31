@@ -59,7 +59,19 @@ class AppRuntimeHostAdapter:
         if not vision_config.no_camera:
             media = getattr(reachy_mini, "media", None)
             if media is not None and hasattr(media, "get_frame"):
-                head_tracker = self._build_head_tracker(vision_config)
+                head_tracker = None
+                try:
+                    head_tracker = self._build_head_tracker(vision_config)
+                except Exception as exc:
+                    tracker_kind = str(
+                        getattr(vision_config, "head_tracker", "") or ""
+                    ).strip()
+                    if tracker_kind:
+                        self.logger.warning(
+                            "Head tracker '%s' unavailable, continuing without tracking: %s",
+                            tracker_kind,
+                            exc,
+                        )
                 try:
                     from reachy_mini.runtime.camera_worker import CameraWorker
 
@@ -69,7 +81,13 @@ class AppRuntimeHostAdapter:
                     self.logger.warning("Failed to start camera worker: %s", exc)
 
             if vision_config.local_vision:
-                vision_processor = self._build_vision_processor(vision_config)
+                try:
+                    vision_processor = self._build_vision_processor(vision_config)
+                except Exception as exc:
+                    self.logger.warning(
+                        "Local vision unavailable, continuing without processor: %s",
+                        exc,
+                    )
 
         if all(
             hasattr(reachy_mini, attribute)

@@ -112,7 +112,7 @@ export function useAppHandlers({
     }
   }, []);
 
-  const handleStartApp = useCallback(async appName => {
+  const handleStartApp = useCallback(async appOrInfo => {
     const {
       isCommandRunning,
       currentApp,
@@ -123,6 +123,11 @@ export function useAppHandlers({
       startApp,
       lockForApp,
     } = latest.current;
+    const appInfo =
+      typeof appOrInfo === 'string'
+        ? { name: appOrInfo, source_kind: 'local', extra: { local_profile: true } }
+        : appOrInfo;
+    const appName = appInfo.name;
     try {
       if (isCommandRunning) {
         showToast('Please wait for the current action to finish', 'warning');
@@ -153,7 +158,7 @@ export function useAppHandlers({
       setStartingApp(appName);
       waitingForPollingRef.current = true;
 
-      await startApp(appName);
+      await startApp(appInfo);
       lockForApp(appName);
     } catch (err) {
       console.error(`Failed to start ${appName}:`, err);

@@ -1,0 +1,100 @@
+{
+  "frames": [
+    {
+      "id": "idle",
+      "fileName": "idle.png",
+      "size": [
+        512,
+        512
+      ],
+      "contentSize": [
+        328,
+        266
+      ],
+      "offset": [
+        92,
+        123
+      ]
+    },
+    {
+      "id": "listen",
+      "fileName": "listen.png",
+      "size": [
+        512,
+        512
+      ],
+      "contentSize": [
+        309,
+        268
+      ],
+      "offset": [
+        101,
+        122
+      ]
+    },
+    {
+      "id": "think",
+      "fileName": "think.png",
+      "size": [
+        512,
+        512
+      ],
+      "contentSize": [
+        309,
+        269
+      ],
+      "offset": [
+        101,
+        121
+      ]
+    },
+    {
+      "id": "speak",
+      "fileName": "speak.png",
+      "size": [
+        512,
+        512
+      ],
+      "contentSize": [
+        333,
+        265
+      ],
+      "offset": [
+        89,
+        123
+      ]
+    },
+    {
+      "id": "sleep",
+      "fileName": "sleep.png",
+      "size": [
+        512,
+        512
+      ],
+      "contentSize": [
+        376,
+        261
+      ],
+      "offset": [
+        68,
+        125
+      ]
+    },
+    {
+      "id": "drag",
+      "fileName": "drag.png",
+      "size": [
+        512,
+        512
+      ],
+      "contentSize": [
+        334,
+        270
+      ],
+      "offset": [
+        89,
+        121
+      ]
+    }
+  ]
+}

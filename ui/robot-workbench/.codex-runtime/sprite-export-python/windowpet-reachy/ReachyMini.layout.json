@@ -1,0 +1,96 @@
+[
+  {
+    "state": "idle",
+    "frames": [
+      "idle"
+    ],
+    "start": 1,
+    "end": 1
+  },
+  {
+    "state": "walk",
+    "frames": [
+      "listen",
+      "idle",
+      "think",
+      "idle"
+    ],
+    "start": 9,
+    "end": 12
+  },
+  {
+    "state": "sit",
+    "frames": [
+      "sleep"
+    ],
+    "start": 17,
+    "end": 17
+  },
+  {
+    "state": "greet",
+    "frames": [
+      "speak",
+      "listen",
+      "speak",
+      "idle"
+    ],
+    "start": 25,
+    "end": 28
+  },
+  {
+    "state": "jump",
+    "frames": [
+      "think"
+    ],
+    "start": 33,
+    "end": 33
+  },
+  {
+    "state": "fall",
+    "frames": [
+      "sleep",
+      "think",
+      "sleep"
+    ],
+    "start": 41,
+    "end": 43
+  },
+  {
+    "state": "drag",
+    "frames": [
+      "drag"
+    ],
+    "start": 49,
+    "end": 49
+  },
+  {
+    "state": "crawl",
+    "frames": [
+      "listen",
+      "think",
+      "speak",
+      "idle",
+      "listen",
+      "think",
+      "speak",
+      "idle"
+    ],
+    "start": 57,
+    "end": 64
+  },
+  {
+    "state": "climb",
+    "frames": [
+      "think",
+      "listen",
+      "speak",
+      "idle",
+      "think",
+      "listen",
+      "speak",
+      "idle"
+    ],
+    "start": 65,
+    "end": 72
+  }
+]

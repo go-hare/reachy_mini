@@ -1,0 +1,118 @@
+{
+  "frameSize": [
+    512,
+    512
+  ],
+  "columns": 3,
+  "rows": 2,
+  "frames": [
+    {
+      "id": "idle",
+      "fileName": "idle.png",
+      "frame": [
+        0,
+        0,
+        512,
+        512
+      ],
+      "contentSize": [
+        328,
+        266
+      ],
+      "offset": [
+        92,
+        123
+      ]
+    },
+    {
+      "id": "listen",
+      "fileName": "listen.png",
+      "frame": [
+        512,
+        0,
+        512,
+        512
+      ],
+      "contentSize": [
+        309,
+        268
+      ],
+      "offset": [
+        101,
+        122
+      ]
+    },
+    {
+      "id": "think",
+      "fileName": "think.png",
+      "frame": [
+        1024,
+        0,
+        512,
+        512
+      ],
+      "contentSize": [
+        309,
+        269
+      ],
+      "offset": [
+        101,
+        121
+      ]
+    },
+    {
+      "id": "speak",
+      "fileName": "speak.png",
+      "frame": [
+        0,
+        512,
+        512,
+        512
+      ],
+      "contentSize": [
+        333,
+        265
+      ],
+      "offset": [
+        89,
+        123
+      ]
+    },
+    {
+      "id": "sleep",
+      "fileName": "sleep.png",
+      "frame": [
+        512,
+        512,
+        512,
+        512
+      ],
+      "contentSize": [
+        376,
+        261
+      ],
+      "offset": [
+        68,
+        125
+      ]
+    },
+    {
+      "id": "drag",
+      "fileName": "drag.png",
+      "frame": [
+        1024,
+        512,
+        512,
+        512
+      ],
+      "contentSize": [
+        334,
+        270
+      ],
+      "offset": [
+        89,
+        121
+      ]
+    }
+  ]
+}

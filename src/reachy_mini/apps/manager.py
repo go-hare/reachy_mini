@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import signal
+import sys
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Optional
@@ -72,6 +73,12 @@ class AppManager:
 
     async def autostart_installed_app(self) -> Optional[AppStatus]:
         """Autostart the only installed app, if the choice is unambiguous."""
+        if self.desktop_app_daemon:
+            self.logger.getChild("runner").info(
+                "Skipping app autostart in desktop-app mode"
+            )
+            return None
+
         if self.is_app_running():
             assert self.current_app is not None
             self.logger.getChild("runner").info(
@@ -133,18 +140,48 @@ class AppManager:
             AppState.STOPPING,
         )
 
-    async def start_app(self, app_name: str, *args: Any, **kwargs: Any) -> AppStatus:
+    async def start_app(
+        self,
+        app_name: str,
+        app_info: AppInfo | None = None,
+        *args: Any,
+        **kwargs: Any,
+    ) -> AppStatus:
         """Start the app as a subprocess, raises RuntimeError if an app is already running."""
         if self.is_app_running():
             raise RuntimeError("An app is already running")
 
-        # Get module name and Python path for subprocess execution
-        module_name = local_common_venv.get_app_module(
-            app_name, self.wireless_version, self.desktop_app_daemon
-        )
-        python_path = local_common_venv.get_app_python(
-            app_name, self.wireless_version, self.desktop_app_daemon
-        )
+        run_cwd: str | None = None
+        env: dict[str, str] | None = None
+
+        if app_info is not None and app_info.source_kind == SourceKind.LOCAL:
+            local_spec = local_common_venv.get_local_profile_app_spec(app_name)
+            if local_spec is None:
+                raise RuntimeError(f"Local app '{app_name}' could not be found in profiles/")
+
+            module_name = local_spec.module_name
+            python_path = sys.executable
+            run_cwd = str(local_spec.working_dir)
+            env = os.environ.copy()
+            existing_pythonpath = env.get("PYTHONPATH", "")
+            env["PYTHONPATH"] = (
+                f"{run_cwd}{os.pathsep}{existing_pythonpath}"
+                if existing_pythonpath
+                else run_cwd
+            )
+            app_info = local_spec.app_info
+        else:
+            # Get module name and Python path for subprocess execution
+            module_name = local_common_venv.get_app_module(
+                app_name, self.wireless_version, self.desktop_app_daemon
+            )
+            python_path = local_common_venv.get_app_python(
+                app_name, self.wireless_version, self.desktop_app_daemon
+            )
+            app_info = app_info or AppInfo(
+                name=app_name,
+                source_kind=SourceKind.INSTALLED,
+            )
 
         # Launch app as subprocess with unbuffered output
         self.logger.getChild("runner").info(f"Starting app {app_name}")
@@ -155,14 +192,20 @@ class AppManager:
             module_name,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            cwd=run_cwd,
+            env=env,
         )
 
         # Create status and monitor task
         status = AppStatus(
-            info=AppInfo(name=app_name, source_kind=SourceKind.INSTALLED),
+            info=app_info,
             state=AppState.STARTING,
             error=None,
         )
+
+        def decode_stream_line(line: bytes) -> str:
+            """Decode subprocess output without crashing on non-UTF8 bytes."""
+            return line.decode("utf-8", errors="replace").rstrip()
 
         async def monitor_process() -> None:
             """Monitor the subprocess and update status."""
@@ -178,7 +221,7 @@ class AppManager:
             async def log_stdout() -> None:
                 assert process.stdout is not None
                 async for line in process.stdout:
-                    self.logger.getChild("runner").info(line.decode().rstrip())
+                    self.logger.getChild("runner").info(decode_stream_line(line))
 
             # Stream stderr - log as warning since it often contains errors/exceptions
             stderr_lines: list[str] = []
@@ -186,7 +229,7 @@ class AppManager:
             async def log_stderr() -> None:
                 assert process.stderr is not None
                 async for line in process.stderr:
-                    decoded = line.decode().rstrip()
+                    decoded = decode_stream_line(line)
                     stderr_lines.append(decoded)
                     # Check if line looks like an error or exception
                     if any(
@@ -199,10 +242,22 @@ class AppManager:
                         self.logger.getChild("runner").warning(decoded)
 
             # Run both streams concurrently
-            await asyncio.gather(log_stdout(), log_stderr())
+            try:
+                await asyncio.gather(log_stdout(), log_stderr())
 
-            # Wait for process to complete
-            returncode = await process.wait()
+                # Wait for process to complete
+                returncode = await process.wait()
+            except Exception as exc:
+                if self.current_app is not None:
+                    self.current_app.status.state = AppState.ERROR
+                    self.current_app.status.error = (
+                        f"Failed to monitor app output: {exc}"
+                    )
+                self.logger.getChild("runner").exception(
+                    "App %s monitor crashed",
+                    app_name,
+                )
+                return
 
             # Update status based on exit code
             if self.current_app is not None:
@@ -341,7 +396,7 @@ class AppManager:
                 desktop_app_daemon=self.desktop_app_daemon,
             )
         elif source == SourceKind.LOCAL:
-            return []
+            return await local_common_venv.list_local_profile_apps()
         else:
             raise NotImplementedError(f"Unknown source kind: {source}")
 

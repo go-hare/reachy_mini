@@ -7,13 +7,29 @@ import platform
 import re
 import shutil
 import sys
+from dataclasses import dataclass
 from importlib.metadata import entry_points
 from pathlib import Path
+from typing import Any
 
 from huggingface_hub import snapshot_download
 
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback
+    import tomli as tomllib  # type: ignore[no-redef]
+
 from .. import AppInfo, SourceKind
 from ..utils import running_command
+
+
+@dataclass
+class LocalProfileAppSpec:
+    """Launch metadata for a local app project in profiles/."""
+
+    app_info: AppInfo
+    module_name: str
+    working_dir: Path
 
 
 def _check_uv_available() -> bool:
@@ -32,6 +48,163 @@ def _should_use_separate_venvs(
     """Determine if we should use a shared apps_venv (separate from the daemon env)."""
     # Both desktop and wireless use a shared apps_venv for all apps
     return desktop_app_daemon or wireless_version
+
+
+def _get_repo_profiles_dir() -> Path | None:
+    """Return the local workspace profiles directory when available."""
+    explicit = os.environ.get("REACHY_MINI_PROFILES_DIR")
+    if explicit:
+        candidate = Path(explicit).expanduser().resolve()
+        if candidate.exists():
+            return candidate
+
+    try:
+        repo_root = Path(__file__).resolve().parents[4]
+    except IndexError:
+        return None
+
+    candidate = repo_root / "profiles"
+    if candidate.exists():
+        return candidate
+
+    return None
+
+
+def _load_pyproject(project_dir: Path) -> dict[str, Any] | None:
+    """Load pyproject.toml for a local app project."""
+    pyproject_path = project_dir / "pyproject.toml"
+    if not pyproject_path.exists():
+        return None
+
+    try:
+        with pyproject_path.open("rb") as f:
+            data = tomllib.load(f)
+        if isinstance(data, dict):
+            return data
+    except Exception as e:
+        logging.getLogger("reachy_mini.apps").warning(
+            "Could not parse pyproject for local app '%s': %s",
+            project_dir.name,
+            e,
+        )
+
+    return None
+
+
+def _get_local_custom_app_url_from_project_file(
+    project_dir: Path,
+    package_name: str,
+) -> str | None:
+    """Read custom_app_url directly from a local project's main.py."""
+    main_file = project_dir / package_name / "main.py"
+    if not main_file.exists():
+        return None
+
+    try:
+        content = main_file.read_text(encoding="utf-8")
+        pattern = r'custom_app_url\s*(?::\s*[^=]+)?\s*=\s*["\']([^"\']+)["\']'
+        match = re.search(pattern, content)
+        if match:
+            return match.group(1)
+    except Exception as e:
+        logging.getLogger("reachy_mini.apps").warning(
+            "Could not read custom_app_url from local app '%s': %s",
+            package_name,
+            e,
+        )
+
+    return None
+
+
+def _get_local_profile_spec(project_dir: Path) -> LocalProfileAppSpec | None:
+    """Build launch metadata for a local app project."""
+    pyproject = _load_pyproject(project_dir)
+    if not pyproject:
+        return None
+
+    project = pyproject.get("project")
+    if not isinstance(project, dict):
+        return None
+
+    app_name = str(project.get("name") or project_dir.name)
+    description = str(project.get("description") or "")
+
+    entry_points = project.get("entry-points")
+    reachy_entry_points: dict[str, str] = {}
+    if isinstance(entry_points, dict):
+        raw_group = entry_points.get("reachy_mini_apps")
+        if isinstance(raw_group, dict):
+            reachy_entry_points = {
+                str(name): str(target) for name, target in raw_group.items()
+            }
+
+    module_target = reachy_entry_points.get(app_name)
+    if module_target is None and len(reachy_entry_points) == 1:
+        module_target = next(iter(reachy_entry_points.values()))
+    if module_target is None:
+        module_target = f"{app_name}.main"
+
+    module_name = module_target.split(":", 1)[0]
+    custom_app_url = _get_local_custom_app_url_from_project_file(project_dir, app_name)
+
+    return LocalProfileAppSpec(
+        app_info=AppInfo(
+            name=app_name,
+            description=description,
+            source_kind=SourceKind.LOCAL,
+            extra={
+                "path": str(project_dir),
+                "module_name": module_name,
+                "custom_app_url": custom_app_url,
+                "author": "local profile",
+                "local_profile": True,
+                "cardData": {
+                    "title": app_name,
+                    "short_description": description,
+                },
+            },
+        ),
+        module_name=module_name,
+        working_dir=project_dir,
+    )
+
+
+def get_local_profile_app_spec(app_name: str) -> LocalProfileAppSpec | None:
+    """Return launch metadata for a named local app project."""
+    profiles_dir = _get_repo_profiles_dir()
+    if profiles_dir is None:
+        return None
+
+    direct_candidate = profiles_dir / app_name
+    if direct_candidate.exists():
+        spec = _get_local_profile_spec(direct_candidate)
+        if spec and spec.app_info.name == app_name:
+            return spec
+
+    for project_dir in profiles_dir.iterdir():
+        if not project_dir.is_dir():
+            continue
+        spec = _get_local_profile_spec(project_dir)
+        if spec and spec.app_info.name == app_name:
+            return spec
+
+    return None
+
+
+async def list_local_profile_apps() -> list[AppInfo]:
+    """List app projects found in the local workspace profiles/ directory."""
+    profiles_dir = _get_repo_profiles_dir()
+    if profiles_dir is None:
+        return []
+
+    apps: list[AppInfo] = []
+    for project_dir in sorted(profiles_dir.iterdir(), key=lambda p: p.name.lower()):
+        if not project_dir.is_dir():
+            continue
+        spec = _get_local_profile_spec(project_dir)
+        if spec is not None:
+            apps.append(spec.app_info)
+    return apps
 
 
 def _get_venv_parent_dir() -> Path:

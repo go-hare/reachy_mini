@@ -1,3 +1,5 @@
+import { getSimulationBackendLabel } from '../utils/simulationMode';
+
 /**
  * 🚀 Startup Stages Configuration
  *
@@ -34,7 +36,7 @@ export const STARTUP_STAGES = {
     progressMin: 50,
     progressMax: 70,
     isSimOnly: true,
-    logPatterns: ['simulation mode', 'reachy-mini-daemon', '--sim'],
+    logPatterns: ['simulation mode', 'reachy-mini-daemon', '--sim', '--mockup-sim'],
   },
 
   // ============================================
@@ -185,12 +187,15 @@ export function getStageDisplayText(stage, options = {}) {
         boldText: options.currentPart || 'scan',
       };
 
-    case 'starting_simulation':
+    case 'starting_simulation': {
+      const backendLabel = getSimulationBackendLabel();
+
       return {
-        title: stage.label,
-        subtitle: 'Starting simulation mode...',
-        boldText: 'simulation',
+        title: `Starting ${backendLabel}`,
+        subtitle: `Starting ${backendLabel} simulation...`,
+        boldText: backendLabel,
       };
+    }
 
     case 'connecting':
       return {

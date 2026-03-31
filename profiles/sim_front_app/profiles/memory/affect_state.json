@@ -1,21 +1,21 @@
 {
   "current_pad": {
-    "pleasure": -0.006969,
-    "arousal": 0.382092,
-    "dominance": 0.524151
+    "pleasure": -0.010101,
+    "arousal": 0.396856,
+    "dominance": 0.520256
   },
   "last_user_pad": {
     "pleasure": 0.0,
-    "arousal": -0.04,
-    "dominance": 0.0
+    "arousal": 0.03,
+    "dominance": -0.04
   },
   "last_delta_pad": {
-    "pleasure": 0.00132,
-    "arousal": -0.004893,
-    "dominance": 0.000936
+    "pleasure": -0.003132,
+    "arousal": 0.014764,
+    "dominance": -0.003895
   },
-  "vitality": 0.656297,
-  "pressure": -0.000845,
-  "turn_count": 204,
-  "updated_at": "2026-03-29T22:19:52"
+  "vitality": 0.655813,
+  "pressure": 0.007104,
+  "turn_count": 205,
+  "updated_at": "2026-03-31T10:40:08"
 }

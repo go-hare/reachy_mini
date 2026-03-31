@@ -6,10 +6,16 @@ import WifiOutlinedIcon from '@mui/icons-material/WifiOutlined';
 import ViewInArOutlinedIcon from '@mui/icons-material/ViewInArOutlined';
 import PlayArrowOutlinedIcon from '@mui/icons-material/PlayArrowOutlined';
 import CheckRoundedIcon from '@mui/icons-material/CheckRounded';
+import SmartToyOutlinedIcon from '@mui/icons-material/SmartToyOutlined';
 import useAppStore from '../../store/useAppStore';
 import { useRobotDiscovery } from '../../hooks/system';
 import { useConnection, ConnectionMode } from '../../hooks/useConnection';
 import { fetchWithTimeout, DAEMON_CONFIG } from '../../config/daemon';
+import {
+  getDefaultSimulationBackend,
+  getSimulationBackendLabel,
+  SIMULATION_BACKENDS,
+} from '../../utils/simulationMode';
 import reachyBuste from '../../assets/reachy-buste.png';
 
 // LocalStorage key for persisting last connection mode
@@ -45,7 +51,7 @@ function ConnectionCard({
         alignItems: 'center',
         justifyContent: 'center',
         gap: 0.5,
-        p: 2,
+        p: 1.25,
         borderRadius: '12px',
         border: '1px solid',
         borderColor: selected
@@ -62,8 +68,8 @@ function ConnectionCard({
         opacity: isAvailable ? 1 : 0.5,
         transition: 'all 0.2s ease',
         flex: 1,
-        minWidth: 110,
-        minHeight: 110,
+        minWidth: 0,
+        minHeight: 90,
         '&:hover':
           isClickable && !selected
             ? {
@@ -184,7 +190,7 @@ function ConnectionCard({
       {/* Icon */}
       <Icon
         sx={{
-          fontSize: 28,
+          fontSize: 26,
           color: selected
             ? 'primary.main'
             : isAvailable
@@ -200,7 +206,6 @@ function ConnectionCard({
       {/* Label */}
       <Typography
         sx={{
-          fontSize: 13,
           fontWeight: selected ? 600 : 500,
           color: selected
             ? 'primary.main'
@@ -213,6 +218,7 @@ function ConnectionCard({
                 : '#999',
           textAlign: 'center',
           lineHeight: 1.2,
+          fontSize: 11.5,
         }}
       >
         {label}
@@ -223,7 +229,7 @@ function ConnectionCard({
         <Typography
           title={fullSubtitle || undefined}
           sx={{
-            fontSize: 10,
+            fontSize: 9,
             fontWeight: 400,
             color: darkMode ? '#666' : '#999',
             textAlign: 'center',
@@ -256,6 +262,10 @@ export default function FindingRobotView() {
   const [dots, setDots] = useState('');
   const [externalDaemonAvailable, setExternalDaemonAvailable] = useState(false);
   const hasRestoredFromStorage = useRef(false);
+  const simulationBackend = getDefaultSimulationBackend();
+  const simulationLabel = getSimulationBackendLabel(simulationBackend);
+  const desktopPetBackend = SIMULATION_BACKENDS.MOCKUP;
+  const desktopPetLabel = getSimulationBackendLabel(desktopPetBackend);
 
   // Block interactions during connection state changes
   const isBusy = isConnecting || isDisconnecting;
@@ -314,7 +324,8 @@ export default function FindingRobotView() {
         const isAvailable =
           (savedMode === ConnectionMode.USB && usbRobot.available) ||
           (savedMode === ConnectionMode.WIFI && wifiRobots.available) ||
-          (savedMode === ConnectionMode.SIMULATION && !usbRobot.available);
+          savedMode === ConnectionMode.SIMULATION ||
+          savedMode === ConnectionMode.DESKTOP_PET;
 
         if (isAvailable) {
           setSelectedMode(savedMode);
@@ -386,16 +397,28 @@ export default function FindingRobotView() {
         await connect(ConnectionMode.WIFI, { host: wifiRobots.selectedRobot?.displayHost });
         break;
       case ConnectionMode.SIMULATION:
-        await connect(ConnectionMode.SIMULATION);
+        await connect(ConnectionMode.SIMULATION, { backend: simulationBackend });
+        break;
+      case ConnectionMode.DESKTOP_PET:
+        await connect(ConnectionMode.DESKTOP_PET, { backend: desktopPetBackend });
         break;
     }
-  }, [selectedMode, isBusy, usbRobot, wifiRobots, connect]);
+  }, [
+    selectedMode,
+    isBusy,
+    usbRobot,
+    wifiRobots,
+    connect,
+    simulationBackend,
+    desktopPetBackend,
+  ]);
 
   const canStart =
     selectedMode &&
     ((selectedMode === ConnectionMode.USB && usbRobot.available) ||
       (selectedMode === ConnectionMode.WIFI && wifiRobots.available && wifiRobots.selectedRobot) ||
-      selectedMode === ConnectionMode.SIMULATION);
+      selectedMode === ConnectionMode.SIMULATION ||
+      selectedMode === ConnectionMode.DESKTOP_PET);
 
   return (
     <Box
@@ -526,14 +549,14 @@ export default function FindingRobotView() {
           </Box>
         )}
 
-        {/* Connection options - 3 cards */}
+        {/* Connection options - 4 cards */}
         <Box
           sx={{
-            display: 'flex',
-            justifyContent: 'center',
-            gap: 1.5,
+            display: 'grid',
+            gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
+            gap: 0.75,
             width: '100%',
-            maxWidth: 380,
+            maxWidth: 440,
             mb: 2.5,
           }}
         >
@@ -571,11 +594,24 @@ export default function FindingRobotView() {
           <ConnectionCard
             icon={ViewInArOutlinedIcon}
             label="Simulation"
-            subtitle="Beta"
+            subtitle={simulationLabel}
             available={true}
             alwaysAvailable={true}
             selected={selectedMode === ConnectionMode.SIMULATION}
             onClick={() => handleSelectMode(ConnectionMode.SIMULATION)}
+            disabled={isBusy}
+            darkMode={darkMode}
+          />
+
+          <ConnectionCard
+            icon={SmartToyOutlinedIcon}
+            label="Pet Mode"
+            subtitle={desktopPetLabel}
+            available={true}
+            alwaysAvailable={true}
+            betaTag={true}
+            selected={selectedMode === ConnectionMode.DESKTOP_PET}
+            onClick={() => handleSelectMode(ConnectionMode.DESKTOP_PET)}
             disabled={isBusy}
             darkMode={darkMode}
           />

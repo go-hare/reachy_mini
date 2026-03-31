@@ -89,6 +89,7 @@ export const robotInitialState = {
 
   // 🌐 Connection mode (USB vs WiFi vs Simulation)
   connectionMode: null,
+  connectionVariant: null,
   remoteHost: null,
 
   // 🚀 Centralized robot state (streamed by useRobotStateWebSocket at 20Hz)
@@ -282,6 +283,7 @@ export const createRobotSlice = (set, get) => ({
 
   // 🌐 Connection mode setters
   setConnectionMode: mode => set({ connectionMode: mode }),
+  setConnectionVariant: variant => set({ connectionVariant: variant }),
   setRemoteHost: host => set({ remoteHost: host }),
 
   isWifiMode: () => get().connectionMode === 'wifi',
@@ -305,6 +307,7 @@ export const createRobotSlice = (set, get) => ({
       ...buildDerivedState(ROBOT_STATUS.DISCONNECTED),
       // Connection
       connectionMode: null,
+      connectionVariant: null,
       remoteHost: null,
       isUsbConnected: false,
       usbPortName: null,
@@ -319,11 +322,12 @@ export const createRobotSlice = (set, get) => ({
   },
 
   startConnection: (mode, options = {}) => {
-    const { portName, remoteHost } = options;
+    const { portName, remoteHost, connectionVariant } = options;
     logConnect(mode, options);
 
     set({
       connectionMode: mode,
+      connectionVariant: connectionVariant || null,
       remoteHost: remoteHost || null,
       isUsbConnected: mode !== 'wifi',
       usbPortName: portName || null,

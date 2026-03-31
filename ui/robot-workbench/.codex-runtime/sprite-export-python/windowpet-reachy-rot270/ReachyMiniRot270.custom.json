@@ -1,0 +1,43 @@
+{
+  "name": "ReachyMiniRot270",
+  "imageSrc": "D:\\work\\py\\reachy_mini\\ui\\robot-workbench\\.codex-runtime\\sprite-export-python\\windowpet-reachy-rot270\\ReachyMiniRot270.png",
+  "frameSize": 128,
+  "states": {
+    "idle": {
+      "start": 1,
+      "end": 1
+    },
+    "walk": {
+      "start": 9,
+      "end": 12
+    },
+    "sit": {
+      "start": 17,
+      "end": 17
+    },
+    "greet": {
+      "start": 25,
+      "end": 28
+    },
+    "jump": {
+      "start": 33,
+      "end": 33
+    },
+    "fall": {
+      "start": 41,
+      "end": 43
+    },
+    "drag": {
+      "start": 49,
+      "end": 49
+    },
+    "crawl": {
+      "start": 57,
+      "end": 64
+    },
+    "climb": {
+      "start": 65,
+      "end": 72
+    }
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "frames": [
+    {
+      "id": "idle",
+      "fileName": "idle.png",
+      "size": [
+        1024,
+        1024
+      ]
+    },
+    {
+      "id": "listen",
+      "fileName": "listen.png",
+      "size": [
+        1024,
+        1024
+      ]
+    },
+    {
+      "id": "think",
+      "fileName": "think.png",
+      "size": [
+        1024,
+        1024
+      ]
+    },
+    {
+      "id": "speak",
+      "fileName": "speak.png",
+      "size": [
+        1024,
+        1024
+      ]
+    },
+    {
+      "id": "sleep",
+      "fileName": "sleep.png",
+      "size": [
+        1024,
+        1024
+      ]
+    },
+    {
+      "id": "drag",
+      "fileName": "drag.png",
+      "size": [
+        1024,
+        1024
+      ]
+    }
+  ]
+}

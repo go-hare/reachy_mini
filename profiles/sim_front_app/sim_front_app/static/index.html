@@ -3,14 +3,14 @@
 
 <head>
     <meta charset="UTF-8">
-    <title>Sim Front App settings</title>
+    <title>Reachy Mini Desktop Pet</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <link rel="stylesheet" href="/static/style.css?v=20260329-vision-overlay-10">
+    <link rel="stylesheet" href="/static/style.css?v=20260331-desktop-pet-3">
 </head>
 
 <body>
-    <div class="shell">
-        <section class="hero card">
+    <div class="shell" id="app-shell">
+        <section class="hero card" id="hero-card">
             <div>
                 <p class="eyebrow">Reachy Mini app</p>
                 <h1>Sim Front App</h1>
@@ -22,11 +22,63 @@
             </div>
         </section>
 
-        <section class="layout">
-            <div class="card chat-card">
+        <section class="layout" id="app-layout">
+            <div class="pet-mode-stack" id="pet-mode-stack" hidden>
+                <section class="card pet-stage-card" id="pet-stage-card" data-tauri-drag-region>
+                    <div class="pet-stage-top" data-tauri-drag-region>
+                        <div>
+                            <p class="eyebrow">Desktop Pet</p>
+                            <h2 class="pet-title">Reachy Mini</h2>
+                        </div>
+                        <div class="pet-chip-row">
+                            <span class="pet-chip" id="pet-runtime-chip" data-state="starting">Runtime</span>
+                            <span class="pet-chip" id="pet-attention-chip" data-state="front">正前方</span>
+                        </div>
+                    </div>
+                    <div class="pet-stage" data-tauri-drag-region>
+                        <div class="pet-stage-glow"></div>
+                        <div class="pet-speech-bubble" id="pet-speech-bubble">我已经在桌宠模式里待命了。</div>
+                        <div class="pet-figure" id="pet-figure" data-pose="sleep" data-tauri-drag-region>
+                            <img id="pet-sprite" src="/static/assets/desktop-pet/sleep.png?v=20260331-desktop-pet-3"
+                                alt="Reachy Mini desktop pet">
+                        </div>
+                        <div class="pet-stage-shadow"></div>
+                    </div>
+                    <div class="pet-caption">
+                        <div>
+                            <div class="pet-state-label" id="pet-state-label">连接中</div>
+                            <p class="pet-state-copy" id="pet-state-copy">桌宠窗口正在等待 runtime 启动。</p>
+                        </div>
+                        <button type="button" class="secondary-button pet-focus-button" id="pet-focus-input">去聊天</button>
+                    </div>
+                </section>
+
+                <section class="card pet-diagnostics-card">
+                    <div class="pet-diagnostics-grid">
+                        <div>
+                            <span>连接</span>
+                            <strong id="pet-connection-text">等待连接</strong>
+                        </div>
+                        <div>
+                            <span>语音</span>
+                            <strong id="pet-voice-text">麦克风待命</strong>
+                        </div>
+                        <div>
+                            <span>检测</span>
+                            <strong id="pet-vision-text">等待检测链事件</strong>
+                        </div>
+                        <div>
+                            <span>更新</span>
+                            <strong id="pet-last-updated">尚未收到</strong>
+                        </div>
+                    </div>
+                </section>
+            </div>
+
+            <div class="card chat-card" id="chat-card">
                 <div class="chat-header">
-                    <h2>Chat</h2>
-                    <p>文本输入和浏览器麦克风转写都会按当前 app 内部的 <code>profiles/</code> 文件来驱动前台和内核。</p>
+                    <h2 id="chat-title">Chat</h2>
+                    <p id="chat-subtitle">文本输入和浏览器麦克风转写都会按当前 app 内部的 <code>profiles/</code> 文件来驱动前台和内核。</p>
                 </div>
 
                 <div class="chat-log" id="chat-log">
@@ -52,7 +104,7 @@
                 </form>
             </div>
 
-            <div class="side-panel">
+            <div class="side-panel" id="side-panel">
                 <div class="card camera-card">
                     <h2>Browser Camera</h2>
                     <p>这里预览的是这台 Mac 当前浏览器授权后的本机摄像头，不走 MuJoCo 仿真相机。</p>
@@ -126,7 +178,7 @@
         </section>
     </div>
 
-    <script src="/static/main.js?v=20260329-vision-overlay-10"></script>
+    <script src="/static/main.js?v=20260331-desktop-pet-3"></script>
 </body>
 
 </html>

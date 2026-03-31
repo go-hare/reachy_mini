@@ -30,7 +30,11 @@ import {
   getWsBaseUrl,
   DAEMON_CONFIG,
 } from '../config/daemon';
-import { enableSimulationMode } from '../utils/simulationMode';
+import {
+  enableSimulationMode,
+  getDefaultSimulationBackend,
+  setSimulationBackend,
+} from '../utils/simulationMode';
 import { telemetry } from '../utils/telemetry';
 
 /**
@@ -40,6 +44,7 @@ export const ConnectionMode = {
   USB: 'usb',
   WIFI: 'wifi',
   SIMULATION: 'simulation',
+  DESKTOP_PET: 'desktop-pet',
   EXTERNAL: 'external',
 };
 
@@ -82,7 +87,10 @@ export function useConnection() {
           if (!options.portName) {
             return false;
           }
-          startConnection('usb', { portName: options.portName });
+          startConnection('usb', {
+            portName: options.portName,
+            connectionVariant: ConnectionMode.USB,
+          });
           break;
 
         case ConnectionMode.WIFI:
@@ -93,12 +101,28 @@ export function useConnection() {
           try {
             await invoke('set_local_proxy_target', { host: options.host });
           } catch (e) {}
-          startConnection('wifi', { remoteHost: options.host });
+          startConnection('wifi', {
+            remoteHost: options.host,
+            connectionVariant: ConnectionMode.WIFI,
+          });
           break;
 
         case ConnectionMode.SIMULATION:
+          setSimulationBackend(options.backend || getDefaultSimulationBackend());
           enableSimulationMode();
-          startConnection('simulation', { portName: 'simulation' });
+          startConnection('simulation', {
+            portName: 'simulation',
+            connectionVariant: ConnectionMode.SIMULATION,
+          });
+          break;
+
+        case ConnectionMode.DESKTOP_PET:
+          setSimulationBackend(options.backend || 'mockup');
+          enableSimulationMode();
+          startConnection('simulation', {
+            portName: 'simulation',
+            connectionVariant: ConnectionMode.DESKTOP_PET,
+          });
           break;
 
         case ConnectionMode.EXTERNAL:
@@ -106,7 +130,7 @@ export function useConnection() {
           try {
             await invoke('set_daemon_external_mode', { external: true });
           } catch (e) {}
-          startConnection('external');
+          startConnection('external', { connectionVariant: ConnectionMode.EXTERNAL });
           break;
 
         default:

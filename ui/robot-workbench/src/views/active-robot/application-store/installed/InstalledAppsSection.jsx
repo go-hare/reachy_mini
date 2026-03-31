@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
   Box,
   Typography,
@@ -20,7 +20,13 @@ import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
 import ReachiesCarousel from '@components/ReachiesCarousel';
 import { getDaemonHostname } from '../../../../config/daemon';
+import { openAppWindow } from '../../../../utils/windowManager';
 import useAppStore from '../../../../store/useAppStore';
+import {
+  DESKTOP_PET_DISPLAY_NAME,
+  isDesktopPetLaunch,
+  isDesktopPetVariant,
+} from '../../../../utils/desktopPet';
 
 // ✅ Timeout for app to transition from "starting" to "running"
 const APP_STARTING_TIMEOUT = 60000; // 60 seconds max for app to fully start
@@ -232,6 +238,22 @@ function OpenAppButton({
   onTimeout,
 }) {
   const [hasTimedOut, setHasTimedOut] = useState(false);
+  const connectionVariant = useAppStore(state => state.connectionVariant);
+  const isDesktopPetAppLaunch = isDesktopPetLaunch(connectionVariant, appName);
+  const resolveOpenUrl = useCallback(() => {
+    if (!customAppUrl) {
+      return null;
+    }
+
+    const url = new URL(customAppUrl);
+    url.hostname = getDaemonHostname();
+
+    if (isDesktopPetAppLaunch) {
+      url.searchParams.set('view', 'desktop-pet');
+    }
+
+    return url.toString();
+  }, [customAppUrl, isDesktopPetAppLaunch]);
 
   // Handle timeout - mark as timed out and notify parent
   const handleTimeout = useCallback(() => {
@@ -261,17 +283,41 @@ function OpenAppButton({
   useEffect(() => {
     if (!isAccessible || !customAppUrl) return;
     const store = useAppStore.getState();
-    // Don't auto-open if user dismissed, or if already embedded
-    if (store.embeddedAppDismissed) return;
-    if (store.rightPanelView === 'embedded-app') return;
-    try {
-      const url = new URL(customAppUrl);
-      url.hostname = getDaemonHostname();
-      store.openEmbeddedApp(url.toString());
-    } catch {
-      // URL parsing failed — user can still open manually
-    }
-  }, [isAccessible, customAppUrl]);
+    const openSurface = async () => {
+      try {
+        const resolvedUrl = resolveOpenUrl();
+        if (!resolvedUrl) {
+          return;
+        }
+
+        if (isDesktopPetAppLaunch) {
+          store.closeEmbeddedApp();
+          await openAppWindow(appName, resolvedUrl, {
+            width: 400,
+            height: 620,
+            center: false,
+            alwaysOnTop: true,
+            resizable: false,
+            decorations: false,
+            transparent: true,
+            skipTaskbar: true,
+            shadow: false,
+            anchor: 'bottom-right',
+          });
+          return;
+        }
+
+        // Don't auto-open if user dismissed, or if already embedded
+        if (store.embeddedAppDismissed) return;
+        if (store.rightPanelView === 'embedded-app') return;
+        store.openEmbeddedApp(resolvedUrl);
+      } catch {
+        // URL parsing failed — user can still open manually
+      }
+    };
+
+    openSurface();
+  }, [isAccessible, customAppUrl, isDesktopPetAppLaunch, appName, resolveOpenUrl]);
 
   // Don't show button if no URL
   if (!customAppUrl) return null;
@@ -289,9 +335,28 @@ function OpenAppButton({
   const handleClick = async e => {
     e.stopPropagation();
     try {
-      const url = new URL(customAppUrl);
-      url.hostname = getDaemonHostname();
-      useAppStore.getState().openEmbeddedApp(url.toString());
+      const resolvedUrl = resolveOpenUrl();
+      if (!resolvedUrl) {
+        return;
+      }
+      const store = useAppStore.getState();
+      if (isDesktopPetAppLaunch) {
+        store.closeEmbeddedApp();
+        await openAppWindow(appName, resolvedUrl, {
+          width: 400,
+          height: 620,
+          center: false,
+          alwaysOnTop: true,
+          resizable: false,
+          decorations: false,
+          transparent: true,
+          skipTaskbar: true,
+          shadow: false,
+          anchor: 'bottom-right',
+        });
+        return;
+      }
+      store.openEmbeddedApp(resolvedUrl);
     } catch (err) {
       console.error('Failed to open app web interface:', err);
     }
@@ -302,7 +367,13 @@ function OpenAppButton({
 
   return (
     <Tooltip
-      title={isGhostMode ? 'Waiting for app to be ready...' : 'Open web interface'}
+      title={
+        isGhostMode
+          ? 'Waiting for app to be ready...'
+          : isDesktopPetAppLaunch
+            ? 'Open desktop pet window'
+            : 'Open web interface'
+      }
       arrow
       placement="top"
     >
@@ -381,7 +452,19 @@ export default function InstalledAppsSection({
   stopCurrentApp,
 }) {
   const { robotStatus } = useAppStore();
+  const connectionVariant = useAppStore(state => state.connectionVariant);
   const isSleeping = robotStatus === 'sleeping';
+  const sortedInstalledApps = useMemo(() => {
+    if (!isDesktopPetVariant(connectionVariant)) {
+      return installedApps;
+    }
+
+    return [...installedApps].sort((left, right) => {
+      const leftPriority = isDesktopPetLaunch(connectionVariant, left.name) ? 0 : 1;
+      const rightPriority = isDesktopPetLaunch(connectionVariant, right.name) ? 0 : 1;
+      return leftPriority - rightPriority;
+    });
+  }, [installedApps, connectionVariant]);
 
   const [menuAnchorEl, setMenuAnchorEl] = useState(null);
   const [menuAppName, setMenuAppName] = useState(null);
@@ -400,7 +483,7 @@ export default function InstalledAppsSection({
   return (
     <Box sx={{ px: 3, mb: 0 }}>
       {/* No apps installed yet - Full height, centered */}
-      {installedApps.length === 0 && (
+      {sortedInstalledApps.length === 0 && (
         <Box
           sx={{
             display: 'flex',
@@ -446,7 +529,7 @@ export default function InstalledAppsSection({
               textAlign: 'center',
             }}
           >
-            No local apps installed yet
+            No local apps or profiles found yet
           </Typography>
           <Typography
             sx={{
@@ -458,13 +541,13 @@ export default function InstalledAppsSection({
               maxWidth: 220,
             }}
           >
-            Local applications installed by your Reachy runtime will appear here.
+            Desktop-detected apps and local profiles from your workspace will appear here.
           </Typography>
         </Box>
       )}
 
       {/* Installed Apps List */}
-      {installedApps.length > 0 && (
+      {sortedInstalledApps.length > 0 && (
         <>
           <Box
             sx={{
@@ -481,7 +564,9 @@ export default function InstalledAppsSection({
               p: 2,
             }}
           >
-            {installedApps.map(app => {
+            {sortedInstalledApps.map(app => {
+              const isLocalProfile = app.source_kind === 'local';
+              const isDesktopPetAppLaunch = isDesktopPetLaunch(connectionVariant, app.name);
               const isRemoving = isJobRunning(app.name, 'remove');
 
               const isThisAppCurrent =
@@ -495,7 +580,13 @@ export default function InstalledAppsSection({
               const isStarting = startingApp === app.name || isAppStarting;
               const isStartingOrRunning = isStarting || isCurrentlyRunning;
 
-              const author = app.extra?.id?.split('/')?.[0] || app.extra?.author || null;
+              const author =
+                (isLocalProfile ? 'local profile' : null) ||
+                app.extra?.id?.split('/')?.[0] ||
+                app.extra?.author ||
+                null;
+              const displayName = isDesktopPetAppLaunch ? DESKTOP_PET_DISPLAY_NAME : app.name;
+              const displayAuthor = isDesktopPetAppLaunch ? 'desktop pet' : author;
               const isMenuOpen = menuAppName === app.name;
 
               return (
@@ -613,7 +704,7 @@ export default function InstalledAppsSection({
                               minWidth: 0,
                             }}
                           >
-                            {app.name}
+                            {displayName}
                           </Typography>
 
                           {hasAppError && (
@@ -675,7 +766,7 @@ export default function InstalledAppsSection({
                               </Typography>
                             );
                           }
-                          if (author) {
+                          if (displayAuthor) {
                             return (
                               <Typography
                                 sx={{
@@ -686,7 +777,7 @@ export default function InstalledAppsSection({
                                   letterSpacing: '0.2px',
                                 }}
                               >
-                                {author}
+                                {displayAuthor}
                               </Typography>
                             );
                           }
@@ -705,7 +796,7 @@ export default function InstalledAppsSection({
                         sx={{
                           width: 28,
                           height: 28,
-                          display: isMenuOpen ? 'inline-flex' : 'none',
+                          display: isLocalProfile ? 'none' : isMenuOpen ? 'inline-flex' : 'none',
                           color: darkMode ? '#888' : '#999',
                           transition: 'color 0.15s ease, background-color 0.15s ease',
                           '&:hover': {
@@ -719,6 +810,9 @@ export default function InstalledAppsSection({
 
                       {/* Update badge */}
                       {(() => {
+                        if (isLocalProfile) {
+                          return null;
+                        }
                         const isUpdating = isJobRunning(app.name, 'update');
 
                         if (isUpdating) {
@@ -876,7 +970,7 @@ export default function InstalledAppsSection({
                           disabled={isBusy || isRemoving}
                           onClick={e => {
                             e.stopPropagation();
-                            handleStartApp(app.name);
+                            handleStartApp(app);
                           }}
                           endIcon={<PlayArrowOutlinedIcon sx={{ fontSize: 13 }} />}
                           sx={{
@@ -939,7 +1033,7 @@ export default function InstalledAppsSection({
               }}
             >
               {(() => {
-                const menuApp = installedApps.find(a => a.name === menuAppName);
+                const menuApp = sortedInstalledApps.find(a => a.name === menuAppName);
                 if (!menuApp) return null;
 
                 const isRemoving = isJobRunning(menuAppName, 'remove');
@@ -947,6 +1041,11 @@ export default function InstalledAppsSection({
                   currentApp && currentApp.info && currentApp.info.name === menuAppName;
                 const appState = isThisAppCurrent && currentApp.state ? currentApp.state : null;
                 const isCurrentlyRunning = appState === 'running';
+                const isLocalProfile = menuApp?.source_kind === 'local';
+
+                if (isLocalProfile) {
+                  return null;
+                }
 
                 return (
                   <MenuItem
@@ -983,7 +1082,6 @@ export default function InstalledAppsSection({
                 );
               })()}
             </Menu>
-
           </Box>
         </>
       )}

@@ -1,0 +1,20 @@
+{
+  "frames": [
+    {
+      "id": "idle",
+      "fileName": "idle.png",
+      "size": [
+        512,
+        512
+      ],
+      "contentSize": [
+        328,
+        266
+      ],
+      "offset": [
+        92,
+        123
+      ]
+    }
+  ]
+}

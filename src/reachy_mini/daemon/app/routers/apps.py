@@ -118,6 +118,18 @@ async def start_app(
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.post("/start-app")
+async def start_app_from_info(
+    app_info: AppInfo,
+    app_manager: "AppManager" = Depends(get_app_manager),
+) -> AppStatus:
+    """Start an app from full metadata, preserving local profile info when needed."""
+    try:
+        return await app_manager.start_app(app_info.name, app_info=app_info)
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.post("/restart-current-app")
 async def restart_app(
     app_manager: "AppManager" = Depends(get_app_manager),

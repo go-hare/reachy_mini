@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import { useMemo } from 'react';
 import ReactDOM from 'react-dom/client';
 import { ThemeProvider, createTheme, CssBaseline } from '@mui/material';
 
@@ -7,9 +7,13 @@ import { ThemeProvider, createTheme, CssBaseline } from '@mui/material';
 // /dev path → DevPlayground
 // Otherwise → Normal Tauri App
 const isWebMode = import.meta.env.VITE_WEB_MODE === 'true' || !window.__TAURI__;
-const isDevPath = window.location.pathname === '/dev' || window.location.hash === '#dev';
-const isJournalWindow = window.location.hash === '#journal';
+const hash = window.location.hash || '';
+const isDevPath = window.location.pathname === '/dev' || hash === '#dev';
+const isSpriteExportPath =
+  window.location.pathname === '/sprite-export' || hash === '#sprite-export';
+const isJournalWindow = hash === '#journal';
 const DEV_MODE = isDevPath && !isWebMode;
+const SPRITE_EXPORT_MODE = isSpriteExportPath;
 
 // Mock Tauri APIs if not in Tauri (browser/web mode)
 if (typeof window !== 'undefined' && !window.__TAURI__) {
@@ -34,6 +38,7 @@ if (typeof window !== 'undefined' && !window.__TAURI__) {
 
 import App from './components/App';
 import DevPlayground from './components/DevPlayground';
+import SpriteExporter from './components/SpriteExporter';
 import WebApp from './components/WebApp';
 import JournalWindow from './views/bluetooth-support/JournalWindow';
 import ErrorBoundary from './components/ErrorBoundary';
@@ -212,6 +217,8 @@ function ThemeWrapper({ children }) {
 // Priority: Journal > WebMode > DevMode > Normal App
 const RootComponent = isJournalWindow
   ? JournalWindow
+  : SPRITE_EXPORT_MODE
+    ? SpriteExporter
   : isWebMode
     ? WebApp
     : DEV_MODE

@@ -1,0 +1,52 @@
+{
+  "frames": [
+    {
+      "id": "idle",
+      "fileName": "idle.png",
+      "size": [
+        328,
+        266
+      ]
+    },
+    {
+      "id": "listen",
+      "fileName": "listen.png",
+      "size": [
+        309,
+        268
+      ]
+    },
+    {
+      "id": "think",
+      "fileName": "think.png",
+      "size": [
+        309,
+        269
+      ]
+    },
+    {
+      "id": "speak",
+      "fileName": "speak.png",
+      "size": [
+        333,
+        265
+      ]
+    },
+    {
+      "id": "sleep",
+      "fileName": "sleep.png",
+      "size": [
+        376,
+        261
+      ]
+    },
+    {
+      "id": "drag",
+      "fileName": "drag.png",
+      "size": [
+        334,
+        270
+      ]
+    }
+  ]
+}

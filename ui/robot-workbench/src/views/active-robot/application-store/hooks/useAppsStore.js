@@ -10,6 +10,9 @@ import { closeAppWindow } from '../../../../utils/windowManager';
 
 const APP_ERROR_DISPLAY_DURATION_MS = 10_000;
 
+const isWorkspaceProfileAppInfo = appInfo =>
+  appInfo?.source_kind === 'local' || appInfo?.extra?.local_profile === true;
+
 /**
  * ✅ DRY: Helper to handle permission errors consistently
  */
@@ -56,7 +59,7 @@ export const createJob = (jobId, jobType, appName, appInfo, setActiveJobs, start
  * ✅ REFACTORED: Centralized hook for apps management using global store
  *
  * This hook manages:
- * - Fetching locally installed apps from the daemon
+ * - Fetching workspace profile apps from the daemon
  * - Storing apps in global store (shared across all components)
  * - Polling current app status
  * - Job management (install/remove)
@@ -99,8 +102,8 @@ export function useAppsStore(isActive) {
   const CACHE_DURATION = 24 * 60 * 60 * 1000; // 24 hours
 
   /**
-   * Fetch locally installed apps from the daemon.
-   * The desktop shell now treats daemon-installed apps as the source of truth.
+   * Fetch workspace profile apps from the daemon.
+   * The desktop shell now treats local profiles in this repository as the source of truth.
    * Uses cache if available and valid (1 day)
    * @param {boolean} forceRefresh - Force refresh even if cache is valid
    */
@@ -178,6 +181,11 @@ export function useAppsStore(isActive) {
   startJobPollingRef.current = startJobPolling;
 
   // Initialize app updates hook
+  const updateEligibleApps = useMemo(
+    () => installedApps.filter(app => app.source_kind === 'installed'),
+    [installedApps]
+  );
+
   const {
     checkForUpdates,
     hasUpdate,
@@ -185,7 +193,7 @@ export function useAppsStore(isActive) {
     triggerUpdate,
     isCheckingUpdates,
     hasCheckedOnce,
-  } = useAppUpdates(isActive, installedApps, setActiveJobs, startJobPollingRef);
+  } = useAppUpdates(isActive, updateEligibleApps, setActiveJobs, startJobPollingRef);
 
   /**
    * Fetch current app status
@@ -212,6 +220,17 @@ export function useAppsStore(isActive) {
       // AppState enum: "starting" | "running" | "done" | "stopping" | "error"
 
       if (status && status.info && status.state) {
+        if (!isWorkspaceProfileAppInfo(status.info)) {
+          setCurrentApp(null);
+
+          if (store.isAppRunning && store.busyReason === 'app-running') {
+            store.closeEmbeddedApp();
+            store.unlockApp();
+          }
+
+          return null;
+        }
+
         setCurrentApp(status);
 
         const appState = status.state;
@@ -409,7 +428,19 @@ export function useAppsStore(isActive) {
    * Launch an app
    */
   const startApp = useCallback(
-    async appName => {
+    async appOrName => {
+      const appInfo =
+        typeof appOrName === 'string'
+          ? useAppStore
+              .getState()
+              .availableApps.find(app => app.name === appOrName) || {
+                name: appOrName,
+                source_kind: 'local',
+                extra: { local_profile: true },
+              }
+          : appOrName;
+      const appName = appInfo.name;
+
       // Cancel any lingering error-display timer from a previous crash
       if (errorClearTimerRef.current) {
         clearTimeout(errorClearTimerRef.current);
@@ -432,8 +463,12 @@ export function useAppsStore(isActive) {
 
       try {
         const response = await fetchWithTimeout(
-          buildApiUrl(`/api/apps/start-app/${encodeURIComponent(appName)}`),
-          { method: 'POST' },
+          buildApiUrl('/api/apps/start-app'),
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(appInfo),
+          },
           DAEMON_CONFIG.TIMEOUTS.APP_START,
           { label: `Start ${appName}` }
         );

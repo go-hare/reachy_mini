@@ -114,18 +114,33 @@ pub struct DaemonState {
 }
 
 pub const MAX_LOGS: usize = 50;
+const SIMULATION_BACKEND_MUJOCO: &str = "mujoco";
+const SIMULATION_BACKEND_MOCKUP: &str = "mockup";
 
-fn resolve_reachy_mini_daemon_program() -> String {
-    if let Ok(explicit) = std::env::var("REACHY_MINI_DAEMON_PATH") {
+fn normalized_simulation_backend(simulation_backend: Option<&str>) -> &str {
+    match simulation_backend {
+        Some(SIMULATION_BACKEND_MOCKUP) => SIMULATION_BACKEND_MOCKUP,
+        _ => SIMULATION_BACKEND_MUJOCO,
+    }
+}
+
+pub fn simulation_backend_flag(simulation_backend: Option<&str>) -> &'static str {
+    match normalized_simulation_backend(simulation_backend) {
+        SIMULATION_BACKEND_MOCKUP => "--mockup-sim",
+        _ => "--sim",
+    }
+}
+
+fn resolve_program_from_path(
+    explicit_env_var: &str,
+    candidates: &[&str],
+    fallback: &str,
+) -> String {
+    if let Ok(explicit) = std::env::var(explicit_env_var) {
         if !explicit.trim().is_empty() {
             return explicit;
         }
     }
-
-    #[cfg(target_os = "windows")]
-    let candidates = ["reachy-mini-daemon.exe", "reachy-mini-daemon"];
-    #[cfg(not(target_os = "windows"))]
-    let candidates = ["reachy-mini-daemon"];
 
     if let Some(path_env) = std::env::var_os("PATH") {
         for dir in std::env::split_paths(&path_env) {
@@ -138,14 +153,53 @@ fn resolve_reachy_mini_daemon_program() -> String {
         }
     }
 
+    fallback.to_string()
+}
+
+fn resolve_reachy_mini_daemon_program() -> String {
     #[cfg(target_os = "windows")]
     {
-        "reachy-mini-daemon.exe".to_string()
+        resolve_program_from_path(
+            "REACHY_MINI_DAEMON_PATH",
+            &["reachy-mini-daemon.exe", "reachy-mini-daemon"],
+            "reachy-mini-daemon.exe",
+        )
     }
     #[cfg(not(target_os = "windows"))]
     {
-        "reachy-mini-daemon".to_string()
+        resolve_program_from_path(
+            "REACHY_MINI_DAEMON_PATH",
+            &["reachy-mini-daemon"],
+            "reachy-mini-daemon",
+        )
     }
+}
+
+#[cfg(target_os = "macos")]
+fn resolve_mjpython_program() -> String {
+    resolve_program_from_path("MJ_PYTHON_PATH", &["mjpython"], "mjpython")
+}
+
+fn build_daemon_command(sim_mode: bool, simulation_backend: Option<&str>) -> (String, Vec<String>) {
+    #[cfg(target_os = "macos")]
+    if sim_mode && normalized_simulation_backend(simulation_backend) == SIMULATION_BACKEND_MUJOCO {
+        return (
+            resolve_mjpython_program(),
+            vec![
+                "-m".to_string(),
+                DAEMON_PROCESS_PATTERN.to_string(),
+                "--desktop-app-daemon".to_string(),
+                simulation_backend_flag(simulation_backend).to_string(),
+            ],
+        );
+    }
+
+    let mut daemon_args = vec!["--desktop-app-daemon".to_string()];
+    if sim_mode {
+        daemon_args.push(simulation_backend_flag(simulation_backend).to_string());
+    }
+
+    (resolve_reachy_mini_daemon_program(), daemon_args)
 }
 
 // ============================================================================
@@ -502,6 +556,7 @@ pub fn spawn_and_monitor_sidecar(
     app_handle: tauri::AppHandle,
     state: &State<DaemonState>,
     sim_mode: bool,
+    simulation_backend: Option<&str>,
 ) -> Result<(), String> {
     use tauri_plugin_shell::ShellExt;
 
@@ -515,11 +570,7 @@ pub fn spawn_and_monitor_sidecar(
     }
     drop(process_lock);
 
-    let daemon_program = resolve_reachy_mini_daemon_program();
-    let mut daemon_args = Vec::new();
-    if sim_mode {
-        daemon_args.push("--sim".to_string());
-    }
+    let (daemon_program, daemon_args) = build_daemon_command(sim_mode, simulation_backend);
 
     log::info!(
         "[tauri] Launching daemon command: {} {}",

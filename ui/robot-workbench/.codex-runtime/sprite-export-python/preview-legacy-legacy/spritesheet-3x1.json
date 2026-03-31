@@ -1,0 +1,28 @@
+{
+  "frameSize": [
+    512,
+    512
+  ],
+  "columns": 3,
+  "rows": 1,
+  "frames": [
+    {
+      "id": "idle",
+      "fileName": "idle.png",
+      "frame": [
+        0,
+        0,
+        512,
+        512
+      ],
+      "contentSize": [
+        328,
+        266
+      ],
+      "offset": [
+        92,
+        123
+      ]
+    }
+  ]
+}

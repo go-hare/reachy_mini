@@ -9,7 +9,7 @@
  */
 
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
-import { getAllWindows } from '@tauri-apps/api/window';
+import { currentMonitor, getAllWindows } from '@tauri-apps/api/window';
 import { PhysicalPosition } from '@tauri-apps/api/dpi';
 import { invoke } from '@tauri-apps/api/core';
 import useAppStore from '../store/useAppStore';
@@ -20,6 +20,39 @@ const CASCADE_STEP = 20; // logical px offset per window
 // Module-level cache: label → WebviewWindow reference
 const windowRefs = new Map();
 let cascadeIndex = 0;
+
+async function placeWindow(win, options, offset) {
+  if (options.anchor === 'bottom-right') {
+    try {
+      const monitor = await currentMonitor();
+      const scaleFactor = monitor?.scaleFactor || (await win.scaleFactor());
+      const width = Math.round((options.width ?? 900) * scaleFactor);
+      const height = Math.round((options.height ?? 700) * scaleFactor);
+      const workArea = monitor?.workArea;
+
+      if (workArea) {
+        const margin = Math.round((options.margin ?? 24) * scaleFactor);
+        const x = workArea.position.x + workArea.size.width - width - margin;
+        const y = workArea.position.y + workArea.size.height - height - margin;
+        await win.setPosition(new PhysicalPosition(x, y));
+        return;
+      }
+    } catch {
+      // Fall through to cascade placement
+    }
+  }
+
+  if (offset > 0) {
+    try {
+      const factor = await win.scaleFactor();
+      const pos = await win.outerPosition();
+      const px = Math.round(offset * factor);
+      await win.setPosition(new PhysicalPosition(pos.x + px, pos.y + px));
+    } catch {
+      // Positioning is best-effort
+    }
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -152,27 +185,30 @@ export async function openAppWindow(appName, url, options = {}) {
       title: appName,
       width: options.width ?? 900,
       height: options.height ?? 700,
-      center: true,
-      resizable: true,
-      decorations: true,
-      focus: true,
+      center: options.center ?? true,
+      resizable: options.resizable ?? true,
+      decorations: options.decorations ?? true,
+      alwaysOnTop: options.alwaysOnTop ?? false,
+      transparent: options.transparent ?? false,
+      skipTaskbar: options.skipTaskbar ?? false,
+      shadow: options.shadow ?? true,
+      focus: options.focus ?? true,
     });
 
     windowRefs.set(label, win);
     cascadeIndex++;
 
     win.once('tauri://created', async () => {
-      // Shift from center so stacked windows fan out visibly
-      if (offset > 0) {
-        try {
-          const factor = await win.scaleFactor();
-          const pos = await win.outerPosition();
-          const px = Math.round(offset * factor);
-          await win.setPosition(new PhysicalPosition(pos.x + px, pos.y + px));
-        } catch {
-          // Positioning is best-effort
+      await placeWindow(win, options, offset);
+
+      try {
+        if (typeof options.skipTaskbar === 'boolean') {
+          await win.setSkipTaskbar(options.skipTaskbar);
         }
+      } catch {
+        // Skip-taskbar is best-effort
       }
+
       try {
         useAppStore.getState().addOpenWindow?.(label);
       } catch {

@@ -10,7 +10,12 @@ import {
   fetchWithTimeoutSkipInstall,
   buildApiUrl,
 } from '../../config/daemon';
-import { isSimulationMode, disableSimulationMode } from '../../utils/simulationMode';
+import {
+  isSimulationMode,
+  disableSimulationMode,
+  getSimulationBackend,
+  getSimulationBackendFlag,
+} from '../../utils/simulationMode';
 import { findErrorConfig, createErrorFromConfig } from '../../utils/hardwareErrors';
 import { useDaemonEventBus } from './useDaemonEventBus';
 import { handleDaemonError } from '../../utils/daemonErrorHandler';
@@ -54,7 +59,9 @@ export const useDaemon = () => {
   useEffect(() => {
     const unsubStartSuccess = eventBus.on('daemon:start:success', data => {
       if (data?.simMode) {
-        logger.info('Daemon started in simulation mode (--sim)');
+        logger.info(
+          `Daemon started in simulation mode (${getSimulationBackendFlag(data.simulationBackend)})`
+        );
       }
     });
 
@@ -455,11 +462,12 @@ export const useDaemon = () => {
       }
 
       const simMode = isSimulationMode();
+      const simulationBackend = simMode ? getSimulationBackend() : null;
       const { connectionMode } = useAppStore.getState();
 
-      invoke('start_daemon', { simMode, connectionMode })
+      invoke('start_daemon', { simMode, connectionMode, simulationBackend })
         .then(() => {
-          eventBus.emit('daemon:start:success', { existing: false, simMode });
+          eventBus.emit('daemon:start:success', { existing: false, simMode, simulationBackend });
         })
         .catch(e => {
           eventBus.emit('daemon:start:error', e);

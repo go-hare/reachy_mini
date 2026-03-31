@@ -170,7 +170,7 @@ export default function ApplicationsSection({
                 </Typography>
               )}
               <Tooltip
-                title="Locally installed apps on this robot. You can start, stop, and uninstall them from here."
+                title="Local apps and workspace profiles available to this desktop runtime. You can start and stop them from here."
                 arrow
                 placement="top"
               >
@@ -191,7 +191,7 @@ export default function ApplicationsSection({
                 fontWeight: 500,
               }}
             >
-              Local apps on this robot
+              Local apps and profiles in this workspace
             </Typography>
           </Box>
         </Box>
