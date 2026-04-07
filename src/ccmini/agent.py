@@ -49,6 +49,7 @@ from .attachments import (
 from .delegation.background import BackgroundAgentRunner, BackgroundResult
 from .commands import SlashCommandRegistry
 from .commands.builtin import register_builtin_commands, register_bundled_skills_as_commands
+from .embedded import HostEvent, HostToolResult
 from .kairos import (
     GateConfig,
     activate_kairos,
@@ -67,12 +68,17 @@ from .hooks.runner import HookRunner
 from .hooks import Hook, IdleAction, IdleHook, OnStreamEventHook, PostQueryHook, PreQueryHook
 from .messages import (
     CompletionEvent,
+    DocumentBlock,
     ErrorEvent,
+    ImageBlock,
     Message,
     StreamEvent,
+    TextBlock,
     TextEvent,
     ToolCallEvent,
     ToolResultBlock,
+    normalize_tool_result_content,
+    system_message,
     user_message,
 )
 from .delegation.tasks import TaskManager
@@ -84,9 +90,11 @@ from .ux import ScheduledTask, TaskScheduler
 from .session.store import SessionStore
 from .memory import ConsolidationAgent, JsonlMemoryStore, MemoryAdapter
 from .services import (
+    AwaySummaryManager,
     AutoDreamHook,
     ExtractMemoriesHook,
     MagicDocsHook,
+    PromptSuggestionConfig,
     PromptSuggestionHook,
     SessionMemoryHook,
     get_memory_dir,
@@ -226,6 +234,11 @@ class Agent:
         self._buddy_enabled: bool = True
         #: When ``None``, :func:`buddy.prompt.get_companion_intro_attachment` uses global ``companionMuted``.
         self._companion_muted: bool | None = None
+        self._working_directory: str = ""
+        self._custom_system_prompt: str | None = None
+        self._append_system_prompt: str | None = None
+        self._user_context: dict[str, str] = {}
+        self._system_context: dict[str, str] = {}
         self._session_store: SessionStore | None = None
         self._memory_store: JsonlMemoryStore | None = None
         self._memory_adapter: MemoryAdapter | None = None
@@ -281,6 +294,7 @@ class Agent:
         self._idle_event_queue: asyncio.Queue[IdleAction] = asyncio.Queue()
 
         self._event_queue: asyncio.Queue[StreamEvent] = asyncio.Queue()
+        self._runtime_notifications: list[StreamEvent] = []
         self._submit_task: asyncio.Task[None] | None = None
         self._last_reply: str = ""
         self._pending_client_run_id: str | None = None
@@ -298,6 +312,8 @@ class Agent:
         self._summary_tracker: Any | None = None
         self._shutdown_in_progress = False
         self._installed_signals: list[int] = []
+        self._coordinator_mode: Any | None = None
+        self._mode_overridden_by_host = False
         self._kairos_prompt_sections_installed = False
         self._kairos_activated_by_agent = False
         self._kairos_proactive_stop: asyncio.Event | None = None
@@ -306,6 +322,8 @@ class Agent:
         self._kairos_cron_scheduler: Any | None = None
         self._kairos_suggestion_engine: Any | None = None
         self._kairos_last_autonomous_action_at: float = 0.0
+        self._away_summary_manager: Any | None = None
+        self._last_user_activity_at: float = 0.0
         self._permission_checker: PermissionChecker | None = None
 
     def _install_session_store(self, runtime_cfg: Any | None) -> None:
@@ -421,9 +439,26 @@ class Agent:
             logger.debug("Failed to initialize Magic Docs hook", exc_info=True)
 
         try:
-            self._register_runtime_hook(PromptSuggestionHook(self._provider))
+            prompt_cfg = PromptSuggestionConfig()
+            try:
+                from .config import load_config
+
+                runtime_cfg = load_config()
+                prompt_cfg.enabled = bool(getattr(runtime_cfg, "prompt_suggestion_enabled", True))
+                prompt_cfg.speculation_enabled = bool(getattr(runtime_cfg, "speculation_enabled", True))
+            except Exception:
+                logger.debug("Failed to load prompt suggestion runtime config", exc_info=True)
+
+            self._register_runtime_hook(
+                PromptSuggestionHook(self._provider, config=prompt_cfg)
+            )
         except Exception:
             logger.debug("Failed to initialize prompt suggestion hook", exc_info=True)
+
+        try:
+            self._away_summary_manager = AwaySummaryManager(self._provider)
+        except Exception:
+            logger.debug("Failed to initialize away summary manager", exc_info=True)
 
     def _register_buddy_command(self) -> None:
         """Register the local ``/buddy`` command with ccmini runtime callbacks."""
@@ -646,6 +681,21 @@ class Agent:
         return self._last_reply
 
     @property
+    def pending_client_run_id(self) -> str | None:
+        """Pending client-tool continuation token, if the turn is paused."""
+        return self._pending_client_run_id
+
+    @property
+    def pending_client_calls(self) -> list[ToolCallEvent]:
+        """Client-side tool calls awaiting host execution."""
+        return list(self._pending_client_calls)
+
+    @property
+    def working_directory(self) -> str:
+        """Agent-scoped working directory override, or the process cwd."""
+        return self._working_directory or os.getcwd()
+
+    @property
     def event_signal(self) -> asyncio.Event:
         """Set whenever new events arrive in the queue.
 
@@ -654,6 +704,37 @@ class Agent:
         ``drain_events()`` or ``poll_event()`` that empties the queue.
         """
         return self._event_signal
+
+    def set_working_directory(self, path: str) -> None:
+        """Set the working directory used for input resolution and tool context."""
+        self._working_directory = str(Path(path).expanduser().resolve())
+        self._refresh_memory_runtime_bindings()
+
+    def set_custom_system_prompt(self, text: str) -> None:
+        """Replace the default system prompt with host-provided text."""
+        normalized = str(text).strip()
+        self._custom_system_prompt = normalized or None
+
+    def set_append_system_prompt(self, text: str) -> None:
+        """Append host-provided text after the composed system prompt."""
+        normalized = str(text).strip()
+        self._append_system_prompt = normalized or None
+
+    def set_user_context(self, values: dict[str, Any]) -> None:
+        """Inject additional host-supplied user-context reminder values."""
+        self._user_context = {
+            str(key): str(value)
+            for key, value in dict(values or {}).items()
+            if str(key).strip() and str(value).strip()
+        }
+
+    def set_system_context(self, values: dict[str, Any]) -> None:
+        """Inject additional host-supplied system-context reminder values."""
+        self._system_context = {
+            str(key): str(value)
+            for key, value in dict(values or {}).items()
+            if str(key).strip() and str(value).strip()
+        }
 
     def on_event(self, callback: Callable[[StreamEvent], Any]) -> Callable[[], None]:
         """Register a listener called for every StreamEvent.
@@ -687,8 +768,55 @@ class Agent:
                 pass
         return unsubscribe
 
+    def _annotate_event(
+        self,
+        event: StreamEvent,
+        *,
+        conversation_id: str = "",
+    ) -> StreamEvent:
+        """Attach stable conversation/turn correlation fields to an event."""
+        conv_id = str(
+            conversation_id
+            or getattr(event, "conversation_id", "")
+            or self._conversation_id
+        ).strip()
+        current_turn = getattr(self, "_current_turn_state", None)
+        turn_id = str(
+            getattr(event, "turn_id", "")
+            or getattr(current_turn, "turn_id", "")
+            or ""
+        ).strip()
+
+        if hasattr(event, "conversation_id") and not getattr(event, "conversation_id", ""):
+            event.conversation_id = conv_id  # type: ignore[attr-defined]
+        if hasattr(event, "turn_id") and turn_id and not getattr(event, "turn_id", ""):
+            event.turn_id = turn_id  # type: ignore[attr-defined]
+
+        tool_use_ids = getattr(event, "tool_use_ids", None)
+        if (
+            hasattr(event, "tool_use_id")
+            and not getattr(event, "tool_use_id", "")
+            and isinstance(tool_use_ids, list)
+            and len(tool_use_ids) == 1
+        ):
+            event.tool_use_id = str(tool_use_ids[0])  # type: ignore[attr-defined]
+
+        calls = getattr(event, "calls", None)
+        if isinstance(calls, list):
+            for call in calls:
+                if isinstance(call, ToolCallEvent):
+                    self._annotate_event(call, conversation_id=conv_id)
+                    if hasattr(call, "turn_id") and turn_id and not getattr(call, "turn_id", ""):
+                        call.turn_id = turn_id
+                    event_run_id = str(getattr(event, "run_id", "") or "").strip()
+                    if hasattr(call, "run_id") and event_run_id and not getattr(call, "run_id", ""):
+                        call.run_id = event_run_id
+
+        return event
+
     def _fire_event(self, event: StreamEvent) -> None:
         """Dispatch an event to all registered listeners + set signal."""
+        event = self._annotate_event(event)
         self._event_signal.set()
         for cb in self._listeners:
             try:
@@ -717,6 +845,10 @@ class Agent:
         user_text: str,
         *,
         conversation_id: str | None = None,
+        user_id: str = "",
+        metadata: dict[str, Any] | None = None,
+        attachments: list[Any] | None = None,
+        turn_id: str | None = None,
         on_event: Any | None = None,
     ) -> None:
         """Non-blocking: submit a user message and return immediately.
@@ -742,20 +874,63 @@ class Agent:
             )
 
         self._submit_task = asyncio.ensure_future(
-            self._submit_pump(user_text, conversation_id, on_event)
+            self._submit_pump(
+                user_text,
+                conversation_id,
+                on_event,
+                user_id=user_id,
+                metadata=metadata,
+                attachments=attachments,
+                turn_id=turn_id,
+            )
         )
+
+    def submit_user_input(
+        self,
+        text: str,
+        *,
+        conversation_id: str | None = None,
+        user_id: str = "",
+        metadata: dict[str, Any] | None = None,
+        attachments: list[Any] | None = None,
+    ) -> str:
+        """Stable host entrypoint for non-blocking user turns.
+
+        Returns the assigned ``turn_id`` for correlation with emitted events.
+        """
+        turn_id = uuid4().hex[:16]
+        self.submit(
+            text,
+            conversation_id=conversation_id,
+            user_id=user_id,
+            metadata=metadata,
+            attachments=attachments,
+            turn_id=turn_id,
+        )
+        return turn_id
 
     async def _submit_pump(
         self,
         user_text: str,
         conversation_id: str | None,
         on_event: Any | None,
+        *,
+        user_id: str = "",
+        metadata: dict[str, Any] | None = None,
+        attachments: list[Any] | None = None,
+        turn_id: str | None = None,
     ) -> None:
         """Consume the query generator and push events to the queue."""
         try:
             async for event in self.query(
-                user_text, conversation_id=conversation_id
+                user_text,
+                conversation_id=conversation_id,
+                user_id=user_id,
+                metadata=metadata,
+                attachments=attachments,
+                turn_id=turn_id,
             ):
+                event = self._annotate_event(event, conversation_id=conversation_id or self._conversation_id)
                 await self._event_queue.put(event)
                 self._fire_event(event)
                 if on_event is not None:
@@ -766,7 +941,10 @@ class Agent:
                 if isinstance(event, CompletionEvent):
                     self._last_reply = event.text
         except Exception as exc:
-            err = ErrorEvent(error=str(exc), recoverable=False)
+            err = self._annotate_event(
+                ErrorEvent(error=str(exc), recoverable=False),
+                conversation_id=conversation_id or self._conversation_id,
+            )
             await self._event_queue.put(err)
             self._fire_event(err)
 
@@ -831,6 +1009,265 @@ class Agent:
             return True
         return False
 
+    def _normalize_host_content(
+        self,
+        *,
+        text: str = "",
+        content: Any = None,
+        attachments: list[Any] | None = None,
+    ) -> str | list[dict[str, Any]]:
+        """Normalize host-provided rich content into message/tool-result blocks."""
+        from .engine.input_processor import process_attachments
+
+        blocks: list[dict[str, Any]] = []
+        deferred: list[dict[str, Any]] = []
+
+        if content is not None:
+            if isinstance(content, list):
+                attachments = list(content) + list(attachments or [])
+            elif isinstance(content, dict):
+                attachments = [content, *(attachments or [])]
+            elif str(content).strip():
+                text = str(content)
+
+        if text:
+            blocks.append({"type": "text", "text": text})
+
+        for attachment in attachments or []:
+            if isinstance(attachment, TextBlock):
+                blocks.append({"type": "text", "text": attachment.text})
+                continue
+            if isinstance(attachment, ImageBlock):
+                blocks.append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": attachment.media_type,
+                        "data": attachment.source,
+                    },
+                })
+                continue
+            if isinstance(attachment, DocumentBlock):
+                blocks.append({
+                    "type": "document",
+                    "source": {
+                        "type": "base64",
+                        "media_type": attachment.media_type,
+                        "data": attachment.source,
+                    },
+                })
+                continue
+
+            if not isinstance(attachment, dict):
+                blocks.append({"type": "text", "text": str(attachment)})
+                continue
+
+            att_type = str(attachment.get("type", "") or "").strip()
+            if att_type == "text":
+                blocks.append({"type": "text", "text": str(attachment.get("text", ""))})
+                continue
+            if att_type in {"image", "document"}:
+                source = attachment.get("source")
+                if isinstance(source, dict) and source.get("type") == "base64":
+                    blocks.append({
+                        "type": att_type,
+                        "source": dict(source),
+                    })
+                elif attachment.get("path"):
+                    deferred.append({
+                        "type": "image" if att_type == "image" else "file",
+                        "path": str(attachment.get("path", "")),
+                    })
+                continue
+            if att_type in {"file", "url", "audio"}:
+                deferred.append(dict(attachment))
+                continue
+            blocks.append({"type": "text", "text": str(attachment)})
+
+        if deferred:
+            for processed in process_attachments(deferred, cwd=self.working_directory):
+                item = processed.content
+                if isinstance(item, str):
+                    blocks.append({"type": "text", "text": item})
+                elif isinstance(item, dict):
+                    blocks.append(dict(item))
+                else:
+                    blocks.append({"type": "text", "text": str(item)})
+
+        if not blocks:
+            return ""
+        if len(blocks) == 1 and blocks[0].get("type") == "text":
+            return str(blocks[0].get("text", ""))
+        return normalize_tool_result_content(blocks)
+
+    def _normalize_tool_result_blocks(
+        self,
+        results: list[ToolResultBlock | HostToolResult | dict[str, Any]],
+    ) -> list[ToolResultBlock]:
+        normalized: list[ToolResultBlock] = []
+        for item in results:
+            if isinstance(item, ToolResultBlock):
+                normalized.append(
+                    ToolResultBlock(
+                        tool_use_id=item.tool_use_id,
+                        content=normalize_tool_result_content(item.content),
+                        is_error=item.is_error,
+                        metadata=dict(item.metadata),
+                    )
+                )
+                continue
+
+            if isinstance(item, HostToolResult):
+                normalized.append(
+                    ToolResultBlock(
+                        tool_use_id=item.tool_use_id,
+                        content=self._normalize_host_content(
+                            text=item.text,
+                            attachments=item.attachments,
+                        ),
+                        is_error=item.is_error,
+                        metadata=dict(item.metadata),
+                    )
+                )
+                continue
+
+            payload = dict(item)
+            tool_use_id = str(payload.get("tool_use_id", "") or "").strip()
+            if not tool_use_id:
+                raise ValueError("Host tool result is missing tool_use_id")
+            content_value = payload["content"] if "content" in payload else payload.get("text", "")
+            normalized.append(
+                ToolResultBlock(
+                    tool_use_id=tool_use_id,
+                    content=self._normalize_host_content(
+                        content=content_value,
+                        attachments=list(payload.get("attachments", []) or []),
+                    ),
+                    is_error=bool(payload.get("is_error", False)),
+                    metadata=dict(payload.get("metadata", {})),
+                )
+            )
+        return normalized
+
+    def _dispatch_runtime_event(self, event: StreamEvent) -> None:
+        """Route a runtime event to the live queue or deferred notification buffer."""
+        event = self._annotate_event(event)
+        submit_inflight = (
+            self._submit_task is not None
+            and not self._submit_task.done()
+        )
+        if self._is_processing and submit_inflight:
+            self._event_queue.put_nowait(event)
+            self._fire_event(event)
+            return
+        if self._is_processing:
+            self._runtime_notifications.append(event)  # type: ignore[arg-type]
+            return
+        self._event_queue.put_nowait(event)
+        self._fire_event(event)
+
+    def publish_host_event(self, event: HostEvent) -> None:
+        """Inject a host/runtime event into conversation state and host-visible event flow."""
+        conversation_id = str(event.conversation_id or self._conversation_id).strip() or self._conversation_id
+        metadata = dict(event.metadata)
+        if event.event_type:
+            metadata.setdefault("event_type", event.event_type)
+        if event.turn_id:
+            metadata.setdefault("turn_id", event.turn_id)
+        metadata.setdefault("host_role", event.role)
+        metadata.setdefault("host_event", True)
+
+        content = self._normalize_host_content(
+            text=(
+                event.text
+                if event.role != "system"
+                else (
+                    f"<host-event type=\"{event.event_type or 'runtime'}\" role=\"{event.role}\">\n"
+                    f"{event.text}\n"
+                    "</host-event>"
+                ).strip()
+            ),
+            attachments=event.attachments,
+        )
+        message_content: str | list[Any]
+        if isinstance(content, list):
+            message_blocks: list[Any] = []
+            for block in content:
+                block_type = str(block.get("type", "") or "").strip()
+                if block_type == "text":
+                    message_blocks.append(TextBlock(text=str(block.get("text", ""))))
+                elif block_type == "image":
+                    source = block.get("source", {})
+                    if isinstance(source, dict) and source.get("type") == "base64":
+                        message_blocks.append(
+                            ImageBlock(
+                                source=str(source.get("data", "")),
+                                media_type=str(source.get("media_type", "image/png")),
+                            )
+                        )
+                    else:
+                        message_blocks.append(TextBlock(text="[image]"))
+                elif block_type == "document":
+                    source = block.get("source", {})
+                    if isinstance(source, dict) and source.get("type") == "base64":
+                        message_blocks.append(
+                            DocumentBlock(
+                                source=str(source.get("data", "")),
+                                media_type=str(source.get("media_type", "application/pdf")),
+                            )
+                        )
+                    else:
+                        message_blocks.append(TextBlock(text="[document]"))
+                else:
+                    message_blocks.append(TextBlock(text=str(block)))
+            message_content = message_blocks
+        else:
+            message_content = content
+        message = Message(
+            role="assistant" if event.role == "assistant" else "user",
+            content=message_content,
+            metadata={
+                "uuid": uuid4().hex,
+                **({"assistantId": uuid4().hex} if event.role == "assistant" else {}),
+                "timestamp": time.time(),
+                "isMeta": True,
+                "conversation_id": conversation_id,
+                **metadata,
+            },
+        )
+        self._messages.append(message)
+        self._persist_session_snapshot()
+
+        if self._memory_store is not None:
+            with contextlib.suppress(Exception):
+                self._memory_store.append_event_record(
+                    conversation_id,
+                    {
+                        "conversation_id": conversation_id,
+                        "turn_id": event.turn_id,
+                        "event_type": event.event_type,
+                        "role": event.role,
+                        "text": event.text,
+                        "metadata": dict(event.metadata),
+                    },
+                )
+
+        stream_event = TextEvent(
+            text=event.text or f"[host_event:{event.event_type or 'runtime'}]",
+            conversation_id=conversation_id,
+            turn_id=event.turn_id,
+            metadata={
+                "event_type": event.event_type,
+                "role": event.role,
+                **dict(event.metadata),
+            },
+        )
+        self._dispatch_runtime_event(stream_event)
+
+    def publish_runtime_event(self, event: HostEvent) -> None:
+        """Backward-compatible alias for :meth:`publish_host_event`."""
+        self.publish_host_event(event)
+
     # ------------------------------------------------------------------
     # Background agent tasks
     # ------------------------------------------------------------------
@@ -871,6 +1308,208 @@ class Agent:
         """Return all completed background task results (non-blocking)."""
         return self._bg_runner.drain_completions()
 
+    def list_background_tasks(self, *, include_completed: bool = False) -> list[Any]:
+        """List background tasks known to this agent."""
+        return self._task_manager.list_tasks(include_completed=include_completed)
+
+    def get_task(self, task_id: str) -> Any | None:
+        """Fetch a background task by ID or stable human-readable name."""
+        resolved = self._bg_runner.resolve_task_ref(task_id) or task_id
+        return self._bg_runner.get_status(resolved)
+
+    def cancel_task(self, task_id: str) -> bool:
+        """Cancel a background task by ID or stable human-readable name."""
+        resolved = self._bg_runner.resolve_task_ref(task_id) or task_id
+        return self._bg_runner.cancel(resolved)
+
+    def send_message_to_task(self, task_id: str, message: str) -> bool:
+        """Send a follow-up message to a background task."""
+        return self._bg_runner.send_message(task_id, message)
+
+    def _ensure_coordinator_mode(self) -> Any:
+        from .delegation.coordinator import CoordinatorMode
+
+        if self._coordinator_mode is None:
+            self._coordinator_mode = CoordinatorMode()
+        return self._coordinator_mode
+
+    def get_mode(self) -> str:
+        """Return the current instance mode: ``normal`` or ``coordinator``."""
+        coordinator = self._coordinator_mode
+        return "coordinator" if bool(getattr(coordinator, "is_active", False)) else "normal"
+
+    def set_mode(self, mode: str) -> None:
+        """Set the instance mode without relying on global env toggles."""
+        normalized = str(mode).strip().lower()
+        if normalized not in {"normal", "coordinator"}:
+            raise ValueError("mode must be 'normal' or 'coordinator'")
+
+        self._mode_overridden_by_host = True
+        coordinator = self._ensure_coordinator_mode()
+        if normalized == "normal":
+            coordinator.deactivate(sync_env=False)
+            return
+
+        worker_tools: list[str] = []
+        try:
+            from .delegation.multi_agent import AgentTool
+
+            for tool in self._tools:
+                if isinstance(tool, AgentTool):
+                    worker_tools = [
+                        child.name
+                        for child in getattr(tool, "_parent_tools", [])
+                    ]
+                    break
+        except Exception:
+            logger.debug("Failed to inspect worker tools for coordinator mode", exc_info=True)
+
+        coordinator.activate(
+            coordinator_tool_names=[tool.name for tool in self._tools] or None,
+            worker_tool_names=worker_tools or None,
+            sync_env=False,
+        )
+
+    def set_runtime_stores(
+        self,
+        *,
+        session_store: SessionStore | None = None,
+        memory_store: Any | None = None,
+        memory_adapter: MemoryAdapter | None = None,
+    ) -> None:
+        """Install host-provided session and memory stores/adapters."""
+        if session_store is not None:
+            self._session_store = session_store
+
+        if memory_adapter is None and memory_store is not None:
+            memory_adapter = MemoryAdapter(
+                memory_store,
+                consolidation_agent=ConsolidationAgent(
+                    store=memory_store,
+                    provider=self._provider,
+                ),
+            )
+        if memory_store is None and memory_adapter is not None:
+            memory_store = getattr(memory_adapter, "store", None)
+            if memory_store is None:
+                raise ValueError("memory_adapter must expose a store attribute")
+
+        if memory_store is not None:
+            self._memory_store = memory_store
+        if memory_adapter is not None:
+            self._memory_adapter = memory_adapter
+
+        if self._memory_adapter is not None:
+            sources = getattr(self._attachment_collector, "_sources", None)
+            if isinstance(sources, list):
+                sources[:] = [
+                    source
+                    for source in sources
+                    if not isinstance(source, MemoryAttachmentSource)
+                ]
+            if not any(
+                isinstance(source, MemoryAttachmentSource)
+                for source in getattr(self._attachment_collector, "_sources", [])
+            ):
+                self._attachment_collector.add_source(MemoryAttachmentSource(self._memory_adapter))
+
+        self._refresh_memory_runtime_bindings()
+
+    def set_memory_backend(
+        self,
+        memory_store: Any,
+        *,
+        memory_adapter: MemoryAdapter | None = None,
+    ) -> None:
+        """Install a host-provided memory backend."""
+        self.set_runtime_stores(memory_store=memory_store, memory_adapter=memory_adapter)
+
+    def set_memory_roots(
+        self,
+        *,
+        profile_root: str,
+        session_root: str | None = None,
+        memory_root: str | None = None,
+    ) -> None:
+        """Point memory/session persistence into host-managed directories."""
+        profile_path = Path(profile_root).expanduser().resolve()
+        transcript_root = (
+            Path(session_root).expanduser().resolve()
+            if session_root
+            else profile_path / "sessions"
+        )
+        raw_session_root = (
+            Path(session_root).expanduser().resolve() / "streams"
+            if session_root
+            else profile_path / "session"
+        )
+        memory_path = (
+            Path(memory_root).expanduser().resolve()
+            if memory_root
+            else profile_path / "memory"
+        )
+
+        self.set_runtime_stores(
+            session_store=SessionStore(transcript_root),
+            memory_store=JsonlMemoryStore(
+                profile_path,
+                memory_root=memory_path,
+                session_root=raw_session_root,
+            ),
+        )
+
+    def _refresh_memory_runtime_bindings(self) -> None:
+        """Repoint default runtime hooks at the currently installed stores."""
+        memory_dir = str(
+            getattr(getattr(self, "_memory_store", None), "memory_root", "")
+            or get_memory_dir(self.working_directory)
+        )
+        project_root = self.working_directory
+        session_dir = str(
+            getattr(getattr(self, "_session_store", None), "session_dir", "")
+            or ""
+        )
+
+        have_session_hook = False
+        have_extract_hook = False
+        have_auto_dream_hook = False
+        for hook in self._hooks:
+            if isinstance(hook, SessionMemoryHook):
+                hook._session_id = self._conversation_id
+                have_session_hook = True
+            elif isinstance(hook, ExtractMemoriesHook):
+                hook._memory_dir = memory_dir
+                hook._project_root = project_root
+                have_extract_hook = True
+            elif isinstance(hook, AutoDreamHook):
+                hook._memory_dir = memory_dir
+                hook._session_dir = session_dir
+                have_auto_dream_hook = True
+
+        if not have_session_hook:
+            self._register_runtime_hook(
+                SessionMemoryHook(
+                    self._provider,
+                    session_id=self._conversation_id,
+                )
+            )
+        if not have_extract_hook:
+            self._register_runtime_hook(
+                ExtractMemoriesHook(
+                    self._provider,
+                    memory_dir=memory_dir,
+                    project_root=project_root,
+                )
+            )
+        if not have_auto_dream_hook:
+            self._register_runtime_hook(
+                AutoDreamHook(
+                    self._provider,
+                    memory_dir=memory_dir,
+                    session_dir=session_dir,
+                )
+            )
+
     # ------------------------------------------------------------------
     # Message processing
     # ------------------------------------------------------------------
@@ -880,6 +1519,10 @@ class Agent:
         user_text: str,
         *,
         conversation_id: str | None = None,
+        user_id: str = "",
+        metadata: dict[str, Any] | None = None,
+        attachments: list[Any] | None = None,
+        turn_id: str | None = None,
     ) -> AsyncGenerator[StreamEvent, None]:
         """Process a user message, yielding stream events.
 
@@ -890,16 +1533,20 @@ class Agent:
         Between turns, any completed background tasks are yielded as
         TextEvent notifications so the user stays informed.
         """
+        conv_id = conversation_id or self._conversation_id
         for note in self._ingest_session_mailbox_messages():
-            yield note
+            yield self._annotate_event(note, conversation_id=conv_id)
         for note in self._ingest_team_mailbox_messages():
-            yield note
+            yield self._annotate_event(note, conversation_id=conv_id)
         # Deliver background completions before the turn starts
         for note in self._yield_background_notifications():
-            yield note
+            yield self._annotate_event(note, conversation_id=conv_id)
+        for note in self._yield_runtime_notifications():
+            yield self._annotate_event(note, conversation_id=conv_id)
+        for note in await self._consume_away_summary_notifications():
+            yield self._annotate_event(note, conversation_id=conv_id)
 
         self._is_processing = True
-        conv_id = conversation_id or self._conversation_id
         self._update_peer_status("busy")
         start_prevent_sleep()
 
@@ -908,19 +1555,29 @@ class Agent:
             async for event in engine.submit_message(
                 user_text,
                 conversation_id=conv_id,
+                metadata=metadata,
+                attachments=attachments,
+                user_id=user_id,
+                turn_id=turn_id,
             ):
                 if isinstance(event, CompletionEvent):
                     self._last_reply = event.text
-                yield event
+                yield self._annotate_event(event, conversation_id=conv_id)
 
         finally:
             stop_prevent_sleep()
             self._update_peer_status("idle")
             self._is_processing = False
 
+        current_turn = getattr(self, "_current_turn_state", None)
+        if str(getattr(getattr(current_turn, "phase", None), "value", getattr(current_turn, "phase", ""))) in {"completed", "failed"}:
+            self._current_turn_state = None
+
         # Deliver any completions that arrived during this turn
         for note in self._yield_background_notifications():
-            yield note
+            yield self._annotate_event(note, conversation_id=conv_id)
+        for note in self._yield_runtime_notifications():
+            yield self._annotate_event(note, conversation_id=conv_id)
 
     def _get_session_memory_content(self) -> str | None:
         try:
@@ -1006,7 +1663,7 @@ class Agent:
             if title:
                 meta.title = title
             meta.session_id = self.conversation_id
-            meta.cwd = os.getcwd()
+            meta.cwd = self.working_directory
             meta.updated_at = time.time()
             meta.message_count = len(self.messages)
             meta.total_tokens = summary.get("total_input_tokens", 0) + summary.get("total_output_tokens", 0)
@@ -1090,41 +1747,11 @@ class Agent:
                 get_command_queue,
                 sleep_until_wake,
             )
-            from .services import generate_away_summary, send_notification
+            from .services import send_notification
 
             gate = get_gate_config()
             idle_detector = get_idle_detector()
             suggestion_engine = ProactiveSuggestionEngine()
-
-            async def _on_idle_suggestion(_kind: str, text: str) -> None:
-                await send_notification("Kairos", text)
-
-            async def _on_away_summary() -> None:
-                summary = await generate_away_summary(
-                    self._messages,
-                    self._provider,
-                    session_memory=self._get_session_memory_content(),
-                )
-                if summary:
-                    await send_notification("While you were away", summary)
-
-            async def _on_dream_trigger() -> None:
-                if not gate.dream_enabled:
-                    return
-                try:
-                    from .services.auto_dream import run_consolidation
-                    from .services.memdir import get_memory_dir
-
-                    await run_consolidation(
-                        self._provider,
-                        memory_dir=get_memory_dir(os.getcwd()),
-                    )
-                except Exception:
-                    logger.debug("Kairos dream trigger failed", exc_info=True)
-
-            suggestion_engine.set_suggest_callback(_on_idle_suggestion)
-            suggestion_engine.set_away_summary_callback(_on_away_summary)
-            suggestion_engine.set_dream_trigger_callback(_on_dream_trigger)
             self._kairos_suggestion_engine = suggestion_engine
             wake_dispatcher = get_wake_on_event()
             command_queue = get_command_queue()
@@ -1308,7 +1935,7 @@ class Agent:
     async def submit_tool_results(
         self,
         run_id: str,
-        results: list[ToolResultBlock],
+        results: list[ToolResultBlock | HostToolResult | dict[str, Any]],
     ) -> AsyncGenerator[StreamEvent, None]:
         """Submit client-side tool results and continue the query loop.
 
@@ -1316,12 +1943,16 @@ class Agent:
         ``query()`` path: mailbox ingest, background notifications, busy state,
         and prevent-sleep for the continuation.
         """
+        normalized_results = self._normalize_tool_result_blocks(results)
         for note in self._ingest_session_mailbox_messages():
-            yield note
+            yield self._annotate_event(note)
         for note in self._ingest_team_mailbox_messages():
-            yield note
+            yield self._annotate_event(note)
         for note in self._yield_background_notifications():
-            yield note
+            yield self._annotate_event(note)
+        for note in self._yield_runtime_notifications():
+            yield self._annotate_event(note)
+        self._record_user_activity()
 
         self._is_processing = True
         self._update_peer_status("busy")
@@ -1329,17 +1960,23 @@ class Agent:
 
         try:
             engine = QueryEngine(self)
-            async for event in engine.continue_with_tool_results(run_id, results):
+            async for event in engine.continue_with_tool_results(run_id, normalized_results):
                 if isinstance(event, CompletionEvent):
                     self._last_reply = event.text
-                yield event
+                yield self._annotate_event(event)
         finally:
             stop_prevent_sleep()
             self._update_peer_status("idle")
             self._is_processing = False
 
+        current_turn = getattr(self, "_current_turn_state", None)
+        if str(getattr(getattr(current_turn, "phase", None), "value", getattr(current_turn, "phase", ""))) in {"completed", "failed"}:
+            self._current_turn_state = None
+
         for note in self._yield_background_notifications():
-            yield note
+            yield self._annotate_event(note)
+        for note in self._yield_runtime_notifications():
+            yield self._annotate_event(note)
 
     # ------------------------------------------------------------------
     # Idle loop (resident mode)
@@ -1411,6 +2048,78 @@ class Agent:
     # ------------------------------------------------------------------
     # Background task helpers
     # ------------------------------------------------------------------
+
+    def _record_user_activity(self) -> None:
+        """Record that the user re-engaged with the session."""
+        self._last_user_activity_at = time.time()
+        manager = getattr(self, "_away_summary_manager", None)
+        if manager is None:
+            return
+        try:
+            manager.mark_activity()
+        except Exception:
+            logger.debug("Failed to record away-summary activity", exc_info=True)
+
+    async def _consume_away_summary_notifications(self) -> list[TextEvent]:
+        """Generate a return-from-idle summary before the next user turn."""
+        events: list[TextEvent] = []
+        manager = getattr(self, "_away_summary_manager", None)
+        summary: str | None = None
+        if manager is not None:
+            try:
+                if self._messages and manager.should_show(self._messages):
+                    summary = await manager.generate(
+                        self._messages,
+                        session_memory=self._get_session_memory_content(),
+                    )
+            except Exception:
+                logger.debug("Failed to generate away summary", exc_info=True)
+        self._record_user_activity()
+        if summary:
+            self._messages.append(
+                system_message(
+                    summary,
+                    type="system",
+                    subtype="away_summary",
+                )
+            )
+            events.append(TextEvent(text=f"[While you were away]\n{summary}"))
+        return events
+
+    def _append_runtime_system_message(
+        self,
+        message: Message,
+        *,
+        event_text: str | None = None,
+    ) -> None:
+        """Append a runtime-generated system message and surface it to active hosts."""
+        self._messages.append(message)
+        self._persist_session_snapshot()
+
+        subtype = str(message.metadata.get("subtype", "") or "")
+        if subtype == "memory_saved":
+            with contextlib.suppress(Exception):
+                self._event_bus.emit(
+                    "memory_saved",
+                    {
+                        "paths": list(message.metadata.get("memory_paths", []) or []),
+                        "verb": str(message.metadata.get("verb", "") or ""),
+                        "source": str(message.metadata.get("source", "") or ""),
+                    },
+                )
+
+        text = event_text if event_text is not None else message.text
+        if not text:
+            return
+
+        event = TextEvent(text=text)
+        self._dispatch_runtime_event(event)
+
+    def _yield_runtime_notifications(self) -> list[StreamEvent]:
+        """Drain pending runtime notifications created by background hooks."""
+        pending = list(self._runtime_notifications)
+        self._runtime_notifications.clear()
+        return pending
 
     def _yield_background_notifications(self) -> list[TextEvent]:
         """Drain completed background tasks and format as TextEvents."""
@@ -1776,7 +2485,7 @@ class Agent:
 
             register_session(
                 self._conversation_id,
-                working_dir=os.getcwd(),
+                working_dir=self.working_directory,
                 model=self._provider.model_name,
                 agent_id=self._agent_id,
             )
@@ -1820,6 +2529,8 @@ class Agent:
         Syncs ``CLAUDE_CODE_COORDINATOR_MODE`` via ``CoordinatorMode.restore_mode`` and
         activates the coordinator object when the persisted session was coordinator.
         """
+        if self._mode_overridden_by_host:
+            return
         try:
             from .delegation.coordinator import CoordinatorMode, is_coordinator_mode
 
@@ -1846,6 +2557,7 @@ class Agent:
                 coord.activate(
                     coordinator_tool_names=coordinator_tools or None,
                     worker_tool_names=worker_tools or None,
+                    sync_env=False,
                 )
         except Exception:
             logger.debug("Failed to restore coordinator mode state", exc_info=True)
@@ -2021,10 +2733,7 @@ class ConversationRecovery:
     ) -> None:
         self._agent_id = agent_id
         if base_dir is None:
-            home = Path(os.environ.get(
-            "MINI_AGENT_HOME", mini_agent_home(),
-            ))
-            self._dir = home / "recovery"
+            self._dir = mini_agent_home() / "recovery"
         else:
             self._dir = base_dir
 

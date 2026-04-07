@@ -115,6 +115,23 @@ def should_show_summary(
     return (time.time() - last_activity_time) >= idle_threshold_seconds
 
 
+def has_summary_since_last_user_turn(messages: list[Message]) -> bool:
+    """Return whether transcript already contains an away summary for this return."""
+    for message in reversed(messages):
+        if (
+            message.role == "user"
+            and not bool(message.metadata.get("isMeta"))
+            and not bool(message.metadata.get("isCompactSummary"))
+        ):
+            return False
+        if (
+            message.role == "system"
+            and str(message.metadata.get("subtype", "")) == "away_summary"
+        ):
+            return True
+    return False
+
+
 class AwaySummaryManager:
     """Manages away summary generation and display state.
 
@@ -144,9 +161,11 @@ class AwaySummaryManager:
         self._last_activity = time.time()
         self._summary_shown = False
 
-    def should_show(self) -> bool:
+    def should_show(self, messages: list[Message] | None = None) -> bool:
         """Check if an away summary should be displayed."""
         if self._summary_shown:
+            return False
+        if messages and has_summary_since_last_user_turn(messages):
             return False
         if self._last_activity <= 0:
             return False

@@ -289,6 +289,9 @@ agent = create_agent(
 - `ccmini/tools/__init__.py`
 - `ccmini/agent.py`（`_install_memory_runtime` 挂载双栈记忆）
 
+宿主嵌入接口说明：
+- `ccmini/CCMINI_EMBEDDABLE_BRAIN_SDK_ZH.md`
+
 profile 说明：
 - `ccmini/CCMINI_PROFILES_ZH.md`
 

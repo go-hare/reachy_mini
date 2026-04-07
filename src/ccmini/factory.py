@@ -49,6 +49,7 @@ def create_agent(
     token_budget: TokenBudget | None = None,
     summary_provider: Any | None = None,
     skill_prefetch: Any | None = None,
+    use_default_tools: bool = True,
 ) -> Agent:
     """Create an Agent using the defaults of a named runtime profile."""
 
@@ -76,7 +77,7 @@ def create_agent(
         summary_provider=summary_provider,
         skill_prefetch=effective_skill_prefetch,
     )
-    if tools is None:
+    if tools is None and use_default_tools:
         assembly = build_default_tools(
             profile,
             provider=effective_provider,
@@ -108,6 +109,7 @@ def create_coding_agent(
     token_budget: TokenBudget | None = None,
     summary_provider: Any | None = None,
     skill_prefetch: Any | None = None,
+    use_default_tools: bool = True,
 ) -> Agent:
     """Create an agent with the coding-assistant profile defaults."""
 
@@ -127,6 +129,7 @@ def create_coding_agent(
         token_budget=token_budget,
         summary_provider=summary_provider,
         skill_prefetch=skill_prefetch,
+        use_default_tools=use_default_tools,
     )
 
 
@@ -146,6 +149,7 @@ def create_robot_agent(
     token_budget: TokenBudget | None = None,
     summary_provider: Any | None = None,
     skill_prefetch: Any | None = None,
+    use_default_tools: bool = True,
 ) -> Agent:
     """Create an agent with the robot-brain profile defaults."""
 
@@ -165,4 +169,5 @@ def create_robot_agent(
         token_budget=token_budget,
         summary_provider=summary_provider,
         skill_prefetch=skill_prefetch,
+        use_default_tools=use_default_tools,
     )

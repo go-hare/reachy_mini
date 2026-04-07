@@ -24,10 +24,20 @@ class JsonlMemoryStore:
     Layer 3 (Long-term): memory/memory.jsonl + projection files
     """
 
-    def __init__(self, profile_root: Path) -> None:
+    def __init__(
+        self,
+        profile_root: Path,
+        *,
+        memory_root: Path | None = None,
+        session_root: Path | None = None,
+    ) -> None:
         self.profile_root = Path(profile_root)
-        self.memory_root = ensure_directory(self.profile_root / "memory")
-        self.session_root = ensure_directory(self.profile_root / "session")
+        self.memory_root = ensure_directory(
+            Path(memory_root) if memory_root is not None else self.profile_root / "memory"
+        )
+        self.session_root = ensure_directory(
+            Path(session_root) if session_root is not None else self.profile_root / "session"
+        )
         self.write_lock = Lock()
 
     # ------------------------------------------------------------------

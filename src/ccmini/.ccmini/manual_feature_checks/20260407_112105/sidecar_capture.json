@@ -1,0 +1,7 @@
+{
+  "MINI_AGENT_TEAM_NAME": "ext-team",
+  "MINI_AGENT_TEAMMATE_NAME": "ext-worker",
+  "MINI_AGENT_MAILBOX_DIR": "D:\\work\\py\\reachy_mini\\src\\ccmini\\.ccmini\\manual_feature_checks\\20260407_112105\\home\\teams\\ext-team\\mailboxes",
+  "MINI_AGENT_TEAM_DIR": "D:\\work\\py\\reachy_mini\\src\\ccmini\\.ccmini\\manual_feature_checks\\20260407_112105\\home\\teams\\ext-team",
+  "MINI_AGENT_AGENT_ID": "ext-worker@ext-team"
+}

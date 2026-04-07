@@ -16,6 +16,7 @@ from ..messages import (
     ToolUseBlock,
     assistant_message,
     system_message,
+    tool_result_content_snippet,
     user_message,
 )
 from ..providers import BaseProvider
@@ -597,7 +598,7 @@ def collapse_tool_sequences(messages: list[Message], *, keep_recent: int = 5) ->
             if next_index < len(head) and head[next_index].role == "user":
                 result_message = head[next_index]
                 for tool_result in result_message.tool_result_blocks:
-                    snippet = tool_result.content[:120].replace("\n", " ")
+                    snippet = tool_result_content_snippet(tool_result.content, limit=120)
                     status = "error" if tool_result.is_error else "ok"
                     summaries.append(f"{status}: {snippet}")
                 next_index += 1

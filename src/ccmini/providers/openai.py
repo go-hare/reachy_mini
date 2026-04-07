@@ -31,6 +31,7 @@ from ..messages import (
     ToolUseBlock,
     UsageEvent,
     assistant_message,
+    tool_result_content_to_text,
 )
 from .retry import RetryConfig, with_retry, with_retry_stream
 from ..tool import Tool
@@ -276,7 +277,83 @@ class OpenAIProvider(BaseProvider):
             query_source=query_source or "main",
             model=self._config.model,
         )
+        if _should_fallback_to_streaming_complete(response):
+            logger.debug(
+                "OpenAI-compatible complete() returned empty content for %s; "
+                "retrying via streaming fallback",
+                self._config.model,
+            )
+            return await self._complete_via_stream(
+                client,
+                kwargs,
+                query_source=query_source,
+            )
         return _from_openai_response(response)
+
+    async def _complete_via_stream(
+        self,
+        client: Any,
+        request_kwargs: dict[str, Any],
+        *,
+        query_source: str = "",
+    ) -> Message:
+        stream_kwargs = dict(request_kwargs)
+        stream_kwargs["stream"] = True
+        stream_kwargs.setdefault("stream_options", {"include_usage": True})
+
+        async def _call() -> Any:
+            return await client.chat.completions.create(**stream_kwargs)
+
+        response = await with_retry_stream(
+            _call,
+            self._retry_config,
+            query_source=query_source or "main",
+            model=self._config.model,
+        )
+
+        text_parts: list[str] = []
+        pending_tool_calls: dict[int, dict[str, Any]] = {}
+
+        async for chunk in response:
+            choice = chunk.choices[0] if chunk.choices else None
+            if choice is None:
+                continue
+            delta = choice.delta
+
+            if delta.content:
+                text_parts.append(delta.content)
+
+            if delta.tool_calls:
+                for tc in delta.tool_calls:
+                    idx = tc.index
+                    if idx not in pending_tool_calls:
+                        pending_tool_calls[idx] = {
+                            "id": tc.id or "",
+                            "name": tc.function.name or "" if tc.function else "",
+                            "arguments": "",
+                        }
+                    entry = pending_tool_calls[idx]
+                    if tc.id:
+                        entry["id"] = tc.id
+                    if tc.function:
+                        if tc.function.name:
+                            entry["name"] = tc.function.name
+                        if tc.function.arguments:
+                            entry["arguments"] += tc.function.arguments
+
+        blocks: list[ContentBlock] = []
+        text = "".join(text_parts)
+        if text:
+            blocks.append(TextBlock(text=text))
+        for entry in pending_tool_calls.values():
+            blocks.append(
+                ToolUseBlock(
+                    id=entry["id"],
+                    name=entry["name"],
+                    input=_safe_parse_json(entry["arguments"]),
+                )
+            )
+        return assistant_message(blocks if blocks else text)
 
 
 # ======================================================================
@@ -304,7 +381,7 @@ def _build_openai_messages(
         tool_results = [b for b in msg.content if isinstance(b, ToolResultBlock)]
         if tool_results:
             for tr in tool_results:
-                content = tr.content
+                content = tool_result_content_to_text(tr.content)
                 # Prefix error indicator so the model knows the call failed,
                 # matching the TS source's is_error handling.
                 if tr.is_error:
@@ -395,6 +472,15 @@ def _from_openai_response(response: Any) -> Message:
             ))
 
     return assistant_message(blocks if blocks else (msg.content or ""))
+
+
+def _should_fallback_to_streaming_complete(response: Any) -> bool:
+    try:
+        choice = response.choices[0]
+        msg = choice.message
+    except Exception:
+        return False
+    return getattr(msg, "content", None) is None and not getattr(msg, "tool_calls", None)
 
 
 def _safe_parse_json(text: str) -> dict[str, Any]:

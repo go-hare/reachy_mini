@@ -258,6 +258,7 @@ def _block_to_dict(block: ContentBlock) -> dict[str, Any]:
             "tool_use_id": block.tool_use_id,
             "content": block.content,
             "is_error": block.is_error,
+            "metadata": dict(block.metadata),
         }
     if isinstance(block, ImageBlock):
         return {"type": "image", "source": block.source, "media_type": block.media_type}
@@ -309,6 +310,7 @@ def _dict_to_message(data: dict[str, Any]) -> Message:
                     tool_use_id=item["tool_use_id"],
                     content=item["content"],
                     is_error=item.get("is_error", False),
+                    metadata=dict(item.get("metadata", {})),
                 )
             )
         elif block_type == "image":

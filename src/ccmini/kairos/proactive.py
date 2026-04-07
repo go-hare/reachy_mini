@@ -1,8 +1,9 @@
-"""Thin proactive shim.
+"""Thin proactive runtime.
 
-The recovered reference tree has no standalone proactive runtime module.
-This file only preserves the import surface the Python host expects, and
-stays inert unless the local feature gate explicitly enables it.
+The reference tree keeps proactive ticking separate from prompt suggestion,
+away-summary, and auto-dream lifecycles. This module therefore only manages
+proactive state and tick cadence, while preserving a tiny compatibility
+surface for callers that still set those callbacks.
 """
 
 from __future__ import annotations
@@ -186,10 +187,18 @@ def get_idle_detector() -> IdleDetector:
 
 
 class ProactiveSuggestionEngine:
+    """Compatibility holder for proactive-adjacent callbacks.
+
+    Prompt suggestion, away-summary, and auto-dream are triggered by separate
+    subsystems. ``evaluate()`` records the latest idle level but deliberately
+    does not dispatch those callbacks.
+    """
+
     def __init__(self) -> None:
         self._suggest_cb: Callable[[str, str], Awaitable[None]] | None = None
         self._away_summary_cb: Callable[[], Awaitable[None]] | None = None
         self._dream_trigger_cb: Callable[[], Awaitable[None]] | None = None
+        self._last_level = IdleLevel.ACTIVE
 
     def set_suggest_callback(self, callback: Callable[[str, str], Awaitable[None]]) -> None:
         self._suggest_cb = callback
@@ -201,5 +210,5 @@ class ProactiveSuggestionEngine:
         self._dream_trigger_cb = callback
 
     async def evaluate(self, level: IdleLevel) -> None:
-        if level == IdleLevel.AWAY and self._away_summary_cb is not None:
-            await self._away_summary_cb()
+        self._last_level = level
+        await asyncio.sleep(0)

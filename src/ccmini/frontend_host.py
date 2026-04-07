@@ -29,7 +29,9 @@ def _ensure_repo_src_on_path() -> None:
 
 _ensure_repo_src_on_path()
 
+from ccmini.agent import AgentConfig
 from ccmini.bridge import BridgeConfig, create_remote_executor_host
+from ccmini.bridge.net_utils import build_connect_url, iter_bind_endpoints
 from ccmini.config import load_config
 from ccmini.profiles import RuntimeProfile
 from ccmini.prompt_defaults import build_default_prompt
@@ -72,27 +74,37 @@ def _parse_args() -> argparse.Namespace:
 
 
 def _build_ready_payload(host: BridgeConfig) -> dict[str, str]:
-    scheme = "https" if host.ssl else "http"
     return {
-        "serverUrl": f"{scheme}://{host.host}:{host.port}",
+        "serverUrl": build_connect_url(host=host.host, port=host.port, ssl=host.ssl),
         "authToken": host.auth_token,
     }
 
 
 def _port_is_available(host: str, port: int) -> bool:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        try:
-            sock.bind((host, port))
-        except OSError:
-            return False
-    return True
+    for family, socktype, proto, sockaddr in iter_bind_endpoints(host, port):
+        with socket.socket(family, socktype, proto) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                sock.bind(sockaddr)
+            except OSError:
+                continue
+            return True
+    return False
 
 
 def _find_open_port(host: str) -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind((host, 0))
-        return int(sock.getsockname()[1])
+    last_error: OSError | None = None
+    for family, socktype, proto, sockaddr in iter_bind_endpoints(host, 0):
+        with socket.socket(family, socktype, proto) as sock:
+            try:
+                sock.bind(sockaddr)
+            except OSError as exc:
+                last_error = exc
+                continue
+            return int(sock.getsockname()[1])
+    if last_error is not None:
+        raise last_error
+    raise OSError(f"Unable to find an open port for host {host!r}")
 
 
 async def _run() -> int:
@@ -132,6 +144,7 @@ async def _run() -> int:
         system_prompt=system_prompt,
         profile=args.profile,
         bridge_config=bridge_config,
+        config=AgentConfig(max_turns=cfg.max_turns),
     )
 
     stop_event = asyncio.Event()

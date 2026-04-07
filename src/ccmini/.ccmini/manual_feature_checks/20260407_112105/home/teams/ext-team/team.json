@@ -1,0 +1,21 @@
+{
+  "name": "ext-team",
+  "description": "",
+  "createdAt": 1775532074415,
+  "leadAgentId": "team-lead@ext-team",
+  "leadSessionId": "",
+  "members": [
+    {
+      "agentId": "team-lead@ext-team",
+      "name": "team-lead",
+      "agentType": "team-lead",
+      "model": "",
+      "joinedAt": 1775532074415,
+      "tmuxPaneId": "",
+      "cwd": "",
+      "subscriptions": [],
+      "isActive": true,
+      "backendType": "in-process"
+    }
+  ]
+}

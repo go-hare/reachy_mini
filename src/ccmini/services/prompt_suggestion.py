@@ -9,15 +9,35 @@ Ported from Claude Code's ``PromptSuggestion`` subsystem:
 
 from __future__ import annotations
 
+import asyncio
+import ast
+import contextlib
 import enum
 import logging
+import os
+import copy
 import re
+import shlex
+import shutil
+import tempfile
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..hooks import PostSamplingHook
-from ..messages import Message, user_message
+from ..messages import (
+    CompletionEvent,
+    ErrorEvent,
+    Message,
+    PromptSuggestionEvent,
+    SpeculationEvent,
+    StreamEvent,
+    ToolCallEvent,
+    ToolResultEvent,
+    ToolUseBlock,
+    user_message,
+)
 
 if TYPE_CHECKING:
     from ..providers import BaseProvider
@@ -33,6 +53,7 @@ class PromptSuggestionConfig:
     """Configuration for prompt suggestion."""
 
     enabled: bool = True
+    speculation_enabled: bool = True
     min_assistant_turns: int = 2
     max_suggestion_words: int = 12
     max_suggestion_chars: int = 100
@@ -88,16 +109,189 @@ class PromptSuggestionState:
     accepted_at: float = 0.0
 
 
+@dataclass
+class SpeculationBoundary:
+    """Boundary reached while running speculation."""
+
+    type: str = ""
+    tool_name: str = ""
+    detail: str = ""
+    file_path: str = ""
+    completed_at: float = 0.0
+
+
+@dataclass
+class SpeculationState:
+    """Best-effort prefetch state for a predicted next user input."""
+
+    status: str = "idle"
+    suggestion: str = ""
+    reply: str = ""
+    started_at: float = 0.0
+    completed_at: float = 0.0
+    error: str = ""
+    boundary: SpeculationBoundary = field(default_factory=SpeculationBoundary)
+    events: list[StreamEvent] = field(default_factory=list, repr=False)
+    added_messages: list[Message] = field(default_factory=list, repr=False)
+    stop_reason: str = ""
+    workspace_root: str = ""
+    overlay_dir: str = ""
+    written_paths: list[str] = field(default_factory=list)
+
+
 _current_suggestion = PromptSuggestionState()
+_current_speculation = SpeculationState()
+_current_speculation_task: asyncio.Task[Any] | None = None
+_current_speculation_abort: asyncio.Event | None = None
 
 
-def get_current_suggestion() -> PromptSuggestionState:
-    return _current_suggestion
+def _get_agent_prompt_state(agent: Any | None) -> PromptSuggestionState | None:
+    state = getattr(agent, "_prompt_suggestion_state", None)
+    return state if isinstance(state, PromptSuggestionState) else None
 
 
-def clear_suggestion() -> None:
+def _set_prompt_state(state: PromptSuggestionState, *, agent: Any | None = None) -> None:
     global _current_suggestion
-    _current_suggestion = PromptSuggestionState()
+    _current_suggestion = state
+    if agent is not None:
+        setattr(agent, "_prompt_suggestion_state", state)
+
+
+def _get_agent_speculation_state(agent: Any | None) -> SpeculationState | None:
+    state = getattr(agent, "_speculation_state", None)
+    return state if isinstance(state, SpeculationState) else None
+
+
+def _set_speculation_state(state: SpeculationState, *, agent: Any | None = None) -> None:
+    global _current_speculation
+    _current_speculation = state
+    if agent is not None:
+        setattr(agent, "_speculation_state", state)
+
+
+def _get_speculation_task(agent: Any | None) -> asyncio.Task[Any] | None:
+    task = getattr(agent, "_speculation_task", None)
+    if isinstance(task, asyncio.Task):
+        return task
+    return _current_speculation_task
+
+
+def _set_speculation_task(
+    task: asyncio.Task[Any] | None,
+    *,
+    agent: Any | None = None,
+) -> None:
+    global _current_speculation_task
+    _current_speculation_task = task
+    if agent is not None:
+        setattr(agent, "_speculation_task", task)
+
+
+def _get_speculation_abort(agent: Any | None) -> asyncio.Event | None:
+    abort_event = getattr(agent, "_speculation_abort_event", None)
+    if isinstance(abort_event, asyncio.Event):
+        return abort_event
+    return _current_speculation_abort
+
+
+def _set_speculation_abort(
+    abort_event: asyncio.Event | None,
+    *,
+    agent: Any | None = None,
+) -> None:
+    global _current_speculation_abort
+    _current_speculation_abort = abort_event
+    if agent is not None:
+        setattr(agent, "_speculation_abort_event", abort_event)
+
+
+def _emit_agent_stream_event(agent: Any | None, event: StreamEvent) -> None:
+    if agent is None:
+        return
+    queue = getattr(agent, "_event_queue", None)
+    if queue is not None and hasattr(queue, "put_nowait"):
+        try:
+            queue.put_nowait(event)
+        except Exception:
+            logger.debug("Failed to queue runtime prompt/speculation event", exc_info=True)
+    fire = getattr(agent, "_fire_event", None)
+    if callable(fire):
+        try:
+            fire(event)
+        except Exception:
+            logger.debug("Failed to publish runtime prompt/speculation event", exc_info=True)
+
+
+def _emit_prompt_suggestion_event(agent: Any | None, state: PromptSuggestionState) -> None:
+    _emit_agent_stream_event(
+        agent,
+        PromptSuggestionEvent(
+            text=state.text,
+            shown_at=state.shown_at or state.generated_at,
+            accepted_at=state.accepted_at,
+        ),
+    )
+
+
+def _emit_speculation_event(agent: Any | None, state: SpeculationState) -> None:
+    _emit_agent_stream_event(
+        agent,
+        SpeculationEvent(
+            status=state.status,
+            suggestion=state.suggestion,
+            reply=state.reply,
+            started_at=state.started_at,
+            completed_at=state.completed_at,
+            error=state.error,
+            boundary={
+                "type": state.boundary.type,
+                "tool_name": state.boundary.tool_name,
+                "detail": state.boundary.detail,
+                "file_path": state.boundary.file_path,
+                "completed_at": state.boundary.completed_at,
+            },
+        ),
+    )
+
+
+def get_current_suggestion(agent: Any | None = None) -> PromptSuggestionState:
+    return _get_agent_prompt_state(agent) or _current_suggestion
+
+
+def clear_suggestion(agent: Any | None = None) -> None:
+    state = PromptSuggestionState()
+    _set_prompt_state(state, agent=agent)
+    _emit_prompt_suggestion_event(agent, state)
+
+
+def get_current_speculation(agent: Any | None = None) -> SpeculationState:
+    return _get_agent_speculation_state(agent) or _current_speculation
+
+
+def clear_speculation(
+    agent: Any | None = None,
+    *,
+    cleanup_overlay: bool = True,
+) -> None:
+    previous = get_current_speculation(agent)
+    if cleanup_overlay:
+        _cleanup_speculation_overlay(previous)
+    state = SpeculationState()
+    _set_speculation_state(state, agent=agent)
+    _emit_speculation_event(agent, state)
+
+
+def abort_speculation(agent: Any | None = None) -> None:
+    """Cancel any in-flight speculation prefetch."""
+    abort_event = _get_speculation_abort(agent)
+    if abort_event is not None:
+        abort_event.set()
+    task = _get_speculation_task(agent)
+    if task is not None and not task.done():
+        task.cancel()
+    _set_speculation_task(None, agent=agent)
+    _set_speculation_abort(None, agent=agent)
+    clear_speculation(agent)
 
 
 # ── Suppression checks ─────────────────────────────────────────────
@@ -362,6 +556,77 @@ def _has_tool_calls_in_last_assistant(messages: list[Message]) -> bool:
     return False
 
 
+def _build_app_state_from_agent(agent: Any | None) -> AppStateSnapshot | None:
+    """Build prompt-suggestion suppression state from the active runtime."""
+    if agent is None:
+        return None
+
+    pending_worker_task = False
+    try:
+        runner = getattr(agent, "background_runner", None)
+        if runner is not None and callable(getattr(runner, "list_active", None)):
+            pending_worker_task = bool(runner.list_active())
+    except Exception:
+        logger.debug("Failed to inspect background runner state", exc_info=True)
+
+    plan_mode_active = False
+    try:
+        from ..tools.plan_mode import is_plan_mode_active
+
+        plan_mode_active = bool(is_plan_mode_active())
+    except Exception:
+        logger.debug("Failed to inspect plan mode state", exc_info=True)
+
+    return AppStateSnapshot(
+        pending_worker_task=pending_worker_task,
+        elicitation_in_progress=bool(getattr(agent, "_pending_client_run_id", None)),
+        plan_mode_active=plan_mode_active,
+        user_last_typed_at=float(getattr(agent, "_last_user_activity_at", 0.0) or 0.0),
+    )
+
+
+def _is_teammate_agent(agent: Any | None) -> bool:
+    if agent is None:
+        return False
+    if getattr(agent, "_identity", None) is not None:
+        return True
+    agent_id = str(
+        getattr(agent, "_agent_id", getattr(agent, "agent_id", "")) or ""
+    ).strip()
+    return "@" in agent_id if agent_id else False
+
+
+def _should_enable_prompt_suggestion(
+    context: PostSamplingContext,
+    agent: Any | None,
+    config: PromptSuggestionConfig,
+) -> bool:
+    if not config.enabled:
+        return False
+    if context.query_source != "repl_main_thread":
+        return False
+    if bool(getattr(agent, "_runtime_is_non_interactive", False)):
+        return False
+    if _is_teammate_agent(agent):
+        return False
+    return True
+
+
+def _get_last_assistant_usage(messages: list[Message]) -> dict[str, int]:
+    for msg in reversed(messages):
+        if msg.role != "assistant":
+            continue
+        usage = msg.metadata.get("usage")
+        if not isinstance(usage, dict):
+            return {}
+        return {
+            "input_tokens": int(usage.get("input_tokens", 0) or 0),
+            "cache_creation_tokens": int(usage.get("cache_creation_tokens", 0) or 0),
+            "output_tokens": int(usage.get("output_tokens", 0) or 0),
+        }
+    return {}
+
+
 class PromptSuggestionHook(PostSamplingHook):
     """Post-sampling hook that generates prompt suggestions.
 
@@ -384,27 +649,47 @@ class PromptSuggestionHook(PostSamplingHook):
         *,
         agent: Any = None,
     ) -> None:
-        if context.query_source not in ("sdk", "repl_main_thread"):
+        if not _should_enable_prompt_suggestion(context, agent, self._config):
             return
 
         if _has_tool_calls_in_last_assistant(context.messages):
             return
 
-        suggestion = await generate_suggestion(
+        previous_suggestion = get_current_suggestion(agent).text
+        usage = _get_last_assistant_usage(context.messages)
+        suggestion = await generate_suggestion_v2(
             context.messages,
             self._provider,
             self._config,
+            app_state=_build_app_state_from_agent(agent),
+            previous_suggestion=previous_suggestion,
+            parent_input_tokens=usage.get("input_tokens", 0),
+            parent_cache_write_tokens=usage.get("cache_creation_tokens", 0),
+            parent_output_tokens=usage.get("output_tokens", 0),
         )
 
-        global _current_suggestion
         if suggestion:
-            _current_suggestion = PromptSuggestionState(
+            state = PromptSuggestionState(
                 text=suggestion,
                 generated_at=time.time(),
+                shown_at=time.time(),
             )
+            _set_prompt_state(state, agent=agent)
+            _emit_prompt_suggestion_event(agent, state)
             logger.debug("Suggestion: %s", suggestion)
+            if self._config.speculation_enabled:
+                start_speculation(
+                    context.messages,
+                    context.system_prompt,
+                    self._provider,
+                    suggestion,
+                    agent=agent,
+                )
+            else:
+                abort_speculation(agent)
         else:
-            _current_suggestion = PromptSuggestionState()
+            clear_suggestion(agent)
+            abort_speculation(agent)
 
 
 # ── Suggestion outcome tracking ─────────────────────────────────────
@@ -518,7 +803,7 @@ def get_prompt_for_variant(variant: str = "") -> str:
 _current_abort: object | None = None  # opaque cancel token
 
 
-def abort_prompt_suggestion() -> None:
+def abort_prompt_suggestion(agent: Any | None = None) -> None:
     """Cancel any in-flight suggestion generation.
 
     Typically called when the user starts typing so we don't waste tokens.
@@ -526,8 +811,916 @@ def abort_prompt_suggestion() -> None:
     """
     global _current_abort
     _current_abort = object()  # new token invalidates prior generation
-    clear_suggestion()
+    clear_suggestion(agent)
     logger.debug("Prompt suggestion aborted")
+
+
+_SPECULATION_READ_ONLY_TOOL_NAMES = frozenset({
+    "Read",
+    "Grep",
+    "Glob",
+    "LSP",
+    "ToolSearch",
+    "ListMcpResourcesTool",
+    "ReadMcpResourceTool",
+    "WebFetch",
+    "WebSearch",
+})
+_SPECULATION_WRITE_TOOL_NAMES = frozenset({
+    "Write",
+    "Edit",
+    "FileWrite",
+    "FileEdit",
+})
+_SPECULATION_PATH_TOOL_NAMES = _SPECULATION_READ_ONLY_TOOL_NAMES | _SPECULATION_WRITE_TOOL_NAMES | {"NotebookEdit"}
+_SPECULATION_SHELL_TOOL_NAMES = frozenset({"Bash", "PowerShell", "REPL"})
+_SPECULATION_SAFE_BASH_COMMANDS = frozenset({
+    "cat",
+    "date",
+    "df",
+    "du",
+    "env",
+    "fd",
+    "fdfind",
+    "file",
+    "find",
+    "git",
+    "grep",
+    "head",
+    "ls",
+    "printenv",
+    "pwd",
+    "rg",
+    "sed",
+    "sort",
+    "stat",
+    "tail",
+    "tr",
+    "uniq",
+    "uname",
+    "wc",
+    "which",
+    "whoami",
+})
+_SPECULATION_SAFE_GIT_SUBCOMMANDS = frozenset({
+    "blame",
+    "describe",
+    "diff",
+    "grep",
+    "log",
+    "ls-files",
+    "merge-base",
+    "reflog",
+    "rev-parse",
+    "show",
+    "status",
+})
+_SPECULATION_SAFE_POWERSHELL_NAVIGATION = frozenset({
+    "cd",
+    "chdir",
+    "pop-location",
+    "push-location",
+    "set-location",
+    "sl",
+})
+_SPECULATION_SAFE_POWERSHELL_EXTERNALS = frozenset({
+    "git",
+})
+
+
+class _SpeculationBoundaryReached(RuntimeError):
+    """Raised to stop speculation once a boundary tool is reached."""
+
+
+def _cleanup_speculation_overlay(state: SpeculationState) -> None:
+    overlay_dir = str(state.overlay_dir or "").strip()
+    if not overlay_dir:
+        return
+    with contextlib.suppress(Exception):
+        shutil.rmtree(overlay_dir, ignore_errors=True)
+
+
+def _commit_speculation_overlay(state: SpeculationState) -> None:
+    workspace_root = str(state.workspace_root or "").strip()
+    overlay_dir = str(state.overlay_dir or "").strip()
+    if not workspace_root or not overlay_dir or not state.written_paths:
+        return
+    root = Path(workspace_root).resolve()
+    overlay_root = Path(overlay_dir).resolve()
+    for rel in state.written_paths:
+        rel_path = Path(rel)
+        source = (overlay_root / rel_path).resolve()
+        target = (root / rel_path).resolve()
+        if not source.exists() or not source.is_file():
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+
+
+def _resolve_speculation_path(raw_path: str, workspace_root: str) -> Path:
+    candidate = Path(raw_path)
+    if candidate.is_absolute():
+        return candidate.resolve()
+    return (Path(workspace_root) / candidate).resolve()
+
+
+def _relative_speculation_path(path: Path, workspace_root: str) -> str | None:
+    try:
+        relative = path.resolve().relative_to(Path(workspace_root).resolve())
+    except ValueError:
+        return None
+    return relative.as_posix()
+
+
+def _ensure_overlay_file(
+    source: Path,
+    *,
+    workspace_root: str,
+    overlay_dir: str,
+    written_paths: set[str],
+) -> Path | None:
+    relative = _relative_speculation_path(source, workspace_root)
+    if relative is None:
+        return None
+    overlay_path = (Path(overlay_dir) / Path(relative)).resolve()
+    if relative not in written_paths:
+        overlay_path.parent.mkdir(parents=True, exist_ok=True)
+        if source.exists():
+            shutil.copy2(source, overlay_path)
+        written_paths.add(relative)
+    return overlay_path
+
+
+def _speculation_tool_mode(tool_name: str, input_data: dict[str, Any], *, is_read_only: bool) -> str:
+    if tool_name == "Bash":
+        command = str(input_data.get("command", "") or "").strip()
+        if _is_speculation_safe_bash(command):
+            return "read"
+        return "boundary"
+    if tool_name == "PowerShell":
+        command = str(input_data.get("command", "") or "").strip()
+        if _is_speculation_safe_powershell(command):
+            return "read"
+        return "boundary"
+    if tool_name == "REPL":
+        return _speculation_repl_mode(input_data)
+    if tool_name in _SPECULATION_SHELL_TOOL_NAMES:
+        return "boundary"
+    if tool_name == "NotebookEdit":
+        action = str(input_data.get("action", "") or "").strip()
+        if action in {"get_cell", "list_cells"}:
+            return "read"
+        return "write"
+    if tool_name in _SPECULATION_WRITE_TOOL_NAMES:
+        return "write"
+    if tool_name in _SPECULATION_READ_ONLY_TOOL_NAMES:
+        return "read"
+    if is_read_only:
+        return "pass"
+    return "boundary"
+
+
+def _is_speculation_safe_bash(command: str) -> bool:
+    if not command.strip():
+        return False
+    try:
+        from ..permissions import BashCommandAnalyzer, RiskLevel
+
+        risk, _reason = BashCommandAnalyzer.classify(command)
+        return risk == RiskLevel.SAFE
+    except Exception:
+        split_result = _split_shell_command_for_speculation(command)
+        if split_result is None:
+            return False
+        segments, _operators = split_result
+        return all(_is_speculation_safe_bash_segment(segment) for segment in segments)
+
+
+def _split_shell_command_for_speculation(command: str) -> tuple[list[str], list[str]] | None:
+    segments: list[str] = []
+    operators: list[str] = []
+    current: list[str] = []
+    quote = ""
+    escape = False
+    index = 0
+
+    while index < len(command):
+        char = command[index]
+        if escape:
+            current.append(char)
+            escape = False
+            index += 1
+            continue
+
+        if quote:
+            current.append(char)
+            if char == quote:
+                quote = ""
+            elif char == "\\" and quote == '"':
+                escape = True
+            index += 1
+            continue
+
+        if char == "\\":
+            current.append(char)
+            escape = True
+            index += 1
+            continue
+
+        if char in {"'", '"'}:
+            quote = char
+            current.append(char)
+            index += 1
+            continue
+
+        if char in {"<", ">"}:
+            return None
+        if char == ";":
+            return None
+        if char == "&":
+            if index + 1 < len(command) and command[index + 1] == "&":
+                segment = "".join(current).strip()
+                if not segment:
+                    return None
+                segments.append(segment)
+                operators.append("&&")
+                current = []
+                index += 2
+                continue
+            return None
+        if char == "|":
+            if index + 1 < len(command) and command[index + 1] == "|":
+                return None
+            segment = "".join(current).strip()
+            if not segment:
+                return None
+            segments.append(segment)
+            operators.append("|")
+            current = []
+            index += 1
+            continue
+
+        current.append(char)
+        index += 1
+
+    if quote or escape:
+        return None
+
+    tail = "".join(current).strip()
+    if not tail:
+        return None
+    segments.append(tail)
+    return segments, operators
+
+
+def _is_speculation_safe_bash_segment(segment: str) -> bool:
+    try:
+        tokens = shlex.split(segment, posix=True)
+    except ValueError:
+        return False
+    if not tokens:
+        return False
+
+    lowered = [token.lower() for token in tokens]
+    command = lowered[0]
+    if command not in _SPECULATION_SAFE_BASH_COMMANDS:
+        return False
+    if command == "git":
+        return _is_speculation_safe_git_tokens(lowered[1:])
+    if command == "sed":
+        return not any(token == "-i" or token.startswith("-i") for token in lowered[1:])
+    if any(
+        token in {
+            "apply_patch",
+            "bash",
+            "node",
+            "npm",
+            "perl",
+            "php",
+            "pip",
+            "pip3",
+            "pnpm",
+            "python",
+            "python2",
+            "python3",
+            "ruby",
+            "sh",
+            "xargs",
+            "yarn",
+            "zsh",
+        }
+        for token in lowered
+    ):
+        return False
+    return True
+
+
+def _is_speculation_safe_git_tokens(args: list[str]) -> bool:
+    if not args:
+        return False
+    subcommand = args[0]
+    if subcommand not in _SPECULATION_SAFE_GIT_SUBCOMMANDS:
+        return False
+    blocked_flags = {
+        "--exec-path",
+        "--git-dir",
+        "--output",
+        "--work-tree",
+    }
+    return not any(
+        token in blocked_flags or any(token.startswith(f"{flag}=") for flag in blocked_flags)
+        for token in args[1:]
+    )
+
+
+def _is_speculation_safe_powershell(command: str) -> bool:
+    if not command.strip():
+        return False
+    try:
+        from ..tools.powershell import CmdletRisk, classify_command
+
+        risk, _reason = classify_command(command)
+        if risk == CmdletRisk.SAFE:
+            return True
+
+        split_result = _split_shell_command_for_speculation(command)
+        if split_result is None:
+            return False
+
+        segments, _operators = split_result
+        for segment in segments:
+            try:
+                tokens = shlex.split(segment, posix=False)
+            except ValueError:
+                return False
+            if not tokens:
+                return False
+
+            head = tokens[0].strip("&").strip().strip('"').strip("'")
+            lowered_head = head.lower()
+            if lowered_head in _SPECULATION_SAFE_POWERSHELL_NAVIGATION:
+                continue
+            if lowered_head in _SPECULATION_SAFE_POWERSHELL_EXTERNALS:
+                if not _is_speculation_safe_git_tokens([token.lower() for token in tokens[1:]]):
+                    return False
+                continue
+            segment_risk, _segment_reason = classify_command(segment)
+            if segment_risk != CmdletRisk.SAFE:
+                return False
+        return True
+    except Exception:
+        return False
+
+
+def _speculation_repl_mode(input_data: dict[str, Any]) -> str:
+    action = str(input_data.get("action", "") or "execute").strip()
+    if action == "list_sessions":
+        return "read"
+    if action in {"execute", "execute_in_session"} and _is_speculation_safe_repl_read(input_data):
+        return "read"
+    return "boundary"
+
+
+def _is_speculation_safe_repl_read(input_data: dict[str, Any]) -> bool:
+    action = str(input_data.get("action", "") or "execute").strip()
+    if action not in {"execute", "execute_in_session"}:
+        return False
+
+    code = str(input_data.get("code", "") or "")
+    if not code.strip():
+        return False
+
+    language = str(input_data.get("language", "") or "").strip().lower()
+    if not language:
+        try:
+            from ..tools.repl import _detect_language
+
+            language = _detect_language(code)
+        except Exception:
+            return False
+    if language != "python":
+        return False
+    return _is_speculation_safe_python_repl_code(code)
+
+
+_SAFE_REPL_PYTHON_CALLS = frozenset({
+    "abs",
+    "all",
+    "any",
+    "bool",
+    "dict",
+    "float",
+    "int",
+    "len",
+    "list",
+    "max",
+    "min",
+    "print",
+    "repr",
+    "round",
+    "set",
+    "sorted",
+    "str",
+    "sum",
+    "tuple",
+    "type",
+})
+
+_SAFE_REPL_PYTHON_NODES = (
+    ast.Add,
+    ast.And,
+    ast.BinOp,
+    ast.BitAnd,
+    ast.BitOr,
+    ast.BitXor,
+    ast.BoolOp,
+    ast.Call,
+    ast.Compare,
+    ast.Constant,
+    ast.Dict,
+    ast.Div,
+    ast.Eq,
+    ast.Expr,
+    ast.FloorDiv,
+    ast.Gt,
+    ast.GtE,
+    ast.IfExp,
+    ast.In,
+    ast.Index if hasattr(ast, "Index") else ast.Slice,
+    ast.Invert,
+    ast.Is,
+    ast.IsNot,
+    ast.List,
+    ast.Load,
+    ast.Lt,
+    ast.LtE,
+    ast.Mod,
+    ast.Module,
+    ast.Mult,
+    ast.Name,
+    ast.Not,
+    ast.NotEq,
+    ast.NotIn,
+    ast.Or,
+    ast.Pow,
+    ast.Set,
+    ast.Slice,
+    ast.Sub,
+    ast.Subscript,
+    ast.Tuple,
+    ast.UAdd,
+    ast.UnaryOp,
+    ast.USub,
+    ast.keyword,
+)
+
+
+class _SafeReplPythonVisitor(ast.NodeVisitor):
+    def generic_visit(self, node: ast.AST) -> None:
+        if not isinstance(node, _SAFE_REPL_PYTHON_NODES):
+            raise ValueError(f"Unsupported node: {type(node).__name__}")
+        super().generic_visit(node)
+
+    def visit_Module(self, node: ast.Module) -> None:
+        if not node.body or any(not isinstance(statement, ast.Expr) for statement in node.body):
+            raise ValueError("Only expression statements are allowed")
+        self.generic_visit(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        if not isinstance(node.func, ast.Name) or node.func.id not in _SAFE_REPL_PYTHON_CALLS:
+            raise ValueError("Only pure builtin calls are allowed")
+        for keyword in node.keywords:
+            if keyword.arg is None:
+                raise ValueError("Starred keyword arguments are not allowed")
+        self.generic_visit(node)
+
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        raise ValueError("Attribute access is not allowed")
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        raise ValueError("Lambda is not allowed")
+
+    def visit_ListComp(self, node: ast.ListComp) -> None:
+        raise ValueError("Comprehensions are not allowed")
+
+    def visit_SetComp(self, node: ast.SetComp) -> None:
+        raise ValueError("Comprehensions are not allowed")
+
+    def visit_DictComp(self, node: ast.DictComp) -> None:
+        raise ValueError("Comprehensions are not allowed")
+
+    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+        raise ValueError("Generator expressions are not allowed")
+
+    def visit_FormattedValue(self, node: ast.FormattedValue) -> None:
+        raise ValueError("Formatted strings are not allowed")
+
+    def visit_JoinedStr(self, node: ast.JoinedStr) -> None:
+        raise ValueError("Formatted strings are not allowed")
+
+
+def _is_speculation_safe_python_repl_code(code: str) -> bool:
+    try:
+        tree = ast.parse(code, mode="exec")
+        _SafeReplPythonVisitor().visit(tree)
+    except Exception:
+        return False
+    return True
+
+
+def _speculation_can_auto_accept_edits(agent: Any | None) -> bool:
+    checker = getattr(agent, "_permission_checker", None)
+    mode = getattr(checker, "mode", None)
+    try:
+        from ..permissions import PermissionMode
+
+        return mode in {PermissionMode.ACCEPT_EDITS, PermissionMode.BYPASS}
+    except Exception:
+        return False
+
+
+def _speculation_boundary_type(tool_name: str) -> str:
+    if tool_name in {"Edit", "Write", "NotebookEdit", "FileEdit", "FileWrite"}:
+        return "edit"
+    if tool_name in {"Bash", "PowerShell", "REPL"}:
+        return "shell"
+    return "tool"
+
+
+def _extract_boundary_fields(tool_name: str, input_data: dict[str, Any]) -> SpeculationBoundary:
+    detail = ""
+    for key in ("command", "file_path", "path", "notebook_path", "pattern", "url"):
+        value = input_data.get(key)
+        if isinstance(value, str) and value.strip():
+            detail = value.strip()
+            break
+    file_path = ""
+    for key in ("file_path", "path", "notebook_path"):
+        value = input_data.get(key)
+        if isinstance(value, str) and value.strip():
+            file_path = value.strip()
+            break
+    return SpeculationBoundary(
+        type=_speculation_boundary_type(tool_name),
+        tool_name=tool_name,
+        detail=detail[:200],
+        file_path=file_path,
+        completed_at=time.time(),
+    )
+
+
+def _sanitize_blocked_speculation_output(
+    *,
+    boundary: SpeculationBoundary,
+    events: list[StreamEvent],
+    added_messages: list[Message],
+) -> tuple[list[StreamEvent], list[Message]]:
+    boundary_tool_use_id = ""
+    for event in reversed(events):
+        if isinstance(event, ToolCallEvent) and event.tool_name == boundary.tool_name:
+            boundary_tool_use_id = event.tool_use_id
+            break
+
+    cleaned_events: list[StreamEvent] = []
+    for event in events:
+        if isinstance(event, ErrorEvent):
+            continue
+        if boundary_tool_use_id and isinstance(event, ToolCallEvent) and event.tool_use_id == boundary_tool_use_id:
+            continue
+        if boundary_tool_use_id and isinstance(event, ToolResultEvent) and event.tool_use_id == boundary_tool_use_id:
+            continue
+        cleaned_events.append(event)
+
+    cleaned_messages = copy.deepcopy(added_messages)
+    if boundary_tool_use_id:
+        if cleaned_messages and cleaned_messages[-1].role == "user":
+            blocks = list(cleaned_messages[-1].tool_result_blocks())
+            if blocks and all(block.tool_use_id == boundary_tool_use_id for block in blocks):
+                cleaned_messages.pop()
+        for index in range(len(cleaned_messages) - 1, -1, -1):
+            message = cleaned_messages[index]
+            if message.role != "assistant" or not isinstance(message.content, list):
+                continue
+            retained = [
+                block
+                for block in message.content
+                if not (
+                    isinstance(block, ToolUseBlock)
+                    and block.id == boundary_tool_use_id
+                )
+            ]
+            if retained != list(message.content):
+                if retained:
+                    message.content = retained
+                else:
+                    cleaned_messages.pop(index)
+                break
+
+    return cleaned_events, cleaned_messages
+
+
+def _make_speculation_tools(
+    agent: Any | None,
+    *,
+    workspace_root: str,
+    overlay_dir: str,
+    written_paths: set[str],
+) -> list[Any]:
+    from ..tool import Tool, ToolUseContext
+
+    available = list(getattr(agent, "_tools", []) or [])
+    if not available:
+        return []
+
+    tracker: dict[str, SpeculationBoundary] = {"boundary": SpeculationBoundary()}
+
+    class _BoundaryTool(Tool):
+        def __init__(self, wrapped: Tool) -> None:
+            self._wrapped = wrapped
+            self.name = wrapped.name
+            self.aliases = getattr(wrapped, "aliases", ())
+            self.description = wrapped.description
+            self.instructions = wrapped.instructions
+            self.is_read_only = getattr(wrapped, "is_read_only", False)
+            self.supports_streaming = getattr(wrapped, "supports_streaming", False)
+            self._mode = _speculation_tool_mode(
+                wrapped.name,
+                {},
+                is_read_only=bool(getattr(wrapped, "is_read_only", False)),
+            )
+
+        def get_parameters_schema(self) -> dict[str, Any]:
+            return self._wrapped.get_parameters_schema()
+
+        def _rewrite_kwargs(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+            mode = _speculation_tool_mode(
+                self.name,
+                kwargs,
+                is_read_only=bool(getattr(self._wrapped, "is_read_only", False)),
+            )
+            if mode == "pass":
+                return dict(kwargs)
+
+            if mode == "boundary":
+                tracker["boundary"] = _extract_boundary_fields(self.name, kwargs)
+                raise _SpeculationBoundaryReached(
+                    f"Speculation paused at {self.name}; continue this request in the main session."
+                )
+
+            path_key = next(
+                (
+                    key
+                    for key in ("notebook_path", "path", "file_path")
+                    if isinstance(kwargs.get(key), str) and str(kwargs.get(key)).strip()
+                ),
+                "",
+            )
+            if not path_key:
+                if mode == "read":
+                    return dict(kwargs)
+                tracker["boundary"] = _extract_boundary_fields(self.name, kwargs)
+                raise _SpeculationBoundaryReached(
+                    f"Speculation paused at {self.name}; pathless write is not isolated."
+                )
+
+            source_path = _resolve_speculation_path(str(kwargs[path_key]), workspace_root)
+            relative = _relative_speculation_path(source_path, workspace_root)
+            if relative is None:
+                if mode == "read":
+                    return dict(kwargs)
+                tracker["boundary"] = _extract_boundary_fields(self.name, kwargs)
+                raise _SpeculationBoundaryReached(
+                    f"Speculation paused at {self.name}; write outside workspace is not allowed."
+                )
+
+            rewritten = dict(kwargs)
+            if mode == "write":
+                if not _speculation_can_auto_accept_edits(agent):
+                    tracker["boundary"] = _extract_boundary_fields(self.name, kwargs)
+                    raise _SpeculationBoundaryReached(
+                        f"Speculation paused at {self.name}; file edits require an auto-accept edit mode."
+                    )
+                overlay_path = _ensure_overlay_file(
+                    source_path,
+                    workspace_root=workspace_root,
+                    overlay_dir=overlay_dir,
+                    written_paths=written_paths,
+                )
+                if overlay_path is None:
+                    tracker["boundary"] = _extract_boundary_fields(self.name, kwargs)
+                    raise _SpeculationBoundaryReached(
+                        f"Speculation paused at {self.name}; write outside workspace is not allowed."
+                    )
+                rewritten[path_key] = str(overlay_path)
+            elif relative in written_paths:
+                rewritten[path_key] = str((Path(overlay_dir) / Path(relative)).resolve())
+            return rewritten
+
+        async def execute(self, *, context: ToolUseContext, **kwargs: Any) -> str:
+            abort_event = getattr(context, "abort_event", None)
+            try:
+                rewritten = self._rewrite_kwargs(kwargs)
+            except _SpeculationBoundaryReached:
+                if abort_event is not None and hasattr(abort_event, "set"):
+                    abort_event.set()
+                raise
+            return await self._wrapped.execute(context=context, **rewritten)
+
+        async def stream_execute(self, *, context: ToolUseContext, **kwargs: Any):
+            abort_event = getattr(context, "abort_event", None)
+            try:
+                rewritten = self._rewrite_kwargs(kwargs)
+            except _SpeculationBoundaryReached:
+                if abort_event is not None and hasattr(abort_event, "set"):
+                    abort_event.set()
+                raise
+            if getattr(self._wrapped, "supports_streaming", False):
+                async for item in self._wrapped.stream_execute(context=context, **rewritten):
+                    yield item
+                return
+            yield await self._wrapped.execute(context=context, **rewritten)
+
+    speculation_tools: list[Any] = []
+    for tool in available:
+        speculation_tools.append(_BoundaryTool(tool))
+
+    if agent is not None:
+        setattr(agent, "_speculation_boundary_tracker", tracker)
+    return speculation_tools
+
+
+def start_speculation(
+    messages: list[Message],
+    system_prompt: str,
+    provider: BaseProvider,
+    suggestion: str,
+    *,
+    agent: Any | None = None,
+) -> None:
+    """Best-effort forked-agent prefetch of the predicted next input."""
+    if not suggestion.strip():
+        abort_speculation(agent)
+        return
+
+    abort_speculation(agent)
+    abort_event = asyncio.Event()
+    _set_speculation_abort(abort_event, agent=agent)
+    workspace_root = str(getattr(agent, "_working_directory", "") or os.getcwd())
+    overlay_dir = tempfile.mkdtemp(prefix="ccmini-spec-")
+    written_paths: set[str] = set()
+    running_state = SpeculationState(
+        status="running",
+        suggestion=suggestion,
+        started_at=time.time(),
+        workspace_root=workspace_root,
+        overlay_dir=overlay_dir,
+    )
+    _set_speculation_state(running_state, agent=agent)
+    _emit_speculation_event(agent, running_state)
+
+    async def _run() -> None:
+        from ..delegation.subagent import ForkedAgentContext, run_forked_agent
+
+        try:
+            speculation_tools = _make_speculation_tools(
+                agent,
+                workspace_root=workspace_root,
+                overlay_dir=overlay_dir,
+                written_paths=written_paths,
+            )
+            result = await run_forked_agent(
+                context=ForkedAgentContext(
+                    parent_messages=messages[-20:],
+                    parent_system_prompt=system_prompt,
+                    abort_signal=abort_event,
+                ),
+                provider=provider,
+                tools=speculation_tools,
+                max_turns=5,
+                query_source="prompt_suggestion_speculation",
+                fork_label="speculation",
+                skip_transcript=True,
+                working_directory=str(getattr(agent, "_working_directory", "") or ""),
+            )
+            if abort_event.is_set() and not result.aborted:
+                return
+
+            boundary_tracker = getattr(agent, "_speculation_boundary_tracker", {})
+            boundary = boundary_tracker.get("boundary", SpeculationBoundary())
+            if boundary.type:
+                cleaned_events, cleaned_messages = _sanitize_blocked_speculation_output(
+                    boundary=boundary,
+                    events=list(result.events),
+                    added_messages=list(result.added_messages),
+                )
+                state = SpeculationState(
+                    status="blocked",
+                    suggestion=suggestion,
+                    reply=result.text.strip(),
+                    started_at=running_state.started_at,
+                    completed_at=time.time(),
+                    boundary=boundary,
+                    events=cleaned_events,
+                    added_messages=cleaned_messages,
+                    stop_reason=result.stop_reason,
+                    workspace_root=workspace_root,
+                    overlay_dir=overlay_dir,
+                    written_paths=sorted(written_paths),
+                )
+            else:
+                state = SpeculationState(
+                    status="ready" if result.text.strip() else "idle",
+                    suggestion=suggestion,
+                    reply=result.text.strip(),
+                    started_at=running_state.started_at,
+                    completed_at=time.time(),
+                    events=list(result.events),
+                    added_messages=list(result.added_messages),
+                    stop_reason=result.stop_reason,
+                    workspace_root=workspace_root,
+                    overlay_dir=overlay_dir,
+                    written_paths=sorted(written_paths),
+                )
+            _set_speculation_state(state, agent=agent)
+            _emit_speculation_event(agent, state)
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            if abort_event.is_set():
+                return
+            state = SpeculationState(
+                status="error",
+                suggestion=suggestion,
+                started_at=running_state.started_at,
+                completed_at=time.time(),
+                error=str(exc),
+            )
+            _set_speculation_state(state, agent=agent)
+            _emit_speculation_event(agent, state)
+            logger.debug("Speculation prefetch failed: %s", exc)
+        finally:
+            if _get_speculation_abort(agent) is abort_event:
+                _set_speculation_abort(None, agent=agent)
+
+    task = asyncio.create_task(_run())
+    _set_speculation_task(task, agent=agent)
+    task.add_done_callback(
+        lambda finished: _set_speculation_task(None, agent=agent)
+        if _get_speculation_task(agent) is finished
+        else None
+    )
+
+
+@dataclass
+class AcceptedSpeculation:
+    """Speculation result ready to replay into the main session."""
+
+    suggestion: str
+    reply: str
+    events: list[StreamEvent]
+    added_messages: list[Message]
+    workspace_root: str
+    overlay_dir: str
+    written_paths: list[str]
+    needs_continuation: bool = False
+
+
+def try_accept_speculation(
+    user_text: str,
+    *,
+    agent: Any | None = None,
+) -> AcceptedSpeculation | None:
+    """Consume a ready speculation when the user types the predicted input."""
+
+    state = get_current_speculation(agent)
+    suggestion = state.suggestion.strip()
+    if not suggestion or state.status not in {"ready", "blocked"}:
+        return None
+    if user_text.strip() != suggestion:
+        return None
+
+    prompt_state = get_current_suggestion(agent)
+    accepted_state = PromptSuggestionState(
+        text="",
+        generated_at=prompt_state.generated_at,
+        shown_at=prompt_state.shown_at or prompt_state.generated_at,
+        accepted_at=time.time(),
+    )
+    _set_prompt_state(accepted_state, agent=agent)
+    _emit_prompt_suggestion_event(agent, accepted_state)
+
+    accepted = AcceptedSpeculation(
+        suggestion=suggestion,
+        reply=state.reply,
+        events=list(state.events),
+        added_messages=list(state.added_messages),
+        workspace_root=state.workspace_root,
+        overlay_dir=state.overlay_dir,
+        written_paths=list(state.written_paths),
+        needs_continuation=state.status == "blocked",
+    )
+    clear_speculation(agent, cleanup_overlay=False)
+    return accepted
 
 
 def _is_aborted(token: object | None) -> bool:

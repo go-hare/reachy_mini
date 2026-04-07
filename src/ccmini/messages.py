@@ -7,6 +7,7 @@ because it maps cleanly to tool_use / tool_result patterns.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 import time
 from typing import Any, Literal
@@ -34,9 +35,10 @@ class ToolUseBlock:
 @dataclass(slots=True)
 class ToolResultBlock:
     tool_use_id: str
-    content: str
+    content: str | list[Any]
     is_error: bool = False
     type: Literal["tool_result"] = "tool_result"
+    metadata: dict[str, Any] = field(default_factory=dict, kw_only=True)
 
 
 @dataclass(slots=True)
@@ -54,6 +56,115 @@ class DocumentBlock:
 
 
 ContentBlock = TextBlock | ToolUseBlock | ToolResultBlock | ImageBlock | DocumentBlock
+
+
+def normalize_tool_result_content(content: Any) -> str | list[dict[str, Any]]:
+    """Normalize rich tool-result content into API-safe blocks or plain text."""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return str(content)
+
+    normalized: list[dict[str, Any]] = []
+    for item in content:
+        if isinstance(item, dict):
+            block = dict(item)
+            block_type = str(block.get("type", "") or "").strip()
+            if block_type == "text":
+                normalized.append({
+                    "type": "text",
+                    "text": str(block.get("text", "")),
+                })
+            elif block_type == "image":
+                source = block.get("source")
+                if isinstance(source, dict):
+                    normalized.append({
+                        "type": "image",
+                        "source": dict(source),
+                    })
+                else:
+                    normalized.append({
+                        "type": "text",
+                        "text": "[image]",
+                    })
+            elif block_type == "document":
+                source = block.get("source")
+                if isinstance(source, dict):
+                    normalized.append({
+                        "type": "document",
+                        "source": dict(source),
+                    })
+                else:
+                    normalized.append({
+                        "type": "text",
+                        "text": "[document]",
+                    })
+            else:
+                normalized.append({
+                    "type": "text",
+                    "text": json.dumps(block, ensure_ascii=False, default=str),
+                })
+            continue
+
+        if isinstance(item, TextBlock):
+            normalized.append({"type": "text", "text": item.text})
+            continue
+
+        if isinstance(item, ImageBlock):
+            normalized.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": item.media_type,
+                    "data": item.source,
+                },
+            })
+            continue
+
+        if isinstance(item, DocumentBlock):
+            normalized.append({
+                "type": "document",
+                "source": {
+                    "type": "base64",
+                    "media_type": item.media_type,
+                    "data": item.source,
+                },
+            })
+            continue
+
+        normalized.append({"type": "text", "text": str(item)})
+
+    return normalized
+
+
+def tool_result_content_to_text(content: Any) -> str:
+    """Flatten tool-result content into text for plain-text consumers."""
+    normalized = normalize_tool_result_content(content)
+    if isinstance(normalized, str):
+        return normalized
+
+    parts: list[str] = []
+    for block in normalized:
+        block_type = str(block.get("type", "") or "").strip()
+        if block_type == "text":
+            text = str(block.get("text", ""))
+            if text:
+                parts.append(text)
+        elif block_type == "image":
+            parts.append("[image]")
+        elif block_type == "document":
+            parts.append("[document]")
+        else:
+            parts.append(str(block))
+    return "\n".join(part for part in parts if part)
+
+
+def tool_result_content_snippet(content: Any, *, limit: int = 120) -> str:
+    """Return a one-line preview of tool-result content."""
+    text = tool_result_content_to_text(content).replace("\n", " ").strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit]
 
 
 # Synthetic tool_result content inserted when a tool_use block has no matching
@@ -181,6 +292,11 @@ class TextEvent:
     """Incremental text chunk from the model."""
     text: str
     type: Literal["text"] = "text"
+    conversation_id: str = field(default="", kw_only=True)
+    turn_id: str = field(default="", kw_only=True)
+    run_id: str = field(default="", kw_only=True)
+    tool_use_id: str = field(default="", kw_only=True)
+    metadata: dict[str, Any] = field(default_factory=dict, kw_only=True)
 
 
 @dataclass(slots=True)
@@ -190,6 +306,10 @@ class ToolCallEvent:
     tool_name: str
     tool_input: dict[str, Any]
     type: Literal["tool_call"] = "tool_call"
+    conversation_id: str = field(default="", kw_only=True)
+    turn_id: str = field(default="", kw_only=True)
+    run_id: str = field(default="", kw_only=True)
+    metadata: dict[str, Any] = field(default_factory=dict, kw_only=True)
 
 
 @dataclass(slots=True)
@@ -203,14 +323,22 @@ class ToolResultEvent:
     result: str
     tool_name: str = ""
     is_error: bool = False
-    metadata: dict[str, Any] = field(default_factory=dict)
     type: Literal["tool_result"] = "tool_result"
+    conversation_id: str = field(default="", kw_only=True)
+    turn_id: str = field(default="", kw_only=True)
+    run_id: str = field(default="", kw_only=True)
+    metadata: dict[str, Any] = field(default_factory=dict, kw_only=True)
 
 
 @dataclass(slots=True)
 class RequestStartEvent:
     """Emitted at the start of each API request iteration — mirrors TS stream_request_start."""
     type: Literal["stream_request_start"] = "stream_request_start"
+    conversation_id: str = field(default="", kw_only=True)
+    turn_id: str = field(default="", kw_only=True)
+    run_id: str = field(default="", kw_only=True)
+    tool_use_id: str = field(default="", kw_only=True)
+    metadata: dict[str, Any] = field(default_factory=dict, kw_only=True)
 
 
 @dataclass(slots=True)
@@ -221,6 +349,10 @@ class CompletionEvent:
     usage: Any = None
     stop_reason: str | None = None
     type: Literal["completion"] = "completion"
+    turn_id: str = field(default="", kw_only=True)
+    run_id: str = field(default="", kw_only=True)
+    tool_use_id: str = field(default="", kw_only=True)
+    metadata: dict[str, Any] = field(default_factory=dict, kw_only=True)
 
 
 @dataclass(slots=True)
@@ -229,6 +361,11 @@ class ErrorEvent:
     error: str
     recoverable: bool = False
     type: Literal["error"] = "error"
+    conversation_id: str = field(default="", kw_only=True)
+    turn_id: str = field(default="", kw_only=True)
+    run_id: str = field(default="", kw_only=True)
+    tool_use_id: str = field(default="", kw_only=True)
+    metadata: dict[str, Any] = field(default_factory=dict, kw_only=True)
 
 
 @dataclass(slots=True)
@@ -236,6 +373,11 @@ class IdleEvent:
     """Idle tick in resident mode."""
     idle_seconds: float = 0.0
     type: Literal["idle"] = "idle"
+    conversation_id: str = field(default="", kw_only=True)
+    turn_id: str = field(default="", kw_only=True)
+    run_id: str = field(default="", kw_only=True)
+    tool_use_id: str = field(default="", kw_only=True)
+    metadata: dict[str, Any] = field(default_factory=dict, kw_only=True)
 
 
 @dataclass(slots=True)
@@ -244,6 +386,9 @@ class PendingToolCallEvent:
     run_id: str
     calls: list[ToolCallEvent]
     type: Literal["pending_tool_call"] = "pending_tool_call"
+    conversation_id: str = field(default="", kw_only=True)
+    turn_id: str = field(default="", kw_only=True)
+    metadata: dict[str, Any] = field(default_factory=dict, kw_only=True)
 
 
 @dataclass(slots=True)
@@ -256,6 +401,11 @@ class UsageEvent:
     model: str = ""
     stop_reason: str | None = None
     type: Literal["usage"] = "usage"
+    conversation_id: str = field(default="", kw_only=True)
+    turn_id: str = field(default="", kw_only=True)
+    run_id: str = field(default="", kw_only=True)
+    tool_use_id: str = field(default="", kw_only=True)
+    metadata: dict[str, Any] = field(default_factory=dict, kw_only=True)
 
 
 @dataclass(slots=True)
@@ -268,6 +418,11 @@ class ThinkingEvent:
     source: Literal["status", "model"] = "model"
     signature: str = ""
     type: Literal["thinking"] = "thinking"
+    conversation_id: str = field(default="", kw_only=True)
+    turn_id: str = field(default="", kw_only=True)
+    run_id: str = field(default="", kw_only=True)
+    tool_use_id: str = field(default="", kw_only=True)
+    metadata: dict[str, Any] = field(default_factory=dict, kw_only=True)
 
 
 @dataclass(slots=True)
@@ -280,8 +435,11 @@ class ToolProgressEvent:
     tool_use_id: str
     tool_name: str
     content: str
-    metadata: dict[str, Any] = field(default_factory=dict)
     type: Literal["tool_progress"] = "tool_progress"
+    conversation_id: str = field(default="", kw_only=True)
+    turn_id: str = field(default="", kw_only=True)
+    run_id: str = field(default="", kw_only=True)
+    metadata: dict[str, Any] = field(default_factory=dict, kw_only=True)
 
 
 @dataclass(slots=True)
@@ -294,6 +452,45 @@ class ToolUseSummaryEvent:
     summary: str
     tool_use_ids: list[str] = field(default_factory=list)
     type: Literal["tool_use_summary"] = "tool_use_summary"
+    conversation_id: str = field(default="", kw_only=True)
+    turn_id: str = field(default="", kw_only=True)
+    run_id: str = field(default="", kw_only=True)
+    tool_use_id: str = field(default="", kw_only=True)
+    metadata: dict[str, Any] = field(default_factory=dict, kw_only=True)
+
+
+@dataclass(slots=True)
+class PromptSuggestionEvent:
+    """Runtime prompt-suggestion state update for hosts/UI."""
+
+    text: str = ""
+    shown_at: float = 0.0
+    accepted_at: float = 0.0
+    type: Literal["prompt_suggestion"] = "prompt_suggestion"
+    conversation_id: str = field(default="", kw_only=True)
+    turn_id: str = field(default="", kw_only=True)
+    run_id: str = field(default="", kw_only=True)
+    tool_use_id: str = field(default="", kw_only=True)
+    metadata: dict[str, Any] = field(default_factory=dict, kw_only=True)
+
+
+@dataclass(slots=True)
+class SpeculationEvent:
+    """Runtime speculation state update for hosts/UI."""
+
+    status: str = "idle"
+    suggestion: str = ""
+    reply: str = ""
+    started_at: float = 0.0
+    completed_at: float = 0.0
+    error: str = ""
+    boundary: dict[str, Any] = field(default_factory=dict)
+    type: Literal["speculation"] = "speculation"
+    conversation_id: str = field(default="", kw_only=True)
+    turn_id: str = field(default="", kw_only=True)
+    run_id: str = field(default="", kw_only=True)
+    tool_use_id: str = field(default="", kw_only=True)
+    metadata: dict[str, Any] = field(default_factory=dict, kw_only=True)
 
 
 StreamEvent = (
@@ -308,6 +505,8 @@ StreamEvent = (
     | ThinkingEvent
     | ToolProgressEvent
     | ToolUseSummaryEvent
+    | PromptSuggestionEvent
+    | SpeculationEvent
 )
 
 

@@ -16,6 +16,7 @@ import asyncio
 import enum
 import logging
 import os
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -36,6 +37,162 @@ if TYPE_CHECKING:
     from ..hooks import PostSamplingContext
 
 logger = logging.getLogger(__name__)
+
+
+class _MemoryInspectTool(Tool):
+    """Restricted read-only inspector for memory files and transcripts."""
+
+    name = "memory_inspect"
+    description = (
+        "List files, read files, or search text inside the memory directory "
+        "and recent session transcripts."
+    )
+    is_read_only = True
+
+    _MAX_LIST_ENTRIES = 200
+    _MAX_READ_CHARS = 12_000
+    _MAX_GREP_MATCHES = 60
+    _MAX_FILE_BYTES = 128_000
+
+    def __init__(self, memory_dir: str, session_dir: str = "") -> None:
+        self._roots: dict[str, Path] = {
+            "memory": Path(memory_dir).resolve(),
+        }
+        session_root = str(session_dir).strip()
+        if session_root:
+            self._roots["transcripts"] = Path(session_root).resolve()
+
+    def get_parameters_schema(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["list", "read", "grep"],
+                },
+                "scope": {
+                    "type": "string",
+                    "enum": list(self._roots.keys()),
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Relative file or directory path inside the selected scope.",
+                },
+                "pattern": {
+                    "type": "string",
+                    "description": "Regex pattern to search for when action=grep.",
+                },
+                "case_sensitive": {
+                    "type": "boolean",
+                    "description": "Whether grep should be case-sensitive.",
+                },
+            },
+            "required": ["action", "scope"],
+        }
+
+    def _resolve_scope_root(self, scope: str) -> Path:
+        root = self._roots.get(scope)
+        if root is None:
+            raise ValueError(f"Unknown scope: {scope}")
+        return root
+
+    def _resolve_target(self, scope: str, relative: str = "") -> Path:
+        root = self._resolve_scope_root(scope)
+        target = (root / relative).resolve() if relative else root
+        try:
+            target.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(f"Path must stay inside {root}") from exc
+        return target
+
+    def _iter_files(self, target: Path) -> list[Path]:
+        if target.is_file():
+            return [target]
+        if not target.exists():
+            return []
+        return [
+            child for child in sorted(target.rglob("*"))
+            if child.is_file()
+        ]
+
+    async def execute(self, *, context: ToolUseContext, **kwargs: Any) -> str:
+        del context
+        action = str(kwargs.get("action", "")).strip().lower()
+        scope = str(kwargs.get("scope", "")).strip().lower()
+        relative = str(kwargs.get("path", "")).strip()
+
+        if not action or not scope:
+            return "Error: action and scope are required."
+
+        try:
+            if action == "list":
+                target = self._resolve_target(scope, relative)
+                if not target.exists():
+                    return f"Error: {target} does not exist."
+                root = self._resolve_scope_root(scope)
+                if target.is_file():
+                    rel = target.relative_to(root).as_posix()
+                    return f"FILE {rel}"
+                entries: list[str] = []
+                for child in sorted(target.rglob("*")):
+                    if len(entries) >= self._MAX_LIST_ENTRIES:
+                        entries.append("... truncated ...")
+                        break
+                    rel = child.relative_to(root).as_posix()
+                    kind = "DIR" if child.is_dir() else "FILE"
+                    entries.append(f"{kind} {rel}")
+                return "\n".join(entries) if entries else "(empty)"
+
+            if action == "read":
+                target = self._resolve_target(scope, relative)
+                if not target.is_file():
+                    return f"Error: {target} is not a file."
+                raw = target.read_text(encoding="utf-8", errors="replace")
+                if len(raw) > self._MAX_READ_CHARS:
+                    raw = f"{raw[:self._MAX_READ_CHARS]}\n... truncated ..."
+                root = self._resolve_scope_root(scope)
+                rel = target.relative_to(root).as_posix()
+                return f"# {scope}:{rel}\n\n{raw}"
+
+            if action == "grep":
+                pattern = str(kwargs.get("pattern", "")).strip()
+                if not pattern:
+                    return "Error: pattern is required for grep."
+                target = self._resolve_target(scope, relative)
+                if not target.exists():
+                    return f"Error: {target} does not exist."
+                flags = 0 if bool(kwargs.get("case_sensitive", False)) else re.IGNORECASE
+                regex = re.compile(pattern, flags)
+                files = self._iter_files(target)
+                root = self._resolve_scope_root(scope)
+                matches: list[str] = []
+                for file_path in files:
+                    try:
+                        text = file_path.read_text(
+                            encoding="utf-8",
+                            errors="replace",
+                        )
+                    except OSError:
+                        continue
+                    if len(text.encode("utf-8", errors="ignore")) > self._MAX_FILE_BYTES:
+                        text = text[:self._MAX_FILE_BYTES]
+                    for line_no, line in enumerate(text.splitlines(), start=1):
+                        if regex.search(line):
+                            snippet = line.strip()
+                            if len(snippet) > 220:
+                                snippet = f"{snippet[:220]}..."
+                            rel = file_path.relative_to(root).as_posix()
+                            matches.append(f"{rel}:{line_no}: {snippet}")
+                            if len(matches) >= self._MAX_GREP_MATCHES:
+                                matches.append("... truncated ...")
+                                return "\n".join(matches)
+                return "\n".join(matches) if matches else "(no matches)"
+
+            return f"Error: Unsupported action: {action}"
+        except ValueError as exc:
+            return f"Error: {exc}"
+        except OSError as exc:
+            return f"Error inspecting files: {exc}"
 
 
 class _MemoryActionTool(Tool):
@@ -562,12 +719,16 @@ def make_dream_progress_watcher(
 # ── Force dream ─────────────────────────────────────────────────────
 
 def is_forced() -> bool:
-    """Check ``MINI_AGENT_FORCE_DREAM=1`` for testing.
+    """Check explicit force-dream env vars for testing.
 
     Bypasses enabled/time/session gates but NOT the lock (so repeated
     turns don't pile up dreams).
     """
-    return os.environ.get("MINI_AGENT_FORCE_DREAM", "") == "1"
+    value = os.environ.get(
+        "CCMINI_FORCE_DREAM",
+        os.environ.get("MINI_AGENT_FORCE_DREAM", ""),
+    ).strip().lower()
+    return value in {"1", "true", "yes", "on"}
 
 
 # ── Abort support ───────────────────────────────────────────────────
@@ -661,23 +822,31 @@ async def run_consolidation(
 
         from ..delegation.subagent import ForkedAgentContext, run_forked_agent
 
+        inspect_tool = _MemoryInspectTool(memory_dir, session_dir)
         action_tool = _MemoryActionTool(memory_dir)
         result = await run_forked_agent(
             context=ForkedAgentContext(
                 parent_messages=[],
                 parent_system_prompt=(
                     "You are a memory consolidation agent. Review and "
-                    "improve memory files using the memory_action tool."
+                    "improve memory files. Use memory_inspect to explore "
+                    "existing memories and transcripts. Use memory_action "
+                    "only to apply the final edits."
                 ),
-                can_use_tool=lambda tool_name: tool_name == "memory_action",
+                can_use_tool=lambda tool_name: tool_name in {
+                    "memory_inspect",
+                    "memory_action",
+                },
             ),
             fork_prompt=(
                 f"{prompt}\n\n"
-                "Use the memory_action tool to create, update, or delete memory files directly. "
-                "Do not output a JSON action list. Apply the actions and then stop."
+                "Use memory_inspect to list, read, and grep existing memory files or recent "
+                "session transcripts before you edit anything. Then use memory_action to create, "
+                "update, or delete memory files directly. Do not output a JSON action list. "
+                "Apply the actions and then stop."
             ),
             provider=provider,
-            tools=[action_tool],
+            tools=[inspect_tool, action_tool],
             max_turns=6,
             agent_id="auto-dream",
         )
@@ -816,9 +985,26 @@ class AutoDreamHook(PostSamplingHook):
         ):
             return
 
-        asyncio.ensure_future(
-            run_consolidation(
+        async def _run_and_publish() -> None:
+            touched = await run_consolidation(
                 self._provider,
                 memory_dir=self._memory_dir,
+                session_dir=self._session_dir,
+                current_session=current_session,
             )
+            if touched and agent is not None:
+                try:
+                    from .extract_memories import _append_memory_saved_to_agent
+
+                    _append_memory_saved_to_agent(
+                        agent,
+                        touched,
+                        verb="Improved",
+                        source="auto_dream",
+                    )
+                except Exception:
+                    logger.debug("Failed to append auto-dream memory_saved message", exc_info=True)
+
+        asyncio.ensure_future(
+            _run_and_publish()
         )

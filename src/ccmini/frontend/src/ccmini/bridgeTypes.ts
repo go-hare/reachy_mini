@@ -61,6 +61,45 @@ export type CcminiPendingToolRequest = {
   calls: CcminiPendingToolCall[]
 }
 
+export type CcminiPromptSuggestionState = {
+  text: string
+  shownAt: number
+  acceptedAt: number
+}
+
+export type CcminiSpeculationBoundary = {
+  type: string
+  toolName: string
+  detail: string
+  filePath: string
+  completedAt: number
+}
+
+export type CcminiSpeculationState = {
+  status: string
+  suggestion: string
+  reply: string
+  startedAt: number
+  completedAt: number
+  error: string
+  boundary: CcminiSpeculationBoundary
+}
+
+export type CcminiTaskBoardTaskStatus = 'pending' | 'in_progress' | 'completed'
+
+export type CcminiTaskBoardTask = {
+  id: string
+  subject: string
+  description: string
+  activeForm?: string
+  owner?: string
+  ownerIsActive?: boolean
+  status: CcminiTaskBoardTaskStatus
+  blocks?: string[]
+  blockedBy?: string[]
+  metadata?: Record<string, unknown>
+}
+
 export function createCcminiRequestId(): string {
   return randomUUID().replace(/-/g, '').slice(0, 12)
 }

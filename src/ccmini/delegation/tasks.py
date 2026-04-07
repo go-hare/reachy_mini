@@ -17,6 +17,7 @@ reference ``LocalMainSessionTask.ts``, not in ``Task.ts`` ``generateTaskId``.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import secrets
 import time
 from dataclasses import dataclass, field
@@ -168,12 +169,23 @@ class TaskManager:
         task.add_done_callback(_cleanup)
         return task_id
 
+    @staticmethod
+    def _materialize_awaitable(coro: Any) -> Any:
+        if inspect.isawaitable(coro):
+            return coro
+        if callable(coro):
+            produced = coro()
+            if inspect.isawaitable(produced):
+                return produced
+            raise TypeError("Task factory must return an awaitable")
+        raise TypeError("TaskManager.submit expected an awaitable or factory")
+
     async def _run_wrapper(self, task_id: str, coro: Any) -> None:
         info = self._tasks.get(task_id)
         if info is None:
             return
         try:
-            result = await coro
+            result = await self._materialize_awaitable(coro)
             info.status = TaskStatus.COMPLETED
             info.result = "" if result is None else str(result)
         except asyncio.CancelledError:
@@ -261,7 +273,6 @@ def register_dream_task(
     coro: Any,
 ) -> tuple[str, DreamTaskState]:
     task_id = generate_task_id(TaskType.DREAM)
-    loop = asyncio.get_event_loop()
     state = DreamTaskState(
         task_id=task_id,
         status=TaskStatus.RUNNING,
@@ -284,7 +295,7 @@ def register_dream_task(
             raise
 
     task_manager.submit(
-        _wrapped(),
+        _wrapped,
         name="dreaming",
         task_id=task_id,
         task_type=TaskType.DREAM,

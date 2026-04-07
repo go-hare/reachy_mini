@@ -8,14 +8,15 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from ..agent import Agent
+from ..agent import Agent, AgentConfig
 from ..messages import (
     CompletionEvent,
     ErrorEvent,
     PendingToolCallEvent,
+    PromptSuggestionEvent,
     RequestStartEvent,
+    SpeculationEvent,
     ThinkingEvent,
-    ToolResultBlock,
     TextEvent,
     ToolCallEvent,
     ToolProgressEvent,
@@ -29,6 +30,7 @@ from ..providers import BaseProvider, ProviderConfig
 from ..tool import Tool
 from .api import BridgeAPI
 from .core import BridgeConfig, BridgeServer
+from .net_utils import build_connect_url
 from .webrtc_host import WebRTCExecutorManager
 
 
@@ -46,9 +48,17 @@ def _load_default_bridge_config() -> BridgeConfig:
 
 def _serialize_stream_event(event: Any) -> dict[str, Any]:
     """Convert ccmini stream events into JSON-safe bridge payloads."""
+    base: dict[str, Any] = {}
+    for key in ("conversation_id", "turn_id", "run_id", "tool_use_id"):
+        value = str(getattr(event, key, "") or "").strip()
+        if value:
+            base[key] = value
+    metadata = getattr(event, "metadata", None)
+    if isinstance(metadata, dict) and metadata:
+        base["metadata"] = dict(metadata)
 
     if isinstance(event, RequestStartEvent):
-        return {"event_type": "request_start"}
+        return {"event_type": "request_start", **base}
     if isinstance(event, ThinkingEvent):
         return {
             "event_type": "thinking",
@@ -57,15 +67,17 @@ def _serialize_stream_event(event: Any) -> dict[str, Any]:
             "phase": event.phase,
             "source": event.source,
             "signature": event.signature,
+            **base,
         }
     if isinstance(event, TextEvent):
-        return {"event_type": "text", "text": event.text}
+        return {"event_type": "text", "text": event.text, **base}
     if isinstance(event, ToolCallEvent):
         return {
             "event_type": "tool_call",
             "tool_use_id": event.tool_use_id,
             "tool_name": event.tool_name,
             "tool_input": event.tool_input,
+            **base,
         }
     if isinstance(event, ToolResultEvent):
         return {
@@ -74,7 +86,7 @@ def _serialize_stream_event(event: Any) -> dict[str, Any]:
             "tool_name": event.tool_name,
             "result": event.result,
             "is_error": event.is_error,
-            "metadata": dict(event.metadata),
+            **base,
         }
     if isinstance(event, ToolProgressEvent):
         return {
@@ -82,13 +94,34 @@ def _serialize_stream_event(event: Any) -> dict[str, Any]:
             "tool_use_id": event.tool_use_id,
             "tool_name": event.tool_name,
             "content": event.content,
-            "metadata": dict(event.metadata),
+            **base,
         }
     if isinstance(event, ToolUseSummaryEvent):
         return {
             "event_type": "tool_use_summary",
             "summary": event.summary,
             "tool_use_ids": list(event.tool_use_ids),
+            **base,
+        }
+    if isinstance(event, PromptSuggestionEvent):
+        return {
+            "event_type": "prompt_suggestion",
+            "text": event.text,
+            "shown_at": event.shown_at,
+            "accepted_at": event.accepted_at,
+            **base,
+        }
+    if isinstance(event, SpeculationEvent):
+        return {
+            "event_type": "speculation",
+            "status": event.status,
+            "suggestion": event.suggestion,
+            "reply": event.reply,
+            "started_at": event.started_at,
+            "completed_at": event.completed_at,
+            "error": event.error,
+            "boundary": dict(event.boundary),
+            **base,
         }
     if isinstance(event, PendingToolCallEvent):
         return {
@@ -99,9 +132,13 @@ def _serialize_stream_event(event: Any) -> dict[str, Any]:
                     "tool_use_id": call.tool_use_id,
                     "tool_name": call.tool_name,
                     "tool_input": call.tool_input,
+                    "conversation_id": call.conversation_id,
+                    "turn_id": call.turn_id,
+                    "run_id": call.run_id,
                 }
                 for call in event.calls
             ],
+            **base,
         }
     if isinstance(event, UsageEvent):
         return {
@@ -112,23 +149,26 @@ def _serialize_stream_event(event: Any) -> dict[str, Any]:
             "cache_creation_tokens": event.cache_creation_tokens,
             "model": event.model,
             "stop_reason": event.stop_reason,
+            **base,
         }
     if isinstance(event, CompletionEvent):
         return {
             "event_type": "completion",
             "text": event.text,
-            "conversation_id": event.conversation_id,
             "stop_reason": event.stop_reason,
+            **base,
         }
     if isinstance(event, ErrorEvent):
         return {
             "event_type": "error",
             "error": event.error,
             "recoverable": event.recoverable,
+            **base,
         }
     return {
         "event_type": getattr(event, "type", event.__class__.__name__.lower()),
         "repr": repr(event),
+        **base,
     }
 
 
@@ -146,6 +186,7 @@ class _ExecutorSessionState:
     started: bool = False
     active_query: asyncio.Task[None] | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    unsubscribe: Callable[[], None] | None = None
 
 
 class _ExecutorBridgeAPI(BridgeAPI):
@@ -217,10 +258,17 @@ class RemoteExecutorHost:
     ) -> RemoteExecutorSessionHandle:
         session_id = self._api.create_session(metadata)
         await self._ensure_started(session_id)
-        scheme = "https" if self.config.ssl else "http"
-        ws_scheme = "wss" if self.config.ssl else "ws"
-        base_url = f"{scheme}://{self.config.host}:{self.config.port}"
-        websocket_url = f"{ws_scheme}://{self.config.host}:{self.config.port}"
+        base_url = build_connect_url(
+            host=self.config.host,
+            port=self.config.port,
+            ssl=self.config.ssl,
+        )
+        websocket_url = build_connect_url(
+            host=self.config.host,
+            port=self.config.port,
+            ssl=self.config.ssl,
+            websocket=True,
+        )
         return RemoteExecutorSessionHandle(
             session_id=session_id,
             base_url=base_url,
@@ -234,8 +282,46 @@ class RemoteExecutorHost:
             state = _ExecutorSessionState(
                 agent=self._agent_factory(session_id),
             )
+            async def _forward_runtime_event(event: Any) -> None:
+                await self._publish_stream_event(
+                    session_id,
+                    _serialize_stream_event(event),
+                )
+
+            register = getattr(state.agent, "on_event", None)
+            if callable(register):
+                state.unsubscribe = register(_forward_runtime_event)
             self._sessions[session_id] = state
         return state
+
+    async def _publish_stream_event(
+        self,
+        session_id: str,
+        payload: dict[str, Any],
+    ) -> None:
+        timestamp = time.time()
+        self._api.append_event(
+            session_id,
+            "stream_event",
+            payload,
+            timestamp=timestamp,
+        )
+        await self._server.push_event(
+            session_id,
+            {
+                "type": "stream_event",
+                "payload": payload,
+                "timestamp": timestamp,
+            },
+        )
+        await self._webrtc.push_event(
+            session_id,
+            {
+                "type": "stream_event",
+                "payload": payload,
+                "timestamp": timestamp,
+            },
+        )
 
     async def _ensure_started(self, session_id: str) -> _ExecutorSessionState:
         state = self._ensure_session_state(session_id)
@@ -265,23 +351,8 @@ class RemoteExecutorHost:
         if state.active_query is not None and not state.active_query.done():
             return "busy"
 
-        results: list[ToolResultBlock] = []
-        for item in results_payload:
-            if not isinstance(item, dict):
-                continue
-            tool_use_id = str(item.get("tool_use_id", "")).strip()
-            if not tool_use_id:
-                continue
-            results.append(
-                ToolResultBlock(
-                    tool_use_id=tool_use_id,
-                    content=str(item.get("content", "")),
-                    is_error=bool(item.get("is_error", False)),
-                )
-            )
-
         state.active_query = asyncio.create_task(
-            self._run_submit_tool_results(session_id, state, run_id, results),
+            self._run_submit_tool_results(session_id, state, run_id, results_payload),
             name=f"remote-executor-submit-{session_id}",
         )
         return "accepted"
@@ -298,59 +369,16 @@ class RemoteExecutorHost:
                     query_text,
                     conversation_id=session_id,
                 ):
-                    serialized = _serialize_stream_event(event)
-                    self._api.append_event(
+                    await self._publish_stream_event(
                         session_id,
-                        "stream_event",
-                        serialized,
-                        timestamp=time.time(),
-                    )
-                    await self._server.push_event(
-                        session_id,
-                        {
-                            "type": "stream_event",
-                            "payload": serialized,
-                            "timestamp": time.time(),
-                        },
-                    )
-                    await self._webrtc.push_event(
-                        session_id,
-                        {
-                            "type": "stream_event",
-                            "payload": serialized,
-                            "timestamp": time.time(),
-                        },
+                        _serialize_stream_event(event),
                     )
             except Exception as exc:
-                self._api.append_event(
+                await self._publish_stream_event(
                     session_id,
-                    "stream_event",
                     {
                         "event_type": "executor_error",
                         "error": str(exc),
-                    },
-                    timestamp=time.time(),
-                )
-                await self._server.push_event(
-                    session_id,
-                    {
-                        "type": "stream_event",
-                        "payload": {
-                            "event_type": "executor_error",
-                            "error": str(exc),
-                        },
-                        "timestamp": time.time(),
-                    },
-                )
-                await self._webrtc.push_event(
-                    session_id,
-                    {
-                        "type": "stream_event",
-                        "payload": {
-                            "event_type": "executor_error",
-                            "error": str(exc),
-                        },
-                        "timestamp": time.time(),
                     },
                 )
             finally:
@@ -361,64 +389,21 @@ class RemoteExecutorHost:
         session_id: str,
         state: _ExecutorSessionState,
         run_id: str,
-        results: list[ToolResultBlock],
+        results: list[dict[str, Any]],
     ) -> None:
         async with state.lock:
             try:
                 async for event in state.agent.submit_tool_results(run_id, results):
-                    serialized = _serialize_stream_event(event)
-                    self._api.append_event(
+                    await self._publish_stream_event(
                         session_id,
-                        "stream_event",
-                        serialized,
-                        timestamp=time.time(),
-                    )
-                    await self._server.push_event(
-                        session_id,
-                        {
-                            "type": "stream_event",
-                            "payload": serialized,
-                            "timestamp": time.time(),
-                        },
-                    )
-                    await self._webrtc.push_event(
-                        session_id,
-                        {
-                            "type": "stream_event",
-                            "payload": serialized,
-                            "timestamp": time.time(),
-                        },
+                        _serialize_stream_event(event),
                     )
             except Exception as exc:
-                self._api.append_event(
+                await self._publish_stream_event(
                     session_id,
-                    "stream_event",
                     {
                         "event_type": "executor_error",
                         "error": str(exc),
-                    },
-                    timestamp=time.time(),
-                )
-                await self._server.push_event(
-                    session_id,
-                    {
-                        "type": "stream_event",
-                        "payload": {
-                            "event_type": "executor_error",
-                            "error": str(exc),
-                        },
-                        "timestamp": time.time(),
-                    },
-                )
-                await self._webrtc.push_event(
-                    session_id,
-                    {
-                        "type": "stream_event",
-                        "payload": {
-                            "event_type": "executor_error",
-                            "error": str(exc),
-                        },
-                        "timestamp": time.time(),
                     },
                 )
             finally:
@@ -428,6 +413,9 @@ class RemoteExecutorHost:
         state = self._sessions.pop(session_id, None)
         if state is None:
             return
+        if state.unsubscribe is not None:
+            with contextlib.suppress(Exception):
+                state.unsubscribe()
         if state.active_query is not None and not state.active_query.done():
             state.active_query.cancel()
         asyncio.create_task(self._finalize_agent_stop(state))
@@ -436,6 +424,9 @@ class RemoteExecutorHost:
         state = self._sessions.pop(session_id, None)
         if state is None:
             return
+        if state.unsubscribe is not None:
+            with contextlib.suppress(Exception):
+                state.unsubscribe()
         if state.active_query is not None and not state.active_query.done():
             state.active_query.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -454,6 +445,7 @@ def create_remote_executor_host(
     profile: RuntimeProfile | str = RuntimeProfile.ROBOT_BRAIN,
     bridge_config: BridgeConfig | None = None,
     tools: list[Tool] | None = None,
+    config: AgentConfig | None = None,
 ) -> RemoteExecutorHost:
     """Convenience helper to expose ccmini as a remote executor service."""
 
@@ -465,6 +457,7 @@ def create_remote_executor_host(
             system_prompt=system_prompt,
             profile=profile,
             tools=tools,
+            config=config,
             conversation_id=conversation_id,
             agent_id=f"remote-executor-{conversation_id}",
         )

@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..hooks import PostSamplingHook
-from ..messages import Message
+from ..messages import Message, system_message
 from ..tool import Tool, ToolUseContext
 from .memdir import (
     MEMORY_FRONTMATTER_EXAMPLE,
@@ -38,6 +38,117 @@ if TYPE_CHECKING:
     from ..hooks import PostSamplingContext
 
 logger = logging.getLogger(__name__)
+
+
+class _MemoryInspectTool(Tool):
+    """Restricted read-only inspector for existing memory files."""
+
+    name = "memory_inspect"
+    description = "List, read, or search existing files inside the memory directory."
+    is_read_only = True
+
+    _MAX_LIST_ENTRIES = 200
+    _MAX_READ_CHARS = 12_000
+    _MAX_GREP_MATCHES = 60
+
+    def __init__(self, memory_dir: str) -> None:
+        self._memory_dir = Path(memory_dir).resolve()
+
+    def get_parameters_schema(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["list", "read", "grep"],
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Relative file or directory path inside the memory directory.",
+                },
+                "pattern": {
+                    "type": "string",
+                    "description": "Regex pattern to search for when action=grep.",
+                },
+                "case_sensitive": {
+                    "type": "boolean",
+                    "description": "Whether grep should be case-sensitive.",
+                },
+            },
+            "required": ["action"],
+        }
+
+    def _resolve_target(self, relative: str = "") -> Path:
+        target = (self._memory_dir / relative).resolve() if relative else self._memory_dir
+        try:
+            target.relative_to(self._memory_dir)
+        except ValueError as exc:
+            raise ValueError(f"Path must stay inside {self._memory_dir}") from exc
+        return target
+
+    async def execute(self, *, context: ToolUseContext, **kwargs: Any) -> str:
+        del context
+        action = str(kwargs.get("action", "")).strip().lower()
+        relative = str(kwargs.get("path", "")).strip()
+        try:
+            if action == "list":
+                target = self._resolve_target(relative)
+                if not target.exists():
+                    return f"Error: {target} does not exist."
+                if target.is_file():
+                    return f"FILE {target.relative_to(self._memory_dir).as_posix()}"
+                entries: list[str] = []
+                for child in sorted(target.rglob("*")):
+                    if len(entries) >= self._MAX_LIST_ENTRIES:
+                        entries.append("... truncated ...")
+                        break
+                    kind = "DIR" if child.is_dir() else "FILE"
+                    entries.append(f"{kind} {child.relative_to(self._memory_dir).as_posix()}")
+                return "\n".join(entries) if entries else "(empty)"
+
+            if action == "read":
+                target = self._resolve_target(relative)
+                if not target.is_file():
+                    return f"Error: {target} is not a file."
+                text = target.read_text(encoding="utf-8", errors="replace")
+                if len(text) > self._MAX_READ_CHARS:
+                    text = f"{text[:self._MAX_READ_CHARS]}\n... truncated ..."
+                return f"# {target.relative_to(self._memory_dir).as_posix()}\n\n{text}"
+
+            if action == "grep":
+                pattern = str(kwargs.get("pattern", "")).strip()
+                if not pattern:
+                    return "Error: pattern is required for grep."
+                target = self._resolve_target(relative)
+                if not target.exists():
+                    return f"Error: {target} does not exist."
+                flags = 0 if bool(kwargs.get("case_sensitive", False)) else re.IGNORECASE
+                regex = re.compile(pattern, flags)
+                files = [target] if target.is_file() else [child for child in sorted(target.rglob("*")) if child.is_file()]
+                matches: list[str] = []
+                for file_path in files:
+                    try:
+                        text = file_path.read_text(encoding="utf-8", errors="replace")
+                    except OSError:
+                        continue
+                    for line_no, line in enumerate(text.splitlines(), start=1):
+                        if regex.search(line):
+                            snippet = line.strip()
+                            if len(snippet) > 220:
+                                snippet = f"{snippet[:220]}..."
+                            matches.append(
+                                f"{file_path.relative_to(self._memory_dir).as_posix()}:{line_no}: {snippet}"
+                            )
+                            if len(matches) >= self._MAX_GREP_MATCHES:
+                                matches.append("... truncated ...")
+                                return "\n".join(matches)
+                return "\n".join(matches) if matches else "(no matches)"
+
+            return f"Error: Unsupported action: {action}"
+        except ValueError as exc:
+            return f"Error: {exc}"
+        except OSError as exc:
+            return f"Error inspecting memory files: {exc}"
 
 
 class _MemoryWriteTool(Tool):
@@ -263,23 +374,30 @@ async def extract_memories(
 
         from ..delegation.subagent import ForkedAgentContext, run_forked_agent
 
+        inspector = _MemoryInspectTool(memory_dir)
         writer = _MemoryWriteTool(memory_dir)
         result = await run_forked_agent(
             context=ForkedAgentContext(
                 parent_messages=messages,
                 parent_system_prompt=(
                     "You are a memory extraction agent. Extract durable "
-                    "memories and write them using the memory_write tool."
+                    "memories. Use memory_inspect to review existing memory "
+                    "files before writing updates with memory_write."
                 ),
-                can_use_tool=lambda tool_name: tool_name == "memory_write",
+                can_use_tool=lambda tool_name: tool_name in {
+                    "memory_inspect",
+                    "memory_write",
+                },
             ),
             fork_prompt=(
                 f"{full_prompt}\n\n"
-                "Use the memory_write tool to create or update each durable memory file. "
-                "Do not output a JSON list. Write the files directly, then stop."
+                "Use memory_inspect to list, read, and grep existing memory files before "
+                "you edit anything. Then use memory_write to create or update each durable "
+                "memory file directly. Do not output a JSON list. Write the files directly, "
+                "then stop."
             ),
             provider=provider,
-            tools=[writer],
+            tools=[inspector, writer],
             max_turns=4,
             agent_id="extract-memories",
         )
@@ -361,11 +479,12 @@ class ExtractMemoriesHook(PostSamplingHook):
             return
 
         asyncio.ensure_future(
-            extract_memories(
+            extract_memories_coalesced(
                 context.messages,
                 self._provider,
                 memory_dir=self._memory_dir,
                 project_root=self._project_root,
+                agent=agent,
             )
         )
 
@@ -386,6 +505,7 @@ class _PendingExtraction:
     provider: BaseProvider
     memory_dir: str = ""
     project_root: str = ""
+    agent: Any | None = None
 
 
 _pending: _PendingExtraction | None = None
@@ -398,6 +518,7 @@ async def extract_memories_coalesced(
     *,
     memory_dir: str = "",
     project_root: str = "",
+    agent: Any | None = None,
 ) -> list[str]:
     """Coalescing wrapper around :func:`extract_memories`.
 
@@ -414,6 +535,7 @@ async def extract_memories_coalesced(
             provider=provider,
             memory_dir=memory_dir,
             project_root=project_root,
+            agent=agent,
         )
         logger.debug("Extraction in progress — stashing for trailing run")
         return []
@@ -422,6 +544,7 @@ async def extract_memories_coalesced(
         messages, provider,
         memory_dir=memory_dir,
         project_root=project_root,
+        agent=agent,
     )
 
 
@@ -431,6 +554,7 @@ async def _run_with_trailing(
     *,
     memory_dir: str,
     project_root: str,
+    agent: Any | None,
 ) -> list[str]:
     """Run extraction and follow up with a trailing run if pending."""
     global _pending, _in_flight
@@ -445,6 +569,8 @@ async def _run_with_trailing(
     _in_flight = asyncio.ensure_future(_do())
     try:
         result = await _in_flight
+        if result:
+            _append_memory_saved_to_agent(agent, result)
     finally:
         _in_flight = None
 
@@ -458,6 +584,7 @@ async def _run_with_trailing(
                     trailing.provider,
                     memory_dir=trailing.memory_dir,
                     project_root=trailing.project_root,
+                    agent=trailing.agent,
                 )
             )
 
@@ -667,23 +794,62 @@ def record_extraction_turn() -> None:
 
 # ── Memory saved notification ──────────────────────────────────────
 
-def create_memory_saved_message(paths: list[str]) -> Message:
+def create_memory_saved_message(
+    paths: list[str],
+    *,
+    verb: str = "Saved",
+    source: str = "extract_memories",
+) -> Message:
     """Create a system message notifying the AI that memories were saved.
 
     Injects a ``[Memory saved: <path>]`` line into the conversation so
     the main agent knows a memory was persisted (and can refer to it).
     """
+    normalized_verb = verb.strip() or "Saved"
+    lowered = normalized_verb.lower()
     if len(paths) == 1:
-        text = f"[Memory saved: {paths[0]}]"
+        text = f"[Memory {lowered}: {paths[0]}]"
     else:
         listing = ", ".join(paths)
-        text = f"[Memories saved: {listing}]"
+        text = f"[Memories {lowered}: {listing}]"
 
-    return Message(
-        role="system",
-        content=text,
-        metadata={"source": "extract_memories", "memory_paths": paths},
+    return system_message(
+        text,
+        subtype="memory_saved",
+        source=source,
+        memory_paths=list(paths),
+        verb=normalized_verb,
     )
+
+
+def _append_memory_saved_to_agent(
+    agent: Any | None,
+    paths: list[str],
+    *,
+    verb: str = "Saved",
+    source: str = "extract_memories",
+) -> None:
+    if agent is None or not paths:
+        return
+    message = create_memory_saved_message(paths, verb=verb, source=source)
+    append_runtime = getattr(agent, "_append_runtime_system_message", None)
+    if callable(append_runtime):
+        try:
+            append_runtime(message)
+            return
+        except Exception:
+            logger.debug("Failed to append runtime memory_saved message", exc_info=True)
+
+    messages = getattr(agent, "_messages", None)
+    if not isinstance(messages, list):
+        return
+    messages.append(message)
+    persist = getattr(agent, "_persist_session_snapshot", None)
+    if callable(persist):
+        try:
+            persist()
+        except Exception:
+            logger.debug("Failed to persist memory_saved system message", exc_info=True)
 
 
 # ── WHAT_NOT_TO_SAVE (detailed) ────────────────────────────────────

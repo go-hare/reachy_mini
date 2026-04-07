@@ -30,6 +30,7 @@ from .distribution_plugins import (
     load_hooks_from_entry_points,
     load_tools_from_entry_points,
 )
+from .embedded import HostEvent, HostToolResult
 from .factory import create_agent, create_coding_agent, create_robot_agent
 from .plugins import (
     LoadedPlugin,
@@ -91,6 +92,8 @@ __all__ = [
     "generate_tool_use_summary",
     "GROUP_HOOKS",
     "GROUP_TOOLS",
+    "HostEvent",
+    "HostToolResult",
     "hatch_companion",
     "load_hooks_from_entry_points",
     "load_tools_from_entry_points",

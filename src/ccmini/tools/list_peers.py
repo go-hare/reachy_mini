@@ -7,7 +7,7 @@ Ported from Claude Code's ``ListPeersTool`` (UDS inbox system):
 - The model uses this to find targets for ``SendMessage``
 
 Architecture:
-- Each agent session registers itself in ``~/.mini_agent/sessions/``
+- Each agent session registers itself in ``~/.ccmini/sessions/``
 - A PID file contains JSON metadata (pid, name, status, socket path)
 - ListPeersTool scans the registry, probes PIDs, and returns live peers
 - Stale entries (dead PIDs) are automatically cleaned up
@@ -38,9 +38,6 @@ logger = logging.getLogger(__name__)
 
 def _get_sessions_dir() -> Path:
     """Get the session registry directory."""
-    base = os.environ.get("MINI_AGENT_HOME", "")
-    if base:
-        return Path(base) / "sessions"
     return mini_agent_path("sessions")
 
 

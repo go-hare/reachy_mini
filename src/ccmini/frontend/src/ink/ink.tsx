@@ -10,6 +10,7 @@ import onExit from 'signal-exit';
 import { flushInteractionTime } from '../bootstrap/state.js';
 import { getYogaCounters } from '../native-ts/yoga-layout/index.js';
 import { logForDebugging } from '../utils/debug.js';
+import { isEnvTruthy } from '../utils/envUtils.js';
 import { logError } from '../utils/log.js';
 import { format } from 'util';
 import { colorize } from './colorize.js';
@@ -36,7 +37,7 @@ import { applySearchHighlight } from './searchHighlight.js';
 import { applySelectionOverlay, captureScrolledRows, clearSelection, createSelectionState, extendSelection, type FocusMove, findPlainTextUrlAt, getSelectedText, hasSelection, moveFocus, type SelectionState, selectLineAt, selectWordAt, shiftAnchor, shiftSelection, shiftSelectionForFollow, startSelection, updateSelection } from './selection.js';
 import { SYNC_OUTPUT_SUPPORTED, supportsExtendedKeys, type Terminal, writeDiffToTerminal } from './terminal.js';
 import { CURSOR_HOME, cursorMove, cursorPosition, DISABLE_KITTY_KEYBOARD, DISABLE_MODIFY_OTHER_KEYS, ENABLE_KITTY_KEYBOARD, ENABLE_MODIFY_OTHER_KEYS, ERASE_SCREEN } from './termio/csi.js';
-import { DBP, DFE, DISABLE_MOUSE_TRACKING, ENABLE_MOUSE_TRACKING, ENTER_ALT_SCREEN, EXIT_ALT_SCREEN, SHOW_CURSOR } from './termio/dec.js';
+import { DBP, DFE, DISABLE_MOUSE_TRACKING, ENABLE_MOUSE_TRACKING, ENTER_ALT_SCREEN, EXIT_ALT_SCREEN, HIDE_CURSOR, SHOW_CURSOR } from './termio/dec.js';
 import { CLEAR_ITERM2_PROGRESS, CLEAR_TAB_STATUS, setClipboard, supportsTabStatus, wrapForMultiplexer } from './termio/osc.js';
 import { TerminalWriteProvider } from './useTerminalNotification.js';
 
@@ -55,6 +56,9 @@ const CURSOR_HOME_PATCH = Object.freeze({
 const ERASE_THEN_HOME_PATCH = Object.freeze({
   type: 'stdout' as const,
   content: ERASE_SCREEN + CURSOR_HOME
+});
+const CURSOR_HIDE_PATCH = Object.freeze({
+  type: 'cursorHide' as const
 });
 
 // Cached per-Ink-instance, invalidated on resize. frame.cursor.y for
@@ -622,6 +626,7 @@ export default class Ink {
     const optimized = optimize(diff);
     const optimizeMs = performance.now() - tOptimize;
     const hasDiff = optimized.length > 0;
+    const shouldHideNativeCursor = this.options.stdout.isTTY && !isEnvTruthy(process.env.CLAUDE_CODE_ACCESSIBILITY);
     if (this.altScreenActive && hasDiff) {
       // Prepend CSI H to anchor the physical cursor to (0,0) so
       // log-update's relative moves compute from a known spot (self-healing
@@ -732,6 +737,9 @@ export default class Ink {
         }
         this.displayCursor = null;
       }
+    }
+    if (shouldHideNativeCursor) {
+      optimized.push(CURSOR_HIDE_PATCH);
     }
     const tWrite = performance.now();
     writeDiffToTerminal(this.terminal, optimized, this.altScreenActive && !SYNC_OUTPUT_SUPPORTED);
@@ -906,6 +914,9 @@ export default class Ink {
     // on each call.
     if (supportsExtendedKeys()) {
       this.options.stdout.write(DISABLE_KITTY_KEYBOARD + ENABLE_KITTY_KEYBOARD + ENABLE_MODIFY_OTHER_KEYS);
+    }
+    if (!isEnvTruthy(process.env.CLAUDE_CODE_ACCESSIBILITY)) {
+      this.options.stdout.write(HIDE_CURSOR);
     }
     if (!this.altScreenActive) return;
     // Mouse tracking — idempotent, safe to re-assert on every stdin gap.

@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, TypedDict
 
-from ..messages import Message, ToolResultBlock, ToolUseBlock
+from ..messages import Message, ToolResultBlock, ToolUseBlock, tool_result_content_to_text
 
 logger = logging.getLogger(__name__)
 
@@ -548,24 +548,25 @@ def build_large_tool_result_message(filepath: str, original_size: int, preview: 
     return msg
 
 
-async def _persist_tool_result_text(content: str, tool_use_id: str, tool_results_dir: Path) -> dict[str, Any] | None:
+async def _persist_tool_result_text(content: Any, tool_use_id: str, tool_results_dir: Path) -> dict[str, Any] | None:
     """Write tool result to ``tool_results_dir/{id}.txt`` (exclusive create)."""
 
     def _write() -> dict[str, Any] | None:
+        rendered = tool_result_content_to_text(content)
         tool_results_dir.mkdir(parents=True, exist_ok=True)
         filepath = tool_results_dir / f"{tool_use_id}.txt"
         try:
             with open(filepath, "x", encoding="utf-8") as fh:
-                fh.write(content)
+                fh.write(rendered)
         except FileExistsError:
             pass
         except OSError as exc:
             logger.debug("persist tool result failed: %s", exc)
             return None
-        preview, has_more = _generate_preview(content, PREVIEW_SIZE_BYTES)
+        preview, has_more = _generate_preview(rendered, PREVIEW_SIZE_BYTES)
         return {
             "filepath": str(filepath),
-            "original_size": len(content),
+            "original_size": len(rendered),
             "preview": preview,
             "has_more": has_more,
         }
@@ -580,12 +581,12 @@ def _assistant_wire_id(message: Message) -> str:
     return str(md.get("assistantId") or md.get("uuid") or "")
 
 
-def _is_content_already_compacted(content: str) -> bool:
-    return content.startswith(PERSISTED_OUTPUT_TAG)
+def _is_content_already_compacted(content: Any) -> bool:
+    return tool_result_content_to_text(content).startswith(PERSISTED_OUTPUT_TAG)
 
 
-def _content_size(content: str) -> int:
-    return len(content)
+def _content_size(content: Any) -> int:
+    return len(tool_result_content_to_text(content))
 
 
 def _build_tool_name_map(messages: list[Message]) -> dict[str, str]:
@@ -603,7 +604,7 @@ def _build_tool_name_map(messages: list[Message]) -> dict[str, str]:
 @dataclass(frozen=True, slots=True)
 class _ToolResultCandidate:
     tool_use_id: str
-    content: str
+    content: Any
     size: int
 
 

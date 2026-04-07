@@ -274,20 +274,22 @@ class BackgroundAgentRunner:
 
         task_id = generate_task_id(TaskType.LOCAL_AGENT)
 
-        coro = self._run_agent_task(
-            task_id=task_id,
+        self._task_manager.submit(
+            lambda: self._run_agent_task(
+                task_id=task_id,
+                name=name,
+                prompt=prompt,
+                system_prompt=final_prompt,
+                tools=final_tools,
+                context_messages=context_messages,
+                initial_messages=initial_messages,
+                max_turns=final_turns,
+                model=model or "",
+                runtime_overrides=dict(runtime_overrides or {}),
+            ),
             name=name,
-            prompt=prompt,
-            system_prompt=final_prompt,
-            tools=final_tools,
-            context_messages=context_messages,
-            initial_messages=initial_messages,
-            max_turns=final_turns,
-            model=model or "",
-            runtime_overrides=dict(runtime_overrides or {}),
+            task_id=task_id,
         )
-
-        self._task_manager.submit(coro, name=name, task_id=task_id)
         info = self._task_manager.get_status(task_id)
         if info is not None:
             info.output_file = str(self._output_path_for(task_id))
@@ -452,21 +454,20 @@ class BackgroundAgentRunner:
             initial_messages=[],
             max_turns=10,
         )
-        coro = self._run_agent_task(
-            task_id=task_id,
-            name=f"{stable_name} (resumed)",
-            prompt=message,
-            system_prompt=runtime.system_prompt,
-            tools=list(runtime.tools),
-            context_messages=list(runtime.context_messages),
-            initial_messages=[],
-            max_turns=runtime.max_turns,
-            model=runtime.model,
-            runtime_overrides=dict(runtime.runtime_overrides),
-        )
         # Keep TaskInfo.description as the stable spawn name so name-based SendMessage works after resume.
         self._task_manager.submit(
-            coro,
+            lambda: self._run_agent_task(
+                task_id=task_id,
+                name=f"{stable_name} (resumed)",
+                prompt=message,
+                system_prompt=runtime.system_prompt,
+                tools=list(runtime.tools),
+                context_messages=list(runtime.context_messages),
+                initial_messages=[],
+                max_turns=runtime.max_turns,
+                model=runtime.model,
+                runtime_overrides=dict(runtime.runtime_overrides),
+            ),
             name=f"{stable_name} (resumed)",
             task_id=task_id,
             description=stable_name,

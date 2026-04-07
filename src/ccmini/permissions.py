@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import shlex
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import Enum
@@ -127,6 +128,454 @@ DESTRUCTIVE_PATTERNS: tuple[str, ...] = (
     "drop table",
     "truncate table",
 )
+
+SAFE_READONLY_BASH_COMMANDS: frozenset[str] = frozenset(
+    {
+        "basename",
+        "cat",
+        "cmp",
+        "column",
+        "comm",
+        "cut",
+        "date",
+        "df",
+        "diff",
+        "dirname",
+        "du",
+        "expr",
+        "fd",
+        "fdfind",
+        "file",
+        "find",
+        "fmt",
+        "fold",
+        "free",
+        "getconf",
+        "git",
+        "grep",
+        "groups",
+        "head",
+        "hexdump",
+        "id",
+        "locale",
+        "ls",
+        "nl",
+        "nproc",
+        "numfmt",
+        "od",
+        "paste",
+        "printf",
+        "pwd",
+        "readlink",
+        "realpath",
+        "rev",
+        "rg",
+        "sed",
+        "seq",
+        "sleep",
+        "sort",
+        "stat",
+        "strings",
+        "tail",
+        "tac",
+        "test",
+        "tr",
+        "true",
+        "tsort",
+        "uname",
+        "uniq",
+        "unexpand",
+        "wc",
+        "which",
+        "whoami",
+        "echo",
+    }
+)
+
+SAFE_READONLY_GIT_SUBCOMMANDS: frozenset[str] = frozenset(
+    {
+        "blame",
+        "branch",
+        "config",
+        "describe",
+        "diff",
+        "grep",
+        "log",
+        "ls-files",
+        "merge-base",
+        "remote",
+        "reflog",
+        "rev-parse",
+        "show",
+        "status",
+        "tag",
+    }
+)
+
+READONLY_BASH_BLOCKED_FLAGS: dict[str, frozenset[str]] = {
+    "diff": frozenset({"-o", "--output"}),
+    "find": frozenset({"-delete", "-exec", "-execdir", "-fprint", "-fprintf", "-fls", "-ok", "-okdir"}),
+    "git": frozenset({"-c", "--config-env", "--exec-path", "--git-dir", "--output", "--work-tree"}),
+    "printf": frozenset({"-v"}),
+    "rg": frozenset({"--pre"}),
+    "sed": frozenset({"-i"}),
+    "sort": frozenset({"-o", "--output"}),
+}
+
+SAFE_GIT_CONFIG_QUERY_FLAGS: frozenset[str] = frozenset({"--get", "--get-all", "--get-regexp", "--list", "-l"})
+SAFE_GIT_CONFIG_SCOPE_FLAGS: frozenset[str] = frozenset({"--global", "--system", "--local", "--worktree"})
+SAFE_GIT_BRANCH_FLAGS: frozenset[str] = frozenset({"-a", "--all", "-r", "--remotes", "--show-current", "-v", "-vv", "--list"})
+SAFE_GIT_TAG_FLAGS: frozenset[str] = frozenset({"-l", "--list"})
+SAFE_GIT_REMOTE_FLAGS: frozenset[str] = frozenset({"-v", "--verbose"})
+
+REVIEW_SHELL_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"`"),
+    re.compile(r"\$\("),
+    re.compile(r"\$\{"),
+    re.compile(r"<<"),
+    re.compile(r"(^|[^\\])[<>]"),
+    re.compile(r"(^|[^\\]);"),
+    re.compile(r"(^|[^\\])\|\|"),
+    re.compile(r"(?<![\\&])&(?!&)"),
+)
+
+
+class RiskLevel(str, Enum):
+    SAFE = "safe"
+    NEEDS_REVIEW = "needs_review"
+    DANGEROUS = "dangerous"
+    BLOCKED = "blocked"
+
+
+@dataclass(slots=True)
+class ShellRedirection:
+    kind: str
+    operator: str
+    target: str = ""
+
+
+def _scan_shell_redirection(command: str) -> ShellRedirection | None:
+    quote = ""
+    escape = False
+    index = 0
+    while index < len(command):
+        char = command[index]
+        if escape:
+            escape = False
+            index += 1
+            continue
+        if quote:
+            if char == quote:
+                quote = ""
+            elif char == "\\" and quote == '"':
+                escape = True
+            index += 1
+            continue
+        if char == "\\":
+            escape = True
+            index += 1
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            index += 1
+            continue
+
+        if char == "<":
+            if index + 2 < len(command) and command[index + 1] == "<" and command[index + 2] == "<":
+                return ShellRedirection(kind="input", operator="<<<")
+            if index + 1 < len(command) and command[index + 1] == "<":
+                return ShellRedirection(kind="input", operator="<<")
+            return ShellRedirection(kind="input", operator="<")
+
+        if char == ">":
+            target = _extract_redirection_target(command, index + 1)
+            if index > 0 and command[index - 1].isdigit():
+                return ShellRedirection(kind="output", operator=f"{command[index - 1]}>", target=target)
+            operator = ">>" if index + 1 < len(command) and command[index + 1] == ">" else ">"
+            return ShellRedirection(kind="output", operator=operator, target=target)
+
+        if char == "&" and index + 1 < len(command) and command[index + 1] == ">":
+            target = _extract_redirection_target(command, index + 2)
+            return ShellRedirection(kind="output", operator="&>", target=target)
+
+        index += 1
+    return None
+
+
+def _extract_redirection_target(command: str, start: int) -> str:
+    index = start
+    length = len(command)
+    if index < length and command[index] == ">":
+        index += 1
+    while index < length and command[index].isspace():
+        index += 1
+    token: list[str] = []
+    quote = ""
+    escape = False
+    while index < length:
+        char = command[index]
+        if escape:
+            token.append(char)
+            escape = False
+            index += 1
+            continue
+        if quote:
+            token.append(char)
+            if char == quote:
+                quote = ""
+            elif char == "\\" and quote == '"':
+                escape = True
+            index += 1
+            continue
+        if char == "\\":
+            token.append(char)
+            escape = True
+            index += 1
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            token.append(char)
+            index += 1
+            continue
+        if char.isspace() or char in {"|", "&", ";", "<", ">"}:
+            break
+        token.append(char)
+        index += 1
+    return "".join(token).strip()
+
+
+def _split_shell_command_for_analysis(command: str) -> tuple[list[str], list[str]] | None:
+    segments: list[str] = []
+    operators: list[str] = []
+    current: list[str] = []
+    quote = ""
+    escape = False
+
+    index = 0
+    while index < len(command):
+        char = command[index]
+        if escape:
+            current.append(char)
+            escape = False
+            index += 1
+            continue
+
+        if quote:
+            current.append(char)
+            if char == quote:
+                quote = ""
+            elif char == "\\" and quote == '"':
+                escape = True
+            index += 1
+            continue
+
+        if char == "\\":
+            current.append(char)
+            escape = True
+            index += 1
+            continue
+
+        if char in {"'", '"'}:
+            quote = char
+            current.append(char)
+            index += 1
+            continue
+
+        if char == "&" and index + 1 < len(command) and command[index + 1] == "&":
+            segment = "".join(current).strip()
+            if not segment:
+                return None
+            segments.append(segment)
+            operators.append("&&")
+            current = []
+            index += 2
+            continue
+
+        if char == "|":
+            if index + 1 < len(command) and command[index + 1] == "|":
+                return None
+            segment = "".join(current).strip()
+            if not segment:
+                return None
+            segments.append(segment)
+            operators.append("|")
+            current = []
+            index += 1
+            continue
+
+        if char in {";", "<", ">"}:
+            return None
+
+        current.append(char)
+        index += 1
+
+    if quote or escape:
+        return None
+
+    tail = "".join(current).strip()
+    if not tail:
+        return None
+    segments.append(tail)
+    return segments, operators
+
+
+def _tokens_require_review(tokens: list[str]) -> bool:
+    for token in tokens:
+        if "$" in token:
+            return True
+        if "{" in token and ("," in token or ".." in token):
+            return True
+    return False
+
+
+def _is_safe_readonly_git(args: list[str]) -> bool:
+    if not args:
+        return False
+    subcommand = args[0].lower()
+    if subcommand not in SAFE_READONLY_GIT_SUBCOMMANDS:
+        return False
+    blocked_flags = {
+        "--exec-path",
+        "--git-dir",
+        "--output",
+        "--work-tree",
+    }
+    for token in args[1:]:
+        lowered = token.lower()
+        if lowered in blocked_flags:
+            return False
+        if any(lowered.startswith(f"{flag}=") for flag in blocked_flags):
+            return False
+        if "$" in token:
+            return False
+    if subcommand == "config":
+        return _is_safe_readonly_git_config(args[1:])
+    if subcommand == "branch":
+        return _is_safe_readonly_git_branch(args[1:])
+    if subcommand == "tag":
+        return _is_safe_readonly_git_tag(args[1:])
+    if subcommand == "remote":
+        return _is_safe_readonly_git_remote(args[1:])
+    return True
+
+
+def _is_safe_readonly_git_config(args: list[str]) -> bool:
+    if not args:
+        return False
+    query_seen = False
+    index = 0
+    while index < len(args):
+        token = args[index]
+        lowered = token.lower()
+        if lowered in SAFE_GIT_CONFIG_SCOPE_FLAGS:
+            index += 1
+            continue
+        if lowered in {"--type"}:
+            if index + 1 >= len(args):
+                return False
+            index += 2
+            continue
+        if lowered.startswith("--type="):
+            index += 1
+            continue
+        if lowered in {"--get", "--get-all", "--get-regexp"}:
+            query_seen = True
+            if index + 1 >= len(args):
+                return False
+            index += 2
+            continue
+        if lowered in SAFE_GIT_CONFIG_QUERY_FLAGS:
+            query_seen = True
+            index += 1
+            continue
+        return False
+    return query_seen
+
+
+def _is_safe_readonly_git_branch(args: list[str]) -> bool:
+    if not args:
+        return True
+    return all(token.lower() in SAFE_GIT_BRANCH_FLAGS for token in args)
+
+
+def _is_safe_readonly_git_tag(args: list[str]) -> bool:
+    if not args:
+        return True
+    return all(token.lower() in SAFE_GIT_TAG_FLAGS for token in args)
+
+
+def _is_safe_readonly_git_remote(args: list[str]) -> bool:
+    if not args:
+        return True
+    return all(token.lower() in SAFE_GIT_REMOTE_FLAGS for token in args)
+
+
+def _contains_blocked_flag(command: str, tokens: list[str]) -> bool:
+    blocked_flags = READONLY_BASH_BLOCKED_FLAGS.get(command)
+    if not blocked_flags:
+        return False
+    for token in tokens[1:]:
+        lowered = token.lower()
+        if lowered in blocked_flags:
+            return True
+        if any(lowered.startswith(f"{flag}=") for flag in blocked_flags):
+            return True
+    return False
+
+
+def _is_safe_readonly_bash_segment(segment: str) -> bool:
+    try:
+        tokens = shlex.split(segment, posix=True)
+    except ValueError:
+        return False
+    if not tokens:
+        return False
+    if _tokens_require_review(tokens):
+        return False
+
+    command = tokens[0].lower()
+    if command not in SAFE_READONLY_BASH_COMMANDS:
+        return False
+    if _contains_blocked_flag(command, tokens):
+        return False
+
+    if command in {"echo", "printf"}:
+        return True
+    if command == "git":
+        return _is_safe_readonly_git(tokens[1:])
+    return True
+
+
+class BashCommandAnalyzer:
+    """Best-effort bash safety classifier inspired by donor readonly validation."""
+
+    @staticmethod
+    def classify(command: str) -> tuple[RiskLevel, str]:
+        text = str(command or "").strip()
+        if not text:
+            return RiskLevel.BLOCKED, "Empty command"
+        if is_destructive_command(text):
+            return RiskLevel.DANGEROUS, "Matched destructive command pattern"
+        if redirection := _scan_shell_redirection(text):
+            if redirection.kind == "output":
+                target = f" ({redirection.target})" if redirection.target else ""
+                return RiskLevel.DANGEROUS, f"Output redirection{target} can write files"
+            return RiskLevel.NEEDS_REVIEW, "Input redirection requires review"
+
+        lowered = text.lower()
+        if any(lowered == prefix or lowered.startswith(f"{prefix} ") for prefix in DANGEROUS_BASH_PATTERNS):
+            return RiskLevel.NEEDS_REVIEW, "Matched dangerous shell/runtime prefix"
+        if any(pattern.search(text) for pattern in REVIEW_SHELL_PATTERNS):
+            return RiskLevel.NEEDS_REVIEW, "Uses shell syntax that requires review"
+
+        split_result = _split_shell_command_for_analysis(text)
+        if split_result is None:
+            return RiskLevel.NEEDS_REVIEW, "Could not validate shell structure"
+
+        segments, _operators = split_result
+        if all(_is_safe_readonly_bash_segment(segment) for segment in segments):
+            return RiskLevel.SAFE, "Matched readonly bash allowlist"
+        return RiskLevel.NEEDS_REVIEW, "Command is outside the readonly bash allowlist"
 
 
 def is_safe_tool(tool_name: str) -> bool:

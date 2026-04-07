@@ -4,8 +4,8 @@ Discovers hook configs from settings, executes shell commands or HTTP
 hooks at lifecycle events, with matcher filtering, exit-code semantics,
 stdin JSON piping, timeout handling, and SSRF protection.
 
-Hook configuration (in ``~/.mini_agent/hooks.json`` or project
-``.mini_agent/hooks.json``)::
+Hook configuration (in ``~/.ccmini/hooks.json`` or project
+``.ccmini/hooks.json``)::
 
     {
       "hooks": {
@@ -417,7 +417,7 @@ def is_ssrf_safe(hostname: str) -> bool:
 
 _CONFIG_FILENAMES = [
     "hooks.json",
-    ".mini_agent/hooks.json",
+    ".ccmini/hooks.json",
 ]
 
 
@@ -484,9 +484,9 @@ async def _exec_command_hook(
     """Execute a shell command hook with stdin JSON piping."""
     env = {
         **os.environ,
-        "MINI_AGENT_PROJECT_DIR": hook_input.cwd,
-        "MINI_AGENT_SESSION_ID": hook_input.session_id,
-        "MINI_AGENT_HOOK_EVENT": hook_input.hook_event_name,
+        "CCMINI_PROJECT_DIR": hook_input.cwd,
+        "CCMINI_SESSION_ID": hook_input.session_id,
+        "CCMINI_HOOK_EVENT": hook_input.hook_event_name,
     }
 
     input_json = hook_input.to_json()
@@ -771,7 +771,7 @@ class DiscoveredScript:
 def discover_user_hooks(
     hooks_dir: Path | None = None,
 ) -> list[DiscoveredScript]:
-    """Scan ``~/.mini_agent/hooks/`` for Python scripts.
+    """Scan ``~/.ccmini/hooks/`` for Python scripts.
 
     Recognises filenames like ``pre_tool_guard.py``, ``post_tool_log.py``,
     ``on_event_notify.py``.  Returns a list of :class:`DiscoveredScript`

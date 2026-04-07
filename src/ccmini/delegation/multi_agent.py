@@ -55,6 +55,24 @@ _FORK_DIRECTIVE_PREFIX = "FORK_DIRECTIVE: "
 _FORK_PLACEHOLDER_RESULT = "Fork started - processing in background"
 
 
+def _background_launch_payload(
+    *,
+    task_id: str,
+    description: str,
+    prompt: str,
+    output_file: str,
+) -> str:
+    """Serialize a background-agent launch result with legacy aliases."""
+    return json.dumps({
+        "status": "async_launched",
+        "agentId": task_id,
+        "task_id": task_id,
+        "description": description,
+        "prompt": prompt,
+        "outputFile": output_file,
+    }, ensure_ascii=False)
+
+
 # ======================================================================
 # Data structures
 # ======================================================================
@@ -539,7 +557,12 @@ class AgentTool(Tool):
         prompt = kwargs["prompt"]
         subagent_type = kwargs.get("subagent_type", "").strip()
         model_override = kwargs.get("model", "").strip()
-        run_in_background = bool(kwargs.get("run_in_background", False))
+        run_in_background_raw = kwargs.get("run_in_background")
+        run_in_background = (
+            None
+            if run_in_background_raw is None
+            else bool(run_in_background_raw)
+        )
         team_name_override = kwargs.get("team_name", "").strip()
         cwd_override = kwargs.get("cwd", "").strip()
         spawn_mode = kwargs.get("mode", "").strip()
@@ -572,7 +595,7 @@ class AgentTool(Tool):
         coordinator_mode = getattr(parent_agent, "_coordinator_mode", None)
         is_coordinator = bool(getattr(coordinator_mode, "is_active", False))
         fork_enabled = self._fork_subagent_enabled(context=context, is_coordinator=is_coordinator)
-        effective_run_in_background = run_in_background or fork_enabled
+        effective_run_in_background = bool(run_in_background) or fork_enabled
         has_team_target = bool(
             parent_agent is not None
             and name
@@ -647,13 +670,12 @@ class AgentTool(Tool):
                 )
                 task_info = parent_agent.background_runner.get_status(task_id)
                 output_file = getattr(task_info, "output_file", "") if task_info is not None else ""
-                return json.dumps({
-                    "status": "async_launched",
-                    "agentId": task_id,
-                    "description": name or description or "fork",
-                    "prompt": prompt,
-                    "outputFile": output_file,
-                }, ensure_ascii=False)
+                return _background_launch_payload(
+                    task_id=task_id,
+                    description=name or description or "fork",
+                    prompt=prompt,
+                    output_file=output_file,
+                )
 
             from .subagent import ForkedAgentContext, run_forked_agent
 
@@ -675,6 +697,9 @@ class AgentTool(Tool):
         if self._registry:
             definition = self._registry.get(requested_type)
             if definition is not None:
+                built_in_background = effective_run_in_background or (
+                    run_in_background is None and bool(getattr(definition, "background", False))
+                )
                 tools = self._resolve_tools(definition)
                 config = SubAgentConfig(
                     name=name or f"sub-{definition.agent_type}",
@@ -704,7 +729,7 @@ class AgentTool(Tool):
                             "name": name or description or definition.agent_type,
                             "team_name": team_name_override or "",
                         }, ensure_ascii=False)
-                if parent_agent is not None and effective_run_in_background:
+                if parent_agent is not None and built_in_background:
                     task_id = parent_agent.background_runner.spawn(
                         name=name or description or definition.agent_type,
                         prompt=prompt,
@@ -717,13 +742,12 @@ class AgentTool(Tool):
                     )
                     task_info = parent_agent.background_runner.get_status(task_id)
                     output_file = getattr(task_info, "output_file", "") if task_info is not None else ""
-                    return json.dumps({
-                        "status": "async_launched",
-                        "agentId": task_id,
-                        "description": name or description or definition.agent_type,
-                        "prompt": prompt,
-                        "outputFile": output_file,
-                    }, ensure_ascii=False)
+                    return _background_launch_payload(
+                        task_id=task_id,
+                        description=name or description or definition.agent_type,
+                        prompt=prompt,
+                        output_file=output_file,
+                    )
                 result = await run_sub_agent(
                     provider=self._provider,
                     config=config,
@@ -788,13 +812,12 @@ class AgentTool(Tool):
             )
             task_info = parent_agent.background_runner.get_status(task_id)
             output_file = getattr(task_info, "output_file", "") if task_info is not None else ""
-            return json.dumps({
-                "status": "async_launched",
-                "agentId": task_id,
-                "description": name or description or role,
-                "prompt": prompt,
-                "outputFile": output_file,
-            }, ensure_ascii=False)
+            return _background_launch_payload(
+                task_id=task_id,
+                description=name or description or role,
+                prompt=prompt,
+                output_file=output_file,
+            )
 
         result = await run_sub_agent(
             provider=self._provider,

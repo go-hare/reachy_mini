@@ -127,7 +127,12 @@ class SendMessageTool(Tool):
         }
 
     async def execute(self, *, context: ToolUseContext, **kwargs: Any) -> str:
-        recipient = str(kwargs.get("to") or kwargs.get("task_id") or "").strip()
+        recipient = str(
+            kwargs.get("to")
+            or kwargs.get("task_id")
+            or kwargs.get("agentId")
+            or ""
+        ).strip()
         raw_message = kwargs.get("message")
         broadcast = bool(kwargs.get("broadcast", False))
         summary = str(kwargs.get("summary", "")).strip() or None
@@ -322,12 +327,12 @@ class SendMessageTool(Tool):
         if not session_id:
             return "Error: bridge recipient must be bridge:<session-id>."
 
-        base_url = os.environ.get("MINI_AGENT_BRIDGE_BASE_URL", "").strip()
-        auth_token = os.environ.get("MINI_AGENT_BRIDGE_AUTH_TOKEN", "").strip()
+        base_url = os.environ.get("CCMINI_BRIDGE_BASE_URL", "").strip()
+        auth_token = os.environ.get("CCMINI_BRIDGE_AUTH_TOKEN", "").strip()
         if not base_url or not auth_token:
             return (
-                "Error: bridge messaging requires MINI_AGENT_BRIDGE_BASE_URL and "
-                "MINI_AGENT_BRIDGE_AUTH_TOKEN in the environment."
+                "Error: bridge messaging requires CCMINI_BRIDGE_BASE_URL and "
+                "CCMINI_BRIDGE_AUTH_TOKEN in the environment."
             )
 
         session = RemoteBridgeSession(

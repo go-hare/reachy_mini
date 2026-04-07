@@ -2,16 +2,11 @@
 
 Layered config: defaults < global (~/.ccmini/config.json) < project (.ccmini.json) < CLI flags.
 
-Legacy compatibility:
-- Reads and migrates ``~/.mini_agent/config.json`` if the new ccmini config
-  does not exist yet.
-- Falls back to ``.mini-agent.json`` when ``.ccmini.json`` is absent.
-
 Extended features (ported from Claude Code's config patterns):
 - **Remote config sync** — overlay from ``~/.ccmini/remote_config.json``
 - **Config validation** — type-check all fields, report errors
 - **Config hot reload** — watch config file and fire callbacks on change
-- **Environment config** — ``MINI_AGENT_*`` env vars with full field mapping
+- **Environment config** — ``CCMINI_*`` env vars with full field mapping
 - **Config profiles** — named presets in ``~/.ccmini/profiles/``
 """
 
@@ -40,16 +35,8 @@ def _global_config_path() -> Path:
     return _home_dir() / "config.json"
 
 
-def _legacy_global_config_path() -> Path:
-    return Path.home() / ".mini_agent" / "config.json"
-
-
 def _project_config_path() -> Path:
     return Path.cwd() / ".ccmini.json"
-
-
-def _legacy_project_config_path() -> Path:
-    return Path.cwd() / ".mini-agent.json"
 
 
 @dataclass
@@ -72,6 +59,8 @@ class CLIConfig:
 
     buddy_enabled: bool = True
     buddy_user_id: str = ""
+    prompt_suggestion_enabled: bool = True
+    speculation_enabled: bool = True
 
     tools_enabled: bool = True
     allowed_dirs: list[str] = field(default_factory=list)
@@ -108,24 +97,22 @@ def load_config(
 ) -> CLIConfig:
     """Load configuration from all layers, merging top-down.
 
-    Priority: CLI flags > project config > global config > defaults.
+    Priority: CLI flags > explicit config > project config > remote config >
+    global config > defaults.
     """
     cfg = CLIConfig()
     _ensure_global_config_exists(cfg)
 
     global_data = _load_json(_global_config_path())
-    project_path = _project_config_path()
-    if project_path.exists():
-        project_data = _load_json(project_path)
-    else:
-        project_data = _load_json(_legacy_project_config_path())
+    remote_data = load_remote_config()
+    project_data = _load_json(_project_config_path())
 
     if config_file:
         explicit_data = _load_json(Path(config_file))
     else:
         explicit_data = {}
 
-    merged = {**global_data, **project_data, **explicit_data}
+    merged = {**global_data, **remote_data, **project_data, **explicit_data}
 
     if cli_overrides:
         merged.update({k: v for k, v in cli_overrides.items() if v is not None and v != ""})
@@ -162,11 +149,6 @@ def _ensure_global_config_exists(defaults: CLIConfig | None = None) -> Path:
     if path.exists():
         return path
 
-    legacy_path = _legacy_global_config_path()
-    if legacy_path.exists():
-        path.write_text(legacy_path.read_text(encoding="utf-8"), encoding="utf-8")
-        return path
-
     data = {
         "provider": cfg.provider,
         "model": cfg.model,
@@ -178,6 +160,8 @@ def _ensure_global_config_exists(defaults: CLIConfig | None = None) -> Path:
         "max_tokens": cfg.max_tokens,
         "max_turns": cfg.max_turns,
         "output_style": cfg.output_style,
+        "prompt_suggestion_enabled": cfg.prompt_suggestion_enabled,
+        "speculation_enabled": cfg.speculation_enabled,
     }
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     return path
@@ -193,7 +177,7 @@ def _load_json(path: Path) -> dict[str, Any]:
 
 
 def _apply_env_vars(cfg: CLIConfig) -> None:
-    """Override config from environment variables (MINI_AGENT_*)."""
+    """Override config from environment variables (CCMINI_*)."""
     for attr, value in load_env_config().items():
         setattr(cfg, attr, value)
 
@@ -203,43 +187,46 @@ def _apply_env_vars(cfg: CLIConfig) -> None:
 # ======================================================================
 
 _ENV_VAR_MAP: dict[str, str] = {
-    "MINI_AGENT_PROVIDER": "provider",
-    "MINI_AGENT_MODEL": "model",
-    "MINI_AGENT_API_KEY": "api_key",
-    "MINI_AGENT_BASE_URL": "base_url",
+    "CCMINI_PROVIDER": "provider",
+    "CCMINI_MODEL": "model",
+    "CCMINI_API_KEY": "api_key",
+    "CCMINI_BASE_URL": "base_url",
     "CCMINI_HOST": "ccmini_host",
     "CCMINI_PORT": "ccmini_port",
     "CCMINI_AUTH_TOKEN": "ccmini_auth_token",
-    "MINI_AGENT_MAX_TOKENS": "max_tokens",
-    "MINI_AGENT_MAX_TURNS": "max_turns",
-    "MINI_AGENT_SYSTEM_PROMPT": "system_prompt",
-    "MINI_AGENT_SESSION_DIR": "session_dir",
-    "MINI_AGENT_BASH_TIMEOUT": "bash_timeout",
-    "MINI_AGENT_THEME": "theme",
-    "MINI_AGENT_OUTPUT_STYLE": "output_style",
-    "MINI_AGENT_MULTILINE_KEY": "multiline_key",
-    "MINI_AGENT_PERMISSION_MODE": "permission_mode",
-    "MINI_AGENT_STATUSLINE_ENABLED": "statusline_enabled",
-    "MINI_AGENT_COORDINATOR_ENABLED": "coordinator_enabled",
-    "MINI_AGENT_KAIROS_ENABLED": "kairos_enabled",
-    "MINI_AGENT_KAIROS_BRIEF_ENABLED": "kairos_brief_enabled",
-    "MINI_AGENT_KAIROS_CRON_ENABLED": "kairos_cron_enabled",
-    "MINI_AGENT_KAIROS_CRON_DURABLE": "kairos_cron_durable",
-    "MINI_AGENT_KAIROS_CHANNELS_ENABLED": "kairos_channels_enabled",
-    "MINI_AGENT_KAIROS_DREAM_ENABLED": "kairos_dream_enabled",
-    "MINI_AGENT_BUILTIN_EXPLORE_PLAN_AGENTS_ENABLED": "builtin_explore_plan_agents_enabled",
-    "MINI_AGENT_BUILTIN_VERIFICATION_AGENT_ENABLED": "builtin_verification_agent_enabled",
-    "MINI_AGENT_BUILTIN_STATUSLINE_GUIDE_AGENT_ENABLED": "builtin_statusline_guide_agent_enabled",
-    "MINI_AGENT_BUILTIN_CLAUDE_DOCS_GUIDE_AGENT_ENABLED": "builtin_claude_docs_guide_agent_enabled",
-    "MINI_AGENT_VERBOSE": "verbose",
-    "MINI_AGENT_BUDDY_ENABLED": "buddy_enabled",
-    "MINI_AGENT_TOOLS_ENABLED": "tools_enabled",
-    "MINI_AGENT_SESSION_PERSISTENCE": "session_persistence",
+    "CCMINI_MAX_TOKENS": "max_tokens",
+    "CCMINI_MAX_TURNS": "max_turns",
+    "CCMINI_SYSTEM_PROMPT": "system_prompt",
+    "CCMINI_SESSION_DIR": "session_dir",
+    "CCMINI_BASH_TIMEOUT": "bash_timeout",
+    "CCMINI_THEME": "theme",
+    "CCMINI_OUTPUT_STYLE": "output_style",
+    "CCMINI_MULTILINE_KEY": "multiline_key",
+    "CCMINI_PERMISSION_MODE": "permission_mode",
+    "CCMINI_STATUSLINE_ENABLED": "statusline_enabled",
+    "CCMINI_COORDINATOR_ENABLED": "coordinator_enabled",
+    "CCMINI_KAIROS_ENABLED": "kairos_enabled",
+    "CCMINI_KAIROS_BRIEF_ENABLED": "kairos_brief_enabled",
+    "CCMINI_KAIROS_CRON_ENABLED": "kairos_cron_enabled",
+    "CCMINI_KAIROS_CRON_DURABLE": "kairos_cron_durable",
+    "CCMINI_KAIROS_CHANNELS_ENABLED": "kairos_channels_enabled",
+    "CCMINI_KAIROS_DREAM_ENABLED": "kairos_dream_enabled",
+    "CCMINI_BUILTIN_EXPLORE_PLAN_AGENTS_ENABLED": "builtin_explore_plan_agents_enabled",
+    "CCMINI_BUILTIN_VERIFICATION_AGENT_ENABLED": "builtin_verification_agent_enabled",
+    "CCMINI_BUILTIN_STATUSLINE_GUIDE_AGENT_ENABLED": "builtin_statusline_guide_agent_enabled",
+    "CCMINI_BUILTIN_CLAUDE_DOCS_GUIDE_AGENT_ENABLED": "builtin_claude_docs_guide_agent_enabled",
+    "CCMINI_VERBOSE": "verbose",
+    "CCMINI_BUDDY_ENABLED": "buddy_enabled",
+    "CCMINI_PROMPT_SUGGESTION_ENABLED": "prompt_suggestion_enabled",
+    "CCMINI_SPECULATION_ENABLED": "speculation_enabled",
+    "CCMINI_TOOLS_ENABLED": "tools_enabled",
+    "CCMINI_SESSION_PERSISTENCE": "session_persistence",
 }
 
 _INT_FIELDS = {"max_tokens", "max_turns", "bash_timeout", "ccmini_port"}
 _BOOL_FIELDS = {
-    "verbose", "buddy_enabled", "tools_enabled", "session_persistence",
+    "verbose", "buddy_enabled", "prompt_suggestion_enabled", "speculation_enabled",
+    "tools_enabled", "session_persistence",
     "statusline_enabled", "coordinator_enabled", "kairos_enabled", "kairos_brief_enabled",
     "kairos_cron_enabled", "kairos_cron_durable", "kairos_channels_enabled",
     "kairos_dream_enabled", "builtin_explore_plan_agents_enabled",
@@ -250,7 +237,7 @@ _BOOL_FIELDS = {
 
 
 def load_env_config() -> dict[str, Any]:
-    """Read all ``MINI_AGENT_*`` env vars and return as a config dict.
+    """Read all ``CCMINI_*`` env vars and return as a config dict.
 
     Type coercion is applied: int fields are cast to int, bool fields
     accept ``"1"``, ``"true"``, ``"yes"`` (case-insensitive).
@@ -561,9 +548,9 @@ def load_profile(name: str) -> CLIConfig:
     as project config).
     """
     path = _profiles_dir() / f"{name}.json"
-    profile_data = _load_json(path)
-    if not profile_data:
+    if not path.exists():
         raise FileNotFoundError(f"Profile '{name}' not found at {path}")
+    profile_data = _load_json(path)
     return load_config(cli_overrides=profile_data)
 
 

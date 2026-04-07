@@ -31,6 +31,8 @@ from ..messages import (
     ToolResultBlock,
     ToolUseBlock,
     assistant_message,
+    tool_result_content_snippet,
+    tool_result_content_to_text,
     user_message,
 )
 from .compact import estimate_tokens, estimate_text_tokens
@@ -210,8 +212,9 @@ def _collapse_block(
 
     # Collapse verbose tool results
     if isinstance(block, ToolResultBlock):
-        if len(block.content) > config.tool_result_max_chars:
-            summary = block.content[:80].replace("\n", " ").strip()
+        rendered = tool_result_content_to_text(block.content)
+        if len(rendered) > config.tool_result_max_chars:
+            summary = tool_result_content_snippet(block.content, limit=80).strip()
             return ToolResultBlock(
                 tool_use_id=block.tool_use_id,
                 content=f"[Collapsed: {summary}...]",
@@ -268,7 +271,7 @@ def _msg_tokens(msg: Message) -> int:
         elif isinstance(block, ToolUseBlock):
             total += len(block.name) + len(str(block.input))
         elif isinstance(block, ToolResultBlock):
-            total += len(block.content)
+            total += len(tool_result_content_to_text(block.content))
     return total // 4
 
 

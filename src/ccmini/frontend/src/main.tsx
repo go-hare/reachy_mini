@@ -3,6 +3,7 @@ import { render, type Instance } from './ink.js'
 import { CCMINI_CLI_HELP } from './ccmini/ccminiCommands.js'
 import { createCcminiSession } from './ccmini/createCcminiSession.js'
 import { loadConfiguredCcminiConnection } from './ccmini/loadCcminiConfig.js'
+import { AlternateScreen } from './ink/components/AlternateScreen.js'
 import {
   type EmbeddedCcminiHost,
   startEmbeddedCcminiHost,
@@ -116,11 +117,13 @@ async function main(): Promise<void> {
     })
 
     app = await render(
-      <CcminiRepl
-        ccminiConnectConfig={ccminiConnectConfig}
-        initialThemeSetting={configured.themeSetting}
-        onExit={handleExit}
-      />,
+      <AlternateScreen mouseTracking={false}>
+        <CcminiRepl
+          ccminiConnectConfig={ccminiConnectConfig}
+          initialThemeSetting={configured.themeSetting}
+          onExit={handleExit}
+        />
+      </AlternateScreen>,
     )
   } catch (error) {
     embeddedHost?.kill()

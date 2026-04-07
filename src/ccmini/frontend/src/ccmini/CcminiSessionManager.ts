@@ -39,6 +39,13 @@ function normalizeRemoteContent(content: CcminiRemoteContent): string {
     .join('\n\n')
 }
 
+function isAcceptedBridgeResponse(message: CcminiBridgeMessage): boolean {
+  if (message.type !== 'response') {
+    return false
+  }
+  return String(message.payload?.text ?? '').trim().toLowerCase() === 'accepted'
+}
+
 export class CcminiSessionManager {
   private ws: WebSocket | null = null
   private pollTimer: ReturnType<typeof setInterval> | null = null
@@ -132,7 +139,7 @@ export class CcminiSessionManager {
       session_id: this.config.sessionId,
       request_id: createCcminiRequestId(),
     })
-    return response.type === 'response'
+    return isAcceptedBridgeResponse(response)
   }
 
   async submitToolResults(
@@ -148,7 +155,7 @@ export class CcminiSessionManager {
       session_id: this.config.sessionId,
       request_id: createCcminiRequestId(),
     })
-    return response.type === 'response'
+    return isAcceptedBridgeResponse(response)
   }
 
   sendInterrupt(): void {

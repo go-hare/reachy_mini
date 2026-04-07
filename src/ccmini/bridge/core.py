@@ -166,6 +166,7 @@ class BridgeServer:
         app.router.add_get("/bridge/events/stream", self._aiohttp_handle_event_stream)
         app.router.add_get("/bridge/status", self._aiohttp_handle_status)
         app.router.add_get("/api/kairos/inbox", self._aiohttp_kairos_inbox)
+        app.router.add_get("/api/tasks", self._aiohttp_tasks)
 
         self._runner = web.AppRunner(app)
         await self._runner.setup()
@@ -395,6 +396,72 @@ class BridgeServer:
             )
         data = get_inbox_snapshot(limit_per_stream=limit, streams=streams)
         return web.json_response({"inbox": data, "limit": limit, "stream": stream_arg})
+
+    async def _aiohttp_tasks(self, request: Any) -> Any:
+        """``GET /api/tasks`` — expose the current task board for remote UIs."""
+        from aiohttp import web
+
+        from ..delegation.team_files import read_team_file
+        from ..tools.plan_mode import get_plan_state
+        from ..tools.task_tools import TaskBoard
+
+        if not self._is_http_authorized(request):
+            return web.json_response({"error": "Unauthorized"}, status=401)
+
+        session_id = str(request.query.get("session_id", "") or "").strip()
+        task_list_id = str(request.query.get("task_list_id", "") or "").strip()
+        include_completed_arg = str(request.query.get("include_completed", "true") or "").strip().lower()
+        include_completed = include_completed_arg not in {"0", "false", "no"}
+
+        board = TaskBoard()
+        if task_list_id:
+            board.set_scope(task_list_id)
+        elif session_id:
+            board.set_scope(session_id)
+
+        team_name = task_list_id or session_id
+        owner_activity: dict[str, bool] = {}
+        if team_name:
+            team_data = read_team_file(team_name)
+            members = team_data.get("members", []) if isinstance(team_data, dict) else []
+            if isinstance(members, list):
+                for member in members:
+                    if not isinstance(member, dict):
+                        continue
+                    is_active = bool(member.get("isActive", False))
+                    agent_id = str(member.get("agentId", "") or "").strip()
+                    name = str(member.get("name", "") or "").strip()
+                    if agent_id:
+                        owner_activity[agent_id] = is_active
+                    if name:
+                        owner_activity[name] = is_active
+
+        records = [record for record in board.list() if not record.metadata.get("_internal")]
+        resolved_ids = {record.id for record in records if record.status == "completed"}
+        plan_state = get_plan_state()
+
+        payload_tasks: list[dict[str, Any]] = []
+        for record in records:
+            if not include_completed and record.status == "completed":
+                continue
+            item = record.to_dict()
+            item["blockedBy"] = [value for value in record.blockedBy if value not in resolved_ids]
+            if record.owner:
+                item["ownerIsActive"] = owner_activity.get(record.owner, record.status == "in_progress")
+            payload_tasks.append(item)
+
+        return web.json_response(
+            {
+                "task_list_id": task_list_id or session_id or "",
+                "tasks": payload_tasks,
+                "include_completed": include_completed,
+                "planState": {
+                    "isActive": bool(plan_state.is_active),
+                    "planText": str(plan_state.plan_text or ""),
+                    "prePermissionMode": str(plan_state.pre_permission_mode or "default"),
+                },
+            }
+        )
 
     async def _aiohttp_handle_events(self, request: Any) -> Any:
         from aiohttp import web

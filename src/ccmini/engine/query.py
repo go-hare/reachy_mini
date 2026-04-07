@@ -688,6 +688,7 @@ async def query(params: QueryParams) -> AsyncGenerator[StreamEvent, None]:
                     _fire_post_sampling(
                         hook_runner, state.messages, system_text,
                         accumulated_text, tool_calls, agent=params.agent,
+                        query_source=params.query_source,
                     )
 
             # TS abort check (query.ts 1015-1050): check if aborted during streaming
@@ -920,6 +921,7 @@ async def query(params: QueryParams) -> AsyncGenerator[StreamEvent, None]:
                     state.messages,
                     accumulated_text,
                     tool_calls,
+                    turn_usage=turn_usage,
                 )
                 missing_results = _build_missing_tool_results(
                     tool_calls,
@@ -954,7 +956,12 @@ async def query(params: QueryParams) -> AsyncGenerator[StreamEvent, None]:
         abort_event = getattr(params.turn_state, "abort_event", None) if params.turn_state else None
         if abort_event is not None and abort_event.is_set():
             if tool_calls:
-                assistant_msg = _append_assistant_turn(state.messages, accumulated_text, tool_calls)
+                assistant_msg = _append_assistant_turn(
+                    state.messages,
+                    accumulated_text,
+                    tool_calls,
+                    turn_usage=turn_usage,
+                )
                 missing_results = _build_missing_tool_results(
                     tool_calls, "Interrupted by user",
                 )
@@ -995,7 +1002,23 @@ async def query(params: QueryParams) -> AsyncGenerator[StreamEvent, None]:
                             input=denied_call.tool_input,
                         )
                     )
-                state.messages.append(assistant_message(denied_blocks if denied_blocks else denied_reply))
+                denied_metadata: dict[str, Any] = {}
+                if turn_usage is not None:
+                    denied_metadata["usage"] = {
+                        "input_tokens": turn_usage.input_tokens,
+                        "output_tokens": turn_usage.output_tokens,
+                        "cache_read_tokens": turn_usage.cache_read_tokens,
+                        "cache_creation_tokens": turn_usage.cache_creation_tokens,
+                        "model": turn_usage.model,
+                    }
+                    if turn_usage.model:
+                        denied_metadata["model"] = turn_usage.model
+                state.messages.append(
+                    assistant_message(
+                        denied_blocks if denied_blocks else denied_reply,
+                        **denied_metadata,
+                    )
+                )
                 context.messages = list(state.messages)
                 context.extras["messages"] = list(state.messages)
                 stop_checker.record_round(
@@ -1104,7 +1127,18 @@ async def query(params: QueryParams) -> AsyncGenerator[StreamEvent, None]:
             blocks: list[TextBlock | ToolUseBlock] = []
             if reply:
                 blocks.append(TextBlock(text=reply))
-            state.messages.append(assistant_message(blocks if blocks else reply))
+            reply_metadata: dict[str, Any] = {}
+            if turn_usage is not None:
+                reply_metadata["usage"] = {
+                    "input_tokens": turn_usage.input_tokens,
+                    "output_tokens": turn_usage.output_tokens,
+                    "cache_read_tokens": turn_usage.cache_read_tokens,
+                    "cache_creation_tokens": turn_usage.cache_creation_tokens,
+                    "model": turn_usage.model,
+                }
+                if turn_usage.model:
+                    reply_metadata["model"] = turn_usage.model
+            state.messages.append(assistant_message(blocks if blocks else reply, **reply_metadata))
             context.messages = list(state.messages)
             context.extras["messages"] = list(state.messages)
 
@@ -1172,7 +1206,18 @@ async def query(params: QueryParams) -> AsyncGenerator[StreamEvent, None]:
                 name=tc.tool_name,
                 input=tc.tool_input,
             ))
-        state.messages.append(assistant_message(assistant_blocks))
+        tool_turn_metadata: dict[str, Any] = {}
+        if turn_usage is not None:
+            tool_turn_metadata["usage"] = {
+                "input_tokens": turn_usage.input_tokens,
+                "output_tokens": turn_usage.output_tokens,
+                "cache_read_tokens": turn_usage.cache_read_tokens,
+                "cache_creation_tokens": turn_usage.cache_creation_tokens,
+                "model": turn_usage.model,
+            }
+            if turn_usage.model:
+                tool_turn_metadata["model"] = turn_usage.model
+        state.messages.append(assistant_message(assistant_blocks, **tool_turn_metadata))
         context.messages = list(state.messages)
         context.extras["messages"] = list(state.messages)
 
@@ -1337,6 +1382,8 @@ def _append_assistant_turn(
     messages: list[Message],
     reply_text: str,
     tool_calls: list[ToolCallEvent],
+    *,
+    turn_usage: UsageRecord | None = None,
 ) -> Message | None:
     """Persist the streamed assistant turn before synthesizing tool results."""
     assistant_blocks: list[TextBlock | ToolUseBlock] = []
@@ -1350,7 +1397,18 @@ def _append_assistant_turn(
         ))
     if not assistant_blocks:
         return None
-    assistant_msg = assistant_message(assistant_blocks)
+    metadata: dict[str, Any] = {}
+    if turn_usage is not None:
+        metadata["usage"] = {
+            "input_tokens": turn_usage.input_tokens,
+            "output_tokens": turn_usage.output_tokens,
+            "cache_read_tokens": turn_usage.cache_read_tokens,
+            "cache_creation_tokens": turn_usage.cache_creation_tokens,
+            "model": turn_usage.model,
+        }
+        if turn_usage.model:
+            metadata["model"] = turn_usage.model
+    assistant_msg = assistant_message(assistant_blocks, **metadata)
     messages.append(assistant_msg)
     return assistant_msg
 
@@ -1578,6 +1636,7 @@ def _fire_post_sampling(
     tool_calls: list[ToolCallEvent],
     *,
     agent: "Agent | None" = None,
+    query_source: str = "",
 ) -> None:
     """Fire post-sampling hooks as a background task (fire-and-forget)."""
     import asyncio
@@ -1588,6 +1647,7 @@ def _fire_post_sampling(
         system_prompt=sp,
         reply_text=reply_text,
         tool_calls=list(tool_calls),
+        query_source=query_source,
     )
 
     async def _run() -> None:

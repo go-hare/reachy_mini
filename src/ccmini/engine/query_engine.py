@@ -45,6 +45,7 @@ class PreparedTurn:
     local_result: str | None = None
     local_error: str | None = None
     message_content: list[Any] | str = ""
+    accepted_speculation: Any | None = None
 
 
 class TurnPhase(str, Enum):
@@ -58,6 +59,7 @@ class TurnPhase(str, Enum):
 @dataclass(slots=True)
 class TurnState:
     conversation_id: str
+    turn_id: str = field(default_factory=lambda: uuid4().hex[:16])
     query_text: str = ""
     phase: TurnPhase = TurnPhase.PREPARED
     pending_run_id: str = ""
@@ -93,6 +95,10 @@ class QueryEngine:
         user_text: str,
         *,
         conversation_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        attachments: list[Any] | None = None,
+        user_id: str = "",
+        turn_id: str | None = None,
     ) -> AsyncGenerator[StreamEvent, None]:
         # TS: startTime = Date.now()
         self._start_time = time.time()
@@ -103,9 +109,15 @@ class QueryEngine:
 
         turn_state = TurnState(
             conversation_id=conversation_id or self._agent._conversation_id,
+            turn_id=turn_id or uuid4().hex[:16],
         )
         self._agent._current_turn_state = turn_state
-        prepared = await self._prepare_turn(user_text)
+        prepared = await self._prepare_turn(
+            user_text,
+            metadata=metadata,
+            attachments=attachments,
+            user_id=user_id,
+        )
 
         if prepared.local_error is not None:
             turn_state.phase = TurnPhase.FAILED
@@ -118,6 +130,14 @@ class QueryEngine:
                 text=prepared.local_result,
                 conversation_id=conversation_id or self._agent._conversation_id,
             )
+            return
+
+        if prepared.accepted_speculation is not None:
+            async for event in self._replay_accepted_speculation(
+                prepared,
+                conversation_id=conversation_id,
+            ):
+                yield event
             return
 
         budget = self._agent.budget_status
@@ -246,10 +266,49 @@ class QueryEngine:
             )
         self._agent._persist_session_snapshot()
 
-    async def _prepare_turn(self, user_text: str) -> PreparedTurn:
+    async def _prepare_turn(
+        self,
+        user_text: str,
+        *,
+        metadata: dict[str, Any] | None = None,
+        attachments: list[Any] | None = None,
+        user_id: str = "",
+    ) -> PreparedTurn:
+        host_metadata = dict(metadata or {})
+        if user_id:
+            host_metadata.setdefault("user_id", user_id)
+        try:
+            from ..services.prompt_suggestion import (
+                abort_prompt_suggestion,
+                abort_speculation,
+                try_accept_speculation,
+            )
+
+            accepted_speculation = try_accept_speculation(
+                user_text,
+                agent=self._agent,
+            )
+            if accepted_speculation is not None:
+                return PreparedTurn(
+                    query_text=user_text,
+                    metadata=host_metadata,
+                    active_tools=list(self._agent._tools),
+                    message_content=await self._build_user_message_content(
+                        user_text,
+                        attachments=attachments,
+                    ),
+                    accepted_speculation=accepted_speculation,
+                )
+
+            abort_prompt_suggestion(self._agent)
+            abort_speculation(self._agent)
+        except Exception:
+            pass
+
         prepared = PreparedTurn(
             active_tools=list(self._agent._tools),
             message_content=user_text,
+            metadata=host_metadata,
         )
 
         parsed = self._agent._command_registry.parse(user_text)
@@ -270,17 +329,154 @@ class QueryEngine:
                     return prepared
                 prepared.query_text = self._build_prompt_command_input(command.prompt_text, command.name, args)
                 prepared.metadata = {
+                    **host_metadata,
                     "command_name": command.name,
                     "command_args": args,
                     "original_text": f"/{command.name} {args}".strip(),
                 }
                 prepared.active_tools = self._filter_tools_for_command(command.allowed_tools)
-                prepared.message_content = await self._build_user_message_content(prepared.query_text)
+                prepared.message_content = await self._build_user_message_content(
+                    prepared.query_text,
+                    attachments=attachments,
+                )
                 return prepared
 
         prepared.query_text = user_text
-        prepared.message_content = await self._build_user_message_content(user_text)
+        prepared.message_content = await self._build_user_message_content(
+            user_text,
+            attachments=attachments,
+        )
         return prepared
+
+    async def _replay_accepted_speculation(
+        self,
+        prepared: PreparedTurn,
+        *,
+        conversation_id: str | None = None,
+    ) -> AsyncGenerator[StreamEvent, None]:
+        accepted = prepared.accepted_speculation
+        assert accepted is not None
+        from ..services.prompt_suggestion import SpeculationState, _cleanup_speculation_overlay, _commit_speculation_overlay
+
+        overlay_state = SpeculationState(
+            workspace_root=accepted.workspace_root,
+            overlay_dir=accepted.overlay_dir,
+            written_paths=list(accepted.written_paths),
+        )
+
+        try:
+            _commit_speculation_overlay(overlay_state)
+
+            current_turn = getattr(self._agent, "_current_turn_state", None)
+            user_metadata = dict(prepared.metadata)
+            user_metadata.setdefault("uuid", uuid4().hex)
+            user_metadata.setdefault("timestamp", time.time())
+            if current_turn is not None:
+                user_metadata.setdefault("conversation_id", current_turn.conversation_id)
+                user_metadata.setdefault("turn_id", current_turn.turn_id)
+            self._agent._messages.append(
+                Message(role="user", content=prepared.message_content, metadata=user_metadata)
+            )
+            self._agent._current_turn_user_text = prepared.query_text
+            self._agent._last_turn_tool_names = []
+            self._agent._current_turn_tools = list(prepared.active_tools)
+
+            if current_turn is not None:
+                current_turn.phase = TurnPhase.ACCEPTED
+                current_turn.query_text = prepared.query_text
+
+            reply_text = ""
+            stop_reason = "speculation_accept"
+            saw_error = False
+            for message in accepted.added_messages:
+                self._agent._messages.append(message)
+
+            for event in accepted.events:
+                self._handle_event(event)
+                if isinstance(event, CompletionEvent):
+                    reply_text = event.text
+                    stop_reason = event.stop_reason or stop_reason
+                elif isinstance(event, ErrorEvent):
+                    saw_error = True
+                elif isinstance(event, ToolResultEvent):
+                    self._turn_count += 1
+                yield event
+
+            if not reply_text:
+                reply_text = accepted.reply
+
+            if saw_error:
+                if current_turn is not None:
+                    current_turn.phase = TurnPhase.FAILED
+                    current_turn.stop_reason = stop_reason or "error"
+                self._agent._persist_session_snapshot()
+                return
+
+            if accepted.needs_continuation:
+                self._agent._persist_session_snapshot()
+                params = self._build_query_params(
+                    tools=prepared.active_tools,
+                    conversation_id=conversation_id or self._agent._conversation_id,
+                )
+                reply_text = ""
+                stop_reason = ""
+                saw_error = False
+                async for event in run_query(params):
+                    self._handle_event(event)
+                    if isinstance(event, CompletionEvent):
+                        reply_text = event.text
+                        stop_reason = event.stop_reason or ""
+                    elif isinstance(event, ErrorEvent):
+                        saw_error = True
+                    if isinstance(event, ToolResultEvent):
+                        self._turn_count += 1
+                    yield event
+
+                    budget = self._agent.budget_status
+                    if budget is not None and budget.is_over_limit():
+                        self._agent._messages = params.messages
+                        if current_turn is not None:
+                            current_turn.phase = TurnPhase.FAILED
+                            current_turn.stop_reason = "budget_exceeded"
+                        yield ErrorEvent(
+                            error=f"Budget exceeded: {budget.status_text()}",
+                            recoverable=False,
+                        )
+                        self._agent._persist_session_snapshot()
+                        return
+
+                self._agent._messages = params.messages
+                if self._agent._pending_client_run_id is not None:
+                    self._agent._persist_session_snapshot()
+                    if current_turn is not None:
+                        current_turn.phase = TurnPhase.PENDING_CLIENT
+                        current_turn.pending_run_id = self._agent._pending_client_run_id or ""
+                    return
+
+                if saw_error:
+                    if current_turn is not None:
+                        current_turn.phase = TurnPhase.FAILED
+                        current_turn.stop_reason = stop_reason or "error"
+                    self._agent._persist_session_snapshot()
+                    return
+
+            await self._agent._hook_runner.run_post_query(
+                user_text=prepared.query_text,
+                reply=reply_text,
+                agent=self._agent,
+            )
+            if current_turn is not None:
+                current_turn.phase = TurnPhase.COMPLETED
+                current_turn.stop_reason = stop_reason
+            if reply_text:
+                self._agent._record_runtime_memory(
+                    user_text=prepared.query_text,
+                    reply_text=reply_text,
+                    had_tools=bool(self._agent._last_turn_tool_names),
+                )
+            self._agent._persist_session_snapshot()
+        finally:
+            _cleanup_speculation_overlay(overlay_state)
 
     async def _run_prepared_turn(
         self,
@@ -303,9 +499,13 @@ class QueryEngine:
                 self._agent._messages,
             )
 
+        current_turn = getattr(self._agent, "_current_turn_state", None)
         user_metadata = dict(prepared.metadata)
         user_metadata.setdefault("uuid", uuid4().hex)
         user_metadata.setdefault("timestamp", time.time())
+        if current_turn is not None:
+            user_metadata.setdefault("conversation_id", current_turn.conversation_id)
+            user_metadata.setdefault("turn_id", current_turn.turn_id)
         self._agent._messages.append(
             Message(role="user", content=prepared.message_content, metadata=user_metadata)
         )
@@ -313,7 +513,6 @@ class QueryEngine:
         self._agent._last_turn_tool_names = []
         self._agent._current_turn_tools = list(prepared.active_tools)
 
-        current_turn = getattr(self._agent, "_current_turn_state", None)
         if current_turn is not None:
             current_turn.phase = TurnPhase.ACCEPTED
 
@@ -525,17 +724,20 @@ class QueryEngine:
         allowed = set(allowed_tools)
         return [tool for tool in self._agent._tools if tool.name in allowed]
 
-    async def _build_user_message_content(self, raw_text: str) -> list[Any] | str:
+    async def _build_user_message_content(
+        self,
+        raw_text: str,
+        *,
+        attachments: list[Any] | None = None,
+    ) -> list[Any] | str:
         processor = InputProcessor(
-            cwd=self._cwd(),
+            cwd=self._get_working_directory(),
             command_registry=self._agent._command_registry,
         )
-        processed = await processor.process(raw_text)
-
-        if not processed.should_query or not processed.messages:
-            return raw_text
-
-        user_payload = processed.messages[0].get("content", raw_text)
+        processed = await processor.process(raw_text) if raw_text.strip() else None
+        user_payload = raw_text
+        if processed is not None and processed.should_query and processed.messages:
+            user_payload = processed.messages[0].get("content", raw_text)
         blocks: list[Any] = []
         deferred_attachments: list[dict[str, Any]] = []
 
@@ -573,8 +775,15 @@ class QueryEngine:
                             )
                         )
 
+        host_blocks, host_deferred = self._build_attachment_blocks(attachments or [])
+        blocks.extend(host_blocks)
+        deferred_attachments.extend(host_deferred)
+
         if deferred_attachments:
-            for attachment in process_attachments(deferred_attachments, cwd=self._cwd()):
+            for attachment in process_attachments(
+                deferred_attachments,
+                cwd=self._get_working_directory(),
+            ):
                 content = attachment.content
                 if isinstance(content, str):
                     blocks.append(TextBlock(text=content))
@@ -613,6 +822,63 @@ class QueryEngine:
             return blocks[0].text
         return blocks
 
+    def _build_attachment_blocks(
+        self,
+        attachments: list[Any],
+    ) -> tuple[list[Any], list[dict[str, Any]]]:
+        blocks: list[Any] = []
+        deferred: list[dict[str, Any]] = []
+
+        for attachment in attachments:
+            if isinstance(attachment, (TextBlock, ImageBlock, DocumentBlock)):
+                blocks.append(attachment)
+                continue
+
+            if not isinstance(attachment, dict):
+                blocks.append(TextBlock(text=str(attachment)))
+                continue
+
+            att_type = str(attachment.get("type", "") or "").strip()
+            if att_type == "text":
+                blocks.append(TextBlock(text=str(attachment.get("text", ""))))
+                continue
+            if att_type == "image":
+                source = attachment.get("source")
+                if isinstance(source, dict) and source.get("type") == "base64":
+                    blocks.append(
+                        ImageBlock(
+                            source=str(source.get("data", "")),
+                            media_type=str(source.get("media_type", "image/png")),
+                        )
+                    )
+                elif attachment.get("path"):
+                    deferred.append({
+                        "type": "image",
+                        "path": str(attachment.get("path", "")),
+                    })
+                continue
+            if att_type == "document":
+                source = attachment.get("source")
+                if isinstance(source, dict) and source.get("type") == "base64":
+                    blocks.append(
+                        DocumentBlock(
+                            source=str(source.get("data", "")),
+                            media_type=str(source.get("media_type", "application/pdf")),
+                        )
+                    )
+                elif attachment.get("path"):
+                    deferred.append({
+                        "type": "file",
+                        "path": str(attachment.get("path", "")),
+                    })
+                continue
+            if att_type in {"file", "url", "audio"}:
+                deferred.append(dict(attachment))
+                continue
+            blocks.append(TextBlock(text=str(attachment)))
+
+        return blocks, deferred
+
     def _fetch_context_parts(
         self,
         *,
@@ -623,15 +889,21 @@ class QueryEngine:
             get_coordinator_user_context(
                 self._get_mcp_clients(),
                 self._get_scratchpad_dir(),
+                active=self._is_coordinator_mode_active(),
                 coordinator_tools=[tool.name for tool in self._agent._tools],
                 worker_tools=self._get_worker_tool_names(),
             )
         )
-        system_context = (
-            {}
-            if self._get_custom_system_prompt() is not None
-            else self._get_system_context()
-        )
+        explicit_user_context = self._get_explicit_user_context()
+        if explicit_user_context:
+            user_context.update(explicit_user_context)
+
+        system_context = {}
+        if self._get_custom_system_prompt() is None:
+            system_context.update(self._get_system_context())
+        explicit_system_context = self._get_explicit_system_context()
+        if explicit_system_context:
+            system_context.update(explicit_system_context)
         return user_context, system_context
 
     def _compose_system_prompt(
@@ -709,6 +981,26 @@ class QueryEngine:
             return {}
         return {"gitStatus": git_status}
 
+    def _get_explicit_user_context(self) -> dict[str, str]:
+        value = getattr(self._agent, "_user_context", None)
+        if not isinstance(value, dict):
+            return {}
+        return {
+            str(key): str(item)
+            for key, item in value.items()
+            if str(key).strip() and str(item).strip()
+        }
+
+    def _get_explicit_system_context(self) -> dict[str, str]:
+        value = getattr(self._agent, "_system_context", None)
+        if not isinstance(value, dict):
+            return {}
+        return {
+            str(key): str(item)
+            for key, item in value.items()
+            if str(key).strip() and str(item).strip()
+        }
+
     def _get_worker_tool_names(self) -> list[str]:
         try:
             from ..delegation.multi_agent import AgentTool
@@ -719,6 +1011,10 @@ class QueryEngine:
         except Exception:
             return []
         return []
+
+    def _is_coordinator_mode_active(self) -> bool:
+        coordinator = getattr(self._agent, "_coordinator_mode", None)
+        return bool(getattr(coordinator, "is_active", False))
 
     def _get_memory_mechanics_prompt(
         self,

@@ -1,0 +1,11 @@
+{
+  "id": "1",
+  "subject": "Investigate hooks",
+  "description": "Trace hook execution",
+  "status": "pending",
+  "blocks": [],
+  "blockedBy": [],
+  "metadata": {
+    "priority": "high"
+  }
+}

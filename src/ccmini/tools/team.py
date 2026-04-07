@@ -194,13 +194,15 @@ subagent_type="worker".\
         )
         set_leader_team_name(team_name)
 
-        return (
-            "{\n"
-            f'  "team_name": "{team_name}",\n'
-            f'  "team_file_path": "{get_team_file_path(team_name)}",\n'
-            f'  "lead_agent_id": "team-lead@{team_name}",\n'
-            '  "success": true\n'
-            "}"
+        return json.dumps(
+            {
+                "team_name": team_name,
+                "team_file_path": str(get_team_file_path(team_name)),
+                "lead_agent_id": f"{TEAM_LEAD_NAME}@{team_name}",
+                "success": True,
+            },
+            indent=2,
+            ensure_ascii=False,
         )
 
     def get_team(self, team_name: str) -> Team | None:
@@ -334,6 +336,10 @@ Pass the task_id from the Agent tool's launch result.\
                     "type": "string",
                     "description": "ID of the task/worker to stop.",
                 },
+                "agentId": {
+                    "type": "string",
+                    "description": "Compatibility alias for task_id.",
+                },
                 "shell_id": {
                     "type": "string",
                     "description": "Deprecated alias for task_id.",
@@ -347,7 +353,12 @@ Pass the task_id from the Agent tool's launch result.\
         }
 
     async def execute(self, *, context: ToolUseContext, **kwargs: Any) -> str:
-        task_id: str = str(kwargs.get("task_id") or kwargs.get("shell_id") or "").strip()
+        task_id: str = str(
+            kwargs.get("task_id")
+            or kwargs.get("agentId")
+            or kwargs.get("shell_id")
+            or ""
+        ).strip()
         if not task_id:
             return "Missing required parameter: task_id"
         reason: str = kwargs.get("reason", "")

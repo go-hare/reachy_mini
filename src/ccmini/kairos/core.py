@@ -309,16 +309,16 @@ def check_directory_trust(cwd: str | Path | None = None) -> bool:
     """Check if the working directory has been trusted by the user.
 
     Trust is accepted when either:
-    - ``MINI_TRUST_ALL`` is enabled
-    - the project contains ``.mini_agent/trusted``
+    - ``CCMINI_TRUST_ALL`` is enabled
+    - the project contains ``.ccmini/trusted``
     - the project path is present in the global trusted-project ledger
     """
-    if os.environ.get("MINI_TRUST_ALL", "").lower() in ("1", "true"):
+    if os.environ.get("CCMINI_TRUST_ALL", "").lower() in ("1", "true"):
         return True
     if cwd is None:
         cwd = Path.cwd()
     root = Path(cwd).resolve()
-    trust_marker = root / ".mini_agent" / "trusted"
+    trust_marker = root / ".ccmini" / "trusted"
     if trust_marker.exists():
         return True
     return str(root) in _load_trust_ledger()
@@ -370,7 +370,7 @@ _FEATURE_GATE_NAMES = (
 class FeatureGate:
     """Config-file + env-var feature gate system.
 
-    Reads ``~/.mini_agent/kairos_config.json`` on first access and caches.
+    Reads ``~/.ccmini/kairos_config.json`` on first access and caches.
     Individual gates can be overridden at runtime via env vars of the form
     ``KAIROS_FEATURE_<NAME>=1`` (case-insensitive).
     """

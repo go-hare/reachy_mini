@@ -46,11 +46,15 @@ def load_auth_state() -> dict[str, ProviderAuth]:
         api_key = str(payload.get("api_key", "")).strip()
         if not api_key:
             continue
+        try:
+            updated_at = float(payload.get("updated_at", time.time()))
+        except (TypeError, ValueError):
+            continue
         result[provider] = ProviderAuth(
             provider=provider,
             api_key=api_key,
             account_label=str(payload.get("account_label", "")).strip(),
-            updated_at=float(payload.get("updated_at", time.time())),
+            updated_at=updated_at,
         )
     return result
 

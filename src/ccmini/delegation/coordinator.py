@@ -552,11 +552,14 @@ def get_coordinator_user_context(
     mcp_clients: list[dict[str, Any]] | list[Any],
     scratchpad_dir: str | None = None,
     *,
+    active: bool | None = None,
     coordinator_tools: list[str] | None = None,
     worker_tools: list[str] | None = None,
 ) -> dict[str, str]:
     """Mirror coordinatorMode.ts getCoordinatorUserContext()."""
-    if not is_coordinator_mode():
+    if active is None:
+        active = is_coordinator_mode()
+    if not active:
         return {}
 
     server_names: list[str] = []
@@ -794,18 +797,21 @@ class CoordinatorMode:
         worker_tool_names: list[str] | None = None,
         mcp_server_names: list[str] | None = None,
         scratchpad_dir: str | None = None,
+        sync_env: bool = True,
     ) -> None:
         self._active = True
         self._coordinator_tool_names = list(coordinator_tool_names or [])
         self._worker_tool_names = list(worker_tool_names or [])
         self._mcp_server_names = list(mcp_server_names or [])
         self._scratchpad_dir = scratchpad_dir
-        set_coordinator_mode_env(True)
+        if sync_env:
+            set_coordinator_mode_env(True)
         logger.info("Coordinator mode activated")
 
-    def deactivate(self) -> None:
+    def deactivate(self, *, sync_env: bool = True) -> None:
         self._active = False
-        set_coordinator_mode_env(False)
+        if sync_env:
+            set_coordinator_mode_env(False)
         logger.info("Coordinator mode deactivated")
 
     def get_system_prompt(self) -> str:

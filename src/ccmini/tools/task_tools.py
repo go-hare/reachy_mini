@@ -296,8 +296,9 @@ class TaskBoard:
                 {"from": existing.status, "to": "deleted"} if deleted else None
             )
 
-        path = self._task_path(normalized_task_id)
-        with self._locked(path):
+        # Use the shared lock file so Windows can still reopen the task file
+        # while the update lock is held.
+        with self._locked(self._lock_path()):
             record = self.get(normalized_task_id)
             if record is None:
                 return None, [], None
@@ -599,15 +600,18 @@ class TaskOutputTool(Tool):
             "type": "object",
             "properties": {
                 "task_id": {"type": "string", "description": "The task ID to get output from."},
+                "agentId": {"type": "string", "description": "Compatibility alias for task_id."},
                 "block": {"type": "boolean", "description": "Whether to wait for completion.", "default": True},
                 "timeout": {"type": "integer", "description": "Max wait time in ms.", "default": 30000},
             },
-            "required": ["task_id"],
+            "required": [],
         }
 
     async def execute(self, *, context: ToolUseContext, **kwargs: Any) -> str:
         del context
-        task_id = str(kwargs["task_id"])
+        task_id = str(kwargs.get("task_id") or kwargs.get("agentId") or "").strip()
+        if not task_id:
+            return _json({"retrieval_status": "not_found", "task": None, "error": "Missing required parameter: task_id"})
         block = bool(kwargs.get("block", True))
         timeout_ms = int(kwargs.get("timeout", 30000) or 30000)
 

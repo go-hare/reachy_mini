@@ -25,6 +25,7 @@ from ..messages import (
     ToolUseBlock,
     UsageEvent,
     assistant_message,
+    normalize_tool_result_content,
 )
 from .retry import RetryConfig, with_retry
 from ..tool import Tool
@@ -329,7 +330,7 @@ def _to_api_message(msg: Message) -> dict[str, Any]:
             blocks.append({
                 "type": "tool_result",
                 "tool_use_id": block.tool_use_id,
-                "content": block.content,
+                "content": normalize_tool_result_content(block.content),
                 **({"is_error": True} if block.is_error else {}),
             })
         elif isinstance(block, ImageBlock):

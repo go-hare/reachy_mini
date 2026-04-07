@@ -291,6 +291,10 @@ class ForkedAgentResult:
         },
     )
     duration_ms: float = 0.0
+    stop_reason: str = ""
+    error: str = ""
+    events: list[StreamEvent] = field(default_factory=list, repr=False)
+    added_messages: list[Message] = field(default_factory=list, repr=False)
 
 
 def _accumulate_fork_usage(total: dict[str, int], usage_obj: Any) -> None:
@@ -319,6 +323,7 @@ async def run_forked_agent(
     fork_label: str = "",
     on_message: Callable[[Any], None] | None = None,
     skip_transcript: bool = False,
+    working_directory: str = "",
 ) -> ForkedAgentResult:
     """Run a forked agent that shares the parent's message prefix.
 
@@ -368,10 +373,14 @@ async def run_forked_agent(
         max_output_tokens_override=max_output_tokens,
         query_source=query_source,
         turn_state=SimpleNamespace(abort_event=context.abort_signal),
+        working_directory=working_directory,
     )
 
     reply_text = ""
+    stop_reason = ""
+    error_text = ""
     tool_results: list[dict[str, Any]] = []
+    observed_events: list[StreamEvent] = []
     total_usage: dict[str, int] = {
         "input_tokens": 0,
         "output_tokens": 0,
@@ -382,11 +391,12 @@ async def run_forked_agent(
     aborted = False
 
     async for event in query(params):
+        observed_events.append(event)
         if context.abort_signal.is_set():
             aborted = True
-            break
         if isinstance(event, CompletionEvent):
             reply_text = event.text
+            stop_reason = event.stop_reason or ""
             # One CompletionEvent per assistant turn; usage matches the stream's
             # final tallies (do not also sum UsageEvent — would double-count).
             _accumulate_fork_usage(total_usage, event.usage)
@@ -397,6 +407,8 @@ async def run_forked_agent(
                 "result": event.result,
                 "is_error": event.is_error,
             })
+        elif isinstance(event, ErrorEvent):
+            error_text = event.error
         if on_message is not None:
             on_message(event)
 
@@ -409,6 +421,10 @@ async def run_forked_agent(
         aborted=aborted,
         usage=total_usage,
         duration_ms=duration_ms,
+        stop_reason=stop_reason,
+        error=error_text,
+        events=list(observed_events),
+        added_messages=copy.deepcopy(messages[messages_before:]),
     )
 
 

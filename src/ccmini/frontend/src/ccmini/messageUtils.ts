@@ -13,11 +13,13 @@ export function createCcminiUserMessage({
   content,
   uuid,
   toolUseResult,
+  toolUseMetadata,
   origin,
 }: {
   content: UserMessage['message']['content']
   uuid?: UUID | string
   toolUseResult?: unknown
+  toolUseMetadata?: Record<string, unknown>
   origin?: MessageOrigin
 }): UserMessage {
   return {
@@ -29,6 +31,7 @@ export function createCcminiUserMessage({
     uuid: (uuid as UUID | undefined) ?? randomUUID(),
     timestamp: new Date().toISOString(),
     toolUseResult,
+    toolUseMetadata,
     origin,
   }
 }

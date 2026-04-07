@@ -83,6 +83,7 @@ function appendUserToolResult(
         } as never,
       ],
       toolUseResult: metadata.output ?? result,
+      toolUseMetadata: metadata,
     }),
   ]
 }

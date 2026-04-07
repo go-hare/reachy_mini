@@ -12,6 +12,7 @@ export type MessageBase = {
   isVirtual?: boolean
   isCompactSummary?: boolean
   toolUseResult?: unknown
+  toolUseMetadata?: Record<string, unknown>
   origin?: MessageOrigin
   [key: string]: unknown
 }
@@ -39,6 +40,7 @@ export type AssistantMessage = MessageBase & {
 
 export type ProgressMessage = MessageBase & {
   type: 'progress'
+  data?: unknown
   progress?: unknown
 }
 
