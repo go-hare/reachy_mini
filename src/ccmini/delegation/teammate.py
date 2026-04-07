@@ -36,6 +36,7 @@ from enum import Enum
 import os
 import re
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
@@ -92,6 +93,8 @@ class TeammateState:
     total_turns: int = 0
     error: str = ""
     is_idle: bool = False
+    last_update_ms: int = 0
+    transcript_file: str = ""
 
 
 @dataclass
@@ -210,6 +213,7 @@ class TeammateConfig:
     model: str = ""
     working_directory: str = ""
     plan_mode_required: bool = False
+    transcript_file: str = ""
 
 
 @dataclass(slots=True)
@@ -264,6 +268,12 @@ class PersistentTeammate:
         self._active_task_id: str = ""
         self._poll_interval = 0.5
         self._plan_approved = not self._identity.plan_mode_required
+        self._transcript_file = (
+            config.transcript_file
+            or str(mini_agent_path("teams", config.team_name, "transcripts", f"{config.name}.jsonl"))
+        )
+        self._state.transcript_file = self._transcript_file
+        self._state.last_update_ms = int(time.time() * 1000)
 
     @property
     def state(self) -> TeammateState:
@@ -280,6 +290,27 @@ class PersistentTeammate:
     def shutdown(self) -> None:
         """Request the teammate to shut down."""
         self._abort.set()
+
+    def _append_transcript_entry(
+        self,
+        *,
+        role: str,
+        content: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        path = Path(self._transcript_file)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "ts": time.time(),
+            "agent_id": self.agent_id,
+            "agent_name": self.identity.agent_name,
+            "team_name": self.identity.team_name,
+            "role": role,
+            "content": content,
+            "metadata": dict(metadata or {}),
+        }
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     async def run(self) -> None:
         """Main loop: execute prompts, go idle, poll for more work."""
@@ -368,6 +399,11 @@ class PersistentTeammate:
             )
 
         try:
+            self._append_transcript_entry(
+                role="user",
+                content=effective_prompt,
+                metadata={"event": "prompt", "task_id": self._active_task_id},
+            )
             reply = await run_subagent(
                 provider=self._provider,
                 system_prompt=self._config.system_prompt,
@@ -376,6 +412,7 @@ class PersistentTeammate:
                 parent_messages=self._all_messages[-20:] if self._all_messages else None,
                 max_turns=self._config.max_turns_per_prompt,
                 agent_id=self.agent_id,
+                conversation_id=self.agent_id,
                 runtime_overrides=(
                     {"working_directory": self._config.working_directory}
                     if self._config.working_directory
@@ -385,6 +422,11 @@ class PersistentTeammate:
 
             self._all_messages.append(user_message(effective_prompt))
             self._all_messages.append(assistant_message(reply))
+            self._append_transcript_entry(
+                role="assistant",
+                content=reply,
+                metadata={"event": "reply", "task_id": self._active_task_id},
+            )
             self._state.messages_processed += 1
             self._state.total_turns += 1
 
@@ -395,6 +437,11 @@ class PersistentTeammate:
             return _PromptExecutionResult(success=True, reply=reply)
 
         except Exception as exc:
+            self._append_transcript_entry(
+                role="system",
+                content=str(exc),
+                metadata={"event": "error", "task_id": self._active_task_id},
+            )
             logger.warning("Teammate %s prompt failed: %s", self.agent_id, exc)
             return _PromptExecutionResult(success=False, error=str(exc))
 
@@ -540,6 +587,8 @@ class PersistentTeammate:
         for k, v in kwargs.items():
             if hasattr(self._state, k):
                 setattr(self._state, k, v)
+        self._state.last_update_ms = int(time.time() * 1000)
+        self._state.transcript_file = self._transcript_file
         if self._on_state_change is not None:
             try:
                 self._on_state_change(self._state)
@@ -669,6 +718,23 @@ class Team:
         """Spawn a new persistent teammate. Returns agent_id."""
         ensure_team_directories(config.team_name)
         agent_id = f"{config.name}@{config.team_name}"
+        transcript_file = config.transcript_file or str(
+            mini_agent_path("teams", config.team_name, "transcripts", f"{config.name}.jsonl")
+        )
+        config = TeammateConfig(
+            name=config.name,
+            team_name=config.team_name,
+            initial_prompt=config.initial_prompt,
+            system_prompt=config.system_prompt,
+            tools=list(config.tools),
+            provider=config.provider,
+            max_turns_per_prompt=config.max_turns_per_prompt,
+            color=config.color,
+            model=config.model,
+            working_directory=config.working_directory,
+            plan_mode_required=config.plan_mode_required,
+            transcript_file=transcript_file,
+        )
 
         if teammate_external_only():
             self._ensure_file_mailbox_for_external(config)
@@ -704,6 +770,7 @@ class Team:
                     "subscriptions": [],
                     "isActive": True,
                     "backendType": "subprocess-external-only",
+                    "transcriptFile": transcript_file,
                 },
             )
             logger.info(
@@ -714,12 +781,37 @@ class Team:
             )
             return agent_id
 
+        def _persist_teammate_state(state: TeammateState) -> None:
+            upsert_team_member(
+                self.team_name,
+                {
+                    "agentId": state.identity.agent_id,
+                    "name": state.identity.agent_name,
+                    "agentType": config.name,
+                    "model": config.model,
+                    "cwd": config.working_directory or os.getcwd(),
+                    "isActive": state.status != TeammateStatus.SHUTDOWN,
+                    "backendType": backend,
+                    "status": state.status.value,
+                    "currentTask": state.current_task,
+                    "messagesProcessed": state.messages_processed,
+                    "totalTurns": state.total_turns,
+                    "error": state.error,
+                    "isIdle": state.is_idle,
+                    "lastUpdateMs": state.last_update_ms,
+                    "transcriptFile": state.transcript_file,
+                    "color": state.identity.color or "",
+                    "planModeRequired": bool(state.identity.plan_mode_required),
+                },
+            )
+
         sidecar = launch_teammate_command_sidecar(config)
         teammate = PersistentTeammate(
             config=config,
             mailbox=self._mailbox,
             provider=self._provider,
             task_list=self._task_list,
+            on_state_change=_persist_teammate_state,
         )
         agent_id = teammate.agent_id
         self._teammates[agent_id] = teammate
@@ -754,8 +846,10 @@ class Team:
                 "subscriptions": [],
                 "isActive": True,
                 "backendType": backend,
+                "transcriptFile": transcript_file,
             },
         )
+        _persist_teammate_state(teammate.state)
         logger.info("Spawned teammate %s in team %s", agent_id, self.team_name)
         return agent_id
 

@@ -285,6 +285,7 @@ class Agent:
         self._bg_runner = BackgroundAgentRunner(
             self._provider, self._task_manager, tool_resolver=self.resolve_tools,
         )
+        self._bg_runner.set_on_state_change(self._publish_background_task_state)
 
         self._messages: list[Message] = []
         self._running = False
@@ -1352,14 +1353,14 @@ class Agent:
 
         worker_tools: list[str] = []
         try:
+            from .delegation.coordinator import get_worker_tool_names_from_tools
             from .delegation.multi_agent import AgentTool
 
             for tool in self._tools:
                 if isinstance(tool, AgentTool):
-                    worker_tools = [
-                        child.name
-                        for child in getattr(tool, "_parent_tools", [])
-                    ]
+                    worker_tools = get_worker_tool_names_from_tools(
+                        list(getattr(tool, "_parent_tools", []))
+                    )
                     break
         except Exception:
             logger.debug("Failed to inspect worker tools for coordinator mode", exc_info=True)
@@ -2115,6 +2116,22 @@ class Agent:
         event = TextEvent(text=text)
         self._dispatch_runtime_event(event)
 
+    async def _publish_background_task_state(self, snapshot: dict[str, Any]) -> None:
+        """Publish background-task lifecycle updates as structured runtime events."""
+        self.publish_host_event(
+            HostEvent(
+                conversation_id=self._conversation_id,
+                event_type="task_state",
+                role="system",
+                text=json.dumps(snapshot, ensure_ascii=False),
+                metadata={
+                    "task_state": snapshot,
+                    "task_id": str(snapshot.get("id", "") or ""),
+                    "status": str(snapshot.get("status", "") or ""),
+                },
+            )
+        )
+
     def _yield_runtime_notifications(self) -> list[StreamEvent]:
         """Drain pending runtime notifications created by background hooks."""
         pending = list(self._runtime_notifications)
@@ -2126,7 +2143,21 @@ class Agent:
         results = self._bg_runner.drain_completions()
         events: list[TextEvent] = []
         for result in results:
-            events.append(TextEvent(text=result.to_notification()))
+            events.append(
+                TextEvent(
+                    text=result.to_task_notification_xml(),
+                    metadata={
+                        "event_type": "task_notification",
+                        "task_id": result.task_id,
+                        "status": result.status or ("completed" if result.success else "failed"),
+                        "worker_name": result.worker_name,
+                        "team_name": result.team_name,
+                        "task_type": result.task_type,
+                        "output_file": result.output_file,
+                        "transcript_file": result.transcript_file,
+                    },
+                )
+            )
         return events
 
     def _ingest_team_mailbox_messages(self) -> list[TextEvent]:
@@ -2544,13 +2575,14 @@ class Agent:
                 coordinator_tools = [tool.name for tool in self._tools]
                 worker_tools: list[str] = []
                 try:
+                    from .delegation.coordinator import get_worker_tool_names_from_tools
                     from .delegation.multi_agent import AgentTool
 
                     for tool in self._tools:
                         if isinstance(tool, AgentTool):
-                            worker_tools = [
-                                child.name for child in getattr(tool, "_parent_tools", [])
-                            ]
+                            worker_tools = get_worker_tool_names_from_tools(
+                                list(getattr(tool, "_parent_tools", []))
+                            )
                             break
                 except Exception:
                     logger.debug("Failed to inspect worker tools for coordinator context", exc_info=True)

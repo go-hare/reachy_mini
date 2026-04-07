@@ -455,6 +455,34 @@ def get_worker_disallowed_tools() -> set[str]:
     return set(WORKER_DISALLOWED_TOOLS)
 
 
+def filter_worker_tools(tools: list[Any]) -> list[Any]:
+    """Filter runtime tools to the worker-safe subset used by coordinator mode."""
+    disallowed = get_worker_disallowed_tools()
+    filtered: list[Any] = []
+    for tool in tools:
+        name = str(getattr(tool, "name", "") or "").strip()
+        aliases = {
+            str(alias).strip()
+            for alias in getattr(tool, "aliases", ())
+            if str(alias).strip()
+        }
+        if not name:
+            continue
+        if name in disallowed or aliases.intersection(disallowed):
+            continue
+        filtered.append(tool)
+    return filtered
+
+
+def get_worker_tool_names_from_tools(tools: list[Any]) -> list[str]:
+    """Return sorted worker-visible tool names from a runtime tool list."""
+    return sorted({
+        str(getattr(tool, "name", "") or "").strip()
+        for tool in filter_worker_tools(tools)
+        if str(getattr(tool, "name", "") or "").strip()
+    })
+
+
 # ---------------------------------------------------------------------------
 # Worker context — aligned with coordinatorMode.ts getCoordinatorUserContext()
 # ---------------------------------------------------------------------------
@@ -837,8 +865,7 @@ class CoordinatorMode:
 
     def filter_worker_tools(self, tools: list[Any]) -> list[Any]:
         """Filter a tool list to remove coordinator-only tools."""
-        disallowed = get_worker_disallowed_tools()
-        return [t for t in tools if getattr(t, "name", "") not in disallowed]
+        return filter_worker_tools(tools)
 
     def save_mode(self, cwd: str | Path | None = None) -> None:
         """Persist current mode for session resume."""

@@ -20,6 +20,7 @@ Usage::
 from __future__ import annotations
 
 import logging
+import io
 import os
 import re
 from dataclasses import dataclass, field
@@ -28,6 +29,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from ..commands import CommandRegistry
+    from ..commands.types import Command
 
 logger = logging.getLogger(__name__)
 
@@ -40,10 +42,17 @@ class ProcessedInput:
     messages: list[dict[str, Any]] = field(default_factory=list)
     should_query: bool = True
     command_output: str = ""
+    result_text: str = ""
     attachments: list[dict[str, Any]] = field(default_factory=list)
     model_override: str = ""
     effort_override: str = ""
     allowed_tools: list[str] | None = None
+    prompt_text: str = ""
+    command_name: str = ""
+    command_args: str = ""
+    command_type: str = ""
+    next_input: str = ""
+    submit_next_input: bool = False
 
     @property
     def user_text(self) -> str:
@@ -76,6 +85,15 @@ _PASTE_THRESHOLD = 500  # chars — longer than this is "pasted"
 # ── Slash command detection ──────────────────────────────────────────
 
 _SLASH_RE = re.compile(r"^/(\w[\w-]*)")
+_ULTRAPLAN_RE = re.compile(r"\bultraplan\b", re.IGNORECASE)
+_BRIDGE_SAFE_LOCAL_COMMANDS = {
+    "help",
+    "memory",
+    "status",
+    "usage",
+    "version",
+}
+_BASH_MODE_ALLOWED_TOOLS = ["Bash", "Read", "Grep", "Glob", "LSP"]
 
 
 # ── File content reader ──────────────────────────────────────────────
@@ -134,7 +152,14 @@ class InputProcessor:
     def cwd(self, value: str) -> None:
         self._cwd = value
 
-    async def process(self, raw_input: str) -> ProcessedInput:
+    async def process(
+        self,
+        raw_input: str,
+        *,
+        mode: str = "prompt",
+        skip_slash_commands: bool = False,
+        bridge_origin: bool = False,
+    ) -> ProcessedInput:
         """Process raw user input into a structured result.
 
         Steps:
@@ -148,12 +173,39 @@ class InputProcessor:
         if not text:
             return ProcessedInput(should_query=False)
 
+        result = ProcessedInput(prompt_text=text)
+
+        if mode == "bash" or self._looks_like_bash_mode(text):
+            result = self._handle_bash_mode(text)
+            text = result.prompt_text or text
+
+        if (
+            mode == "prompt"
+            and not text.startswith("/")
+            and self._commands is not None
+            and self._commands.has_command("ultraplan")
+            and _ULTRAPLAN_RE.search(text)
+        ):
+            routed = await self._handle_slash_command(
+                f"/ultraplan {self._rewrite_ultraplan_prompt(text)}",
+                bridge_origin=False,
+            )
+            if routed is not None and routed.should_query:
+                result = routed
+                text = routed.prompt_text or text
+
         # ── Step 1: Slash commands ───────────────────────────────────
         slash_match = _SLASH_RE.match(text)
-        if slash_match:
-            result = await self._handle_slash_command(text)
-            if result is not None:
-                return result
+        if slash_match and (not skip_slash_commands or bridge_origin):
+            slash_result = await self._handle_slash_command(
+                text,
+                bridge_origin=bridge_origin,
+            )
+            if slash_result is not None:
+                if not slash_result.should_query:
+                    return slash_result
+                result = slash_result
+                text = slash_result.prompt_text or text
 
         # ── Step 2-3: @-reference expansion ──────────────────────────
         attachments: list[dict[str, Any]] = []
@@ -238,9 +290,25 @@ class InputProcessor:
             messages=messages,
             should_query=True,
             attachments=attachments,
+            command_output=result.command_output,
+            result_text=result.result_text,
+            model_override=result.model_override,
+            effort_override=result.effort_override,
+            allowed_tools=result.allowed_tools,
+            prompt_text=result.prompt_text or clean_text,
+            command_name=result.command_name,
+            command_args=result.command_args,
+            command_type=result.command_type,
+            next_input=result.next_input,
+            submit_next_input=result.submit_next_input,
         )
 
-    async def _handle_slash_command(self, text: str) -> ProcessedInput | None:
+    async def _handle_slash_command(
+        self,
+        text: str,
+        *,
+        bridge_origin: bool = False,
+    ) -> ProcessedInput | None:
         """Try to handle input as a slash command. Returns None if not a command."""
         if self._commands is None:
             return None
@@ -253,11 +321,102 @@ class InputProcessor:
         if cmd is None:
             return None
 
+        if bridge_origin and not self._is_bridge_safe_command(cmd):
+            message = f"/{cmd.name} isn't available over Remote Control."
+            return ProcessedInput(
+                messages=[],
+                should_query=False,
+                command_output=f"/{cmd.name} {cmd_args}".strip(),
+                result_text=message,
+                prompt_text=text,
+                command_name=cmd.name,
+                command_args=cmd_args,
+                command_type="blocked",
+            )
+
+        from ..commands.types import CommandType
+
+        if cmd.type == CommandType.PROMPT:
+            prompt_text = self._build_prompt_command_input(
+                cmd.prompt_text,
+                cmd.name,
+                cmd_args,
+            )
+            return ProcessedInput(
+                messages=[],
+                should_query=True,
+                command_output=f"/{cmd.name} {cmd_args}".strip(),
+                model_override=cmd.model,
+                effort_override=cmd.effort,
+                allowed_tools=list(cmd.allowed_tools) or None,
+                prompt_text=prompt_text,
+                command_name=cmd.name,
+                command_args=cmd_args,
+                command_type="prompt",
+            )
+
         return ProcessedInput(
             messages=[],
             should_query=False,
             command_output=f"/{cmd_name} {cmd_args}".strip(),
+            prompt_text=text,
+            command_name=cmd.name,
+            command_args=cmd_args,
+            command_type="local",
         )
+
+    @staticmethod
+    def _build_prompt_command_input(prompt_text: str, command_name: str, args: str) -> str:
+        prompt = prompt_text.strip()
+        if not args.strip():
+            return prompt or f"Run the '{command_name}' command."
+        if not prompt:
+            return args.strip()
+        return f"{prompt}\n\nUser request for /{command_name}:\n{args.strip()}"
+
+    @staticmethod
+    def _looks_like_bash_mode(text: str) -> bool:
+        stripped = text.strip()
+        return len(stripped) > 1 and stripped.startswith("!")
+
+    @staticmethod
+    def _is_bridge_safe_command(cmd: "Command") -> bool:
+        from ..commands.types import CommandType
+
+        if cmd.type == CommandType.PROMPT:
+            return True
+        return cmd.name in _BRIDGE_SAFE_LOCAL_COMMANDS
+
+    def _handle_bash_mode(self, text: str) -> ProcessedInput:
+        command = text.strip()
+        if command.startswith("!"):
+            command = command[1:].strip()
+
+        if not command:
+            return ProcessedInput(
+                should_query=False,
+                result_text="Bash mode requires a shell command after '!'.",
+            )
+
+        prompt_text = (
+            "Use the Bash tool to execute the following shell request. "
+            "Prefer a direct command when possible, keep file edits minimal, "
+            "and summarize the result succinctly.\n\n"
+            f"Shell request:\n{command}"
+        )
+        return ProcessedInput(
+            should_query=True,
+            command_output=f"!{command}",
+            allowed_tools=list(_BASH_MODE_ALLOWED_TOOLS),
+            prompt_text=prompt_text,
+            command_name="bash",
+            command_args=command,
+            command_type="prompt",
+        )
+
+    @staticmethod
+    def _rewrite_ultraplan_prompt(text: str) -> str:
+        return _ULTRAPLAN_RE.sub("plan", text, count=1).strip()
 
 
 # ── Convenience functions ────────────────────────────────────────────
@@ -365,7 +524,7 @@ def process_image_input(
     *,
     max_dimension: int = _MAX_IMAGE_DIMENSION,
     target_tokens: int | None = None,
-) -> dict[str, Any] | None:
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     """Process an image file for API inclusion.
 
     Returns a content block dict suitable for the Anthropic messages API,
@@ -377,7 +536,7 @@ def process_image_input(
     """
     p = Path(image_path)
     if not p.exists():
-        return None
+        return None, {}
 
     ext = p.suffix.lower()
     media_map = {
@@ -389,16 +548,27 @@ def process_image_input(
     }
     media_type = media_map.get(ext)
     if media_type is None:
-        return None
+        return None, {}
 
     try:
         import base64
         data = p.read_bytes()
+        metadata = _describe_image_file(p, max_dimension=max_dimension)
         if len(data) > _MAX_IMAGE_BYTES:
             return {
                 "type": "text",
                 "text": f"[Image too large: {len(data):,} bytes, max {_MAX_IMAGE_BYTES:,}]",
-            }
+            }, metadata
+
+        resized_data = _resize_image_if_needed(
+            data,
+            media_type=media_type,
+            max_dimension=max_dimension,
+            target_tokens=target_tokens,
+        )
+        if resized_data is not None:
+            data = resized_data
+            metadata["resized"] = True
 
         b64 = base64.standard_b64encode(data).decode("ascii")
         return {
@@ -408,10 +578,97 @@ def process_image_input(
                 "media_type": media_type,
                 "data": b64,
             },
-        }
+        }, metadata
     except OSError as exc:
         logger.warning("Failed to read image %s: %s", image_path, exc)
+        return None, {}
+
+
+def _describe_image_file(path: Path, *, max_dimension: int) -> dict[str, Any]:
+    metadata: dict[str, Any] = {
+        "path": str(path),
+        "token_estimate": estimate_image_tokens(max_dimension, max_dimension),
+    }
+    try:
+        from PIL import Image  # type: ignore[import-not-found]
+
+        with Image.open(path) as image:
+            width, height = image.size
+            metadata.update(
+                {
+                    "width": width,
+                    "height": height,
+                    "token_estimate": estimate_image_tokens(width, height),
+                }
+            )
+    except Exception:
+        pass
+    return metadata
+
+
+def _resize_image_if_needed(
+    data: bytes,
+    *,
+    media_type: str,
+    max_dimension: int,
+    target_tokens: int | None,
+) -> bytes | None:
+    try:
+        from PIL import Image  # type: ignore[import-not-found]
+    except Exception:
         return None
+
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            width, height = image.size
+            estimated_tokens = estimate_image_tokens(width, height)
+            needs_resize = (
+                max(width, height) > max_dimension
+                or len(data) > 5 * 1024 * 1024
+                or (
+                    target_tokens is not None
+                    and estimated_tokens > max(target_tokens, _IMAGE_BASE_TOKENS)
+                )
+            )
+            if not needs_resize:
+                return None
+
+            if image.mode not in {"RGB", "L"}:
+                image = image.convert("RGB")
+            image.thumbnail((max_dimension, max_dimension))
+
+            output = io.BytesIO()
+            format_hint = "PNG" if media_type == "image/png" else "JPEG"
+            save_kwargs: dict[str, Any] = {}
+            if format_hint == "JPEG":
+                save_kwargs["quality"] = 85
+                save_kwargs["optimize"] = True
+            image.save(output, format=format_hint, **save_kwargs)
+            resized = output.getvalue()
+            return resized if len(resized) < len(data) else None
+    except Exception:
+        return None
+
+
+def create_image_metadata_text(metadata: dict[str, Any]) -> str:
+    path = str(metadata.get("path", "") or "").strip()
+    width = metadata.get("width")
+    height = metadata.get("height")
+    estimate = metadata.get("token_estimate")
+    resized = bool(metadata.get("resized"))
+
+    parts: list[str] = []
+    if path:
+        parts.append(f"source={path}")
+    if width and height:
+        parts.append(f"size={width}x{height}")
+    if estimate:
+        parts.append(f"tokens≈{estimate}")
+    if resized:
+        parts.append("resized=true")
+    if not parts:
+        return ""
+    return f"[Image metadata: {'; '.join(parts)}]"
 
 
 # ── Attachment pipeline ──────────────────────────────────────────────
@@ -443,6 +700,7 @@ class ProcessedAttachment:
     source_path: str = ""
     token_estimate: int = 0
     error: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 def process_attachments(
@@ -462,13 +720,14 @@ def process_attachments(
 
         if att_type == AttachmentType.IMAGE:
             path = att.get("path", "")
-            block = process_image_input(path)
+            block, metadata = process_image_input(path)
             results.append(ProcessedAttachment(
                 attachment_type=AttachmentType.IMAGE,
                 content=block or {"type": "text", "text": f"[Image not found: {path}]"},
                 source_path=path,
-                token_estimate=estimate_image_tokens(2000, 2000),
+                token_estimate=int(metadata.get("token_estimate", estimate_image_tokens(2000, 2000)) or 0),
                 error="" if block else f"Failed to process image: {path}",
+                metadata=metadata,
             ))
 
         elif att_type == AttachmentType.FILE:

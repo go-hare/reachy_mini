@@ -121,9 +121,13 @@ class BridgeAPI:
 
         if message.type is MessageType.QUERY:
             text = message.payload.get("text", "")
+            metadata = message.payload.get("metadata", {})
+            attachments = message.payload.get("attachments", [])
             return await self.handle_query(
                 session_id,
                 text,
+                metadata=metadata if isinstance(metadata, dict) else None,
+                attachments=attachments if isinstance(attachments, list) else None,
                 request_id=message.request_id,
             )
         if message.type is MessageType.TOOL_CALL:
@@ -173,6 +177,8 @@ class BridgeAPI:
         session_id: str,
         query_text: str,
         *,
+        metadata: dict[str, Any] | None = None,
+        attachments: list[dict[str, Any]] | None = None,
         request_id: str = "",
     ) -> BridgeMessage:
         """Handle a user query and return the response message."""
@@ -180,7 +186,15 @@ class BridgeAPI:
 
         if self._on_query is not None:
             try:
-                result = self._on_query(session_id, query_text)
+                try:
+                    result = self._on_query(
+                        session_id,
+                        query_text,
+                        metadata=metadata,
+                        attachments=attachments,
+                    )
+                except TypeError:
+                    result = self._on_query(session_id, query_text)
                 if asyncio.iscoroutine(result):
                     result = await result
                 response = make_response(
@@ -342,6 +356,32 @@ class BridgeAPI:
         return [
             self.get_session_status(sid) for sid in self._sessions
         ]
+
+    def get_runtime_snapshot(self, session_id: str) -> dict[str, Any] | None:
+        """Return optional host-provided runtime state for a session."""
+        del session_id
+        return None
+
+    async def control_runtime_task(
+        self,
+        session_id: str,
+        *,
+        task_id: str,
+        action: str,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        del session_id, task_id, action, payload
+        return {"ok": False, "error": "Runtime task control is not supported."}
+
+    def get_runtime_transcript(
+        self,
+        session_id: str,
+        *,
+        task_id: str,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        del session_id, task_id, limit
+        return {"ok": False, "error": "Runtime transcript access is not supported."}
 
     def publish_signal(
         self,

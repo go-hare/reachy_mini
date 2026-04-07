@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable
 
 from ..agent import Agent, AgentConfig
@@ -70,7 +72,19 @@ def _serialize_stream_event(event: Any) -> dict[str, Any]:
             **base,
         }
     if isinstance(event, TextEvent):
-        return {"event_type": "text", "text": event.text, **base}
+        metadata_event_type = ""
+        if isinstance(metadata, dict):
+            metadata_event_type = str(metadata.get("event_type", "") or "").strip()
+        payload: dict[str, Any] = {
+            "event_type": metadata_event_type or "text",
+            "text": event.text,
+            **base,
+        }
+        if isinstance(metadata, dict) and metadata_event_type == "task_state":
+            task_state = metadata.get("task_state")
+            if isinstance(task_state, dict):
+                payload["task_state"] = dict(task_state)
+        return payload
     if isinstance(event, ToolCallEvent):
         return {
             "event_type": "tool_call",
@@ -214,6 +228,37 @@ class _ExecutorBridgeAPI(BridgeAPI):
             self._host._shutdown_session(session_id)
         return existed
 
+    def get_runtime_snapshot(self, session_id: str) -> dict[str, Any] | None:
+        return self._host._get_runtime_snapshot(session_id)
+
+    async def control_runtime_task(
+        self,
+        session_id: str,
+        *,
+        task_id: str,
+        action: str,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return await self._host._control_runtime_task(
+            session_id,
+            task_id=task_id,
+            action=action,
+            payload=payload,
+        )
+
+    def get_runtime_transcript(
+        self,
+        session_id: str,
+        *,
+        task_id: str,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        return self._host._get_runtime_transcript(
+            session_id,
+            task_id=task_id,
+            limit=limit,
+        )
+
 
 class RemoteExecutorHost:
     """Owns bridge server + per-session ccmini agents for remote UIs."""
@@ -294,6 +339,208 @@ class RemoteExecutorHost:
             self._sessions[session_id] = state
         return state
 
+    def _get_runtime_snapshot(self, session_id: str) -> dict[str, Any]:
+        state = self._sessions.get(session_id)
+        if state is None:
+            return {}
+
+        agent = state.agent
+        background_runner = getattr(agent, "background_runner", None)
+        background_tasks = []
+        if background_runner is not None:
+            list_task_snapshots = getattr(background_runner, "list_task_snapshots", None)
+            if callable(list_task_snapshots):
+                try:
+                    background_tasks = list_task_snapshots(include_completed=True)
+                except Exception:
+                    background_tasks = []
+
+        team_snapshot = self._build_team_snapshot(agent)
+        return {
+            "backgroundTasks": background_tasks,
+            "team": team_snapshot,
+        }
+
+    def _build_team_snapshot(self, agent: Agent) -> dict[str, Any]:
+        from ..delegation.team_files import TEAM_LEAD_NAME, read_team_file
+
+        team_tool = getattr(agent, "_team_create_tool", None)
+        team_name = str(getattr(team_tool, "_active_team_name", "") or "").strip()
+        if not team_name:
+            return {}
+
+        persisted = read_team_file(team_name) or {}
+        live_members: dict[str, dict[str, Any]] = {}
+        if team_tool is not None:
+            team = team_tool.get_team(team_name)
+            if team is not None:
+                try:
+                    for state in team.list_teammates():
+                        live_members[state.identity.agent_id] = {
+                            "agentId": state.identity.agent_id,
+                            "name": state.identity.agent_name,
+                            "teamName": state.identity.team_name,
+                            "color": state.identity.color or "",
+                            "planModeRequired": bool(state.identity.plan_mode_required),
+                            "status": getattr(state.status, "value", str(state.status)),
+                            "currentTask": state.current_task,
+                            "messagesProcessed": int(state.messages_processed),
+                            "totalTurns": int(state.total_turns),
+                            "error": state.error,
+                            "isIdle": bool(state.is_idle),
+                            "lastUpdateMs": int(getattr(state, "last_update_ms", 0) or 0),
+                            "transcriptFile": str(getattr(state, "transcript_file", "") or ""),
+                            "isActive": getattr(state.status, "value", str(state.status)) != "shutdown",
+                            "backendType": "in-process",
+                        }
+                except Exception:
+                    live_members = {}
+
+        members_payload: list[dict[str, Any]] = []
+        raw_members = persisted.get("members", [])
+        if isinstance(raw_members, list):
+            for member in raw_members:
+                if not isinstance(member, dict):
+                    continue
+                agent_id = str(member.get("agentId", "") or "").strip()
+                merged = dict(member)
+                if agent_id and agent_id in live_members:
+                    merged.update(live_members[agent_id])
+                merged.setdefault("agentId", agent_id)
+                merged.setdefault("name", str(member.get("name", "") or ""))
+                merged.setdefault("status", "idle" if merged.get("isActive") else "shutdown")
+                members_payload.append(merged)
+
+        seen_ids = {str(member.get("agentId", "") or "") for member in members_payload}
+        for agent_id, member in live_members.items():
+            if agent_id not in seen_ids:
+                members_payload.append(member)
+
+        active_count = sum(1 for member in members_payload if bool(member.get("isActive", False)))
+        teammate_count = sum(
+            1 for member in members_payload if str(member.get("name", "") or "") != TEAM_LEAD_NAME
+        )
+        return {
+            "name": str(persisted.get("name", team_name) or team_name),
+            "description": str(persisted.get("description", "") or ""),
+            "leadAgentId": str(persisted.get("leadAgentId", "") or ""),
+            "leadSessionId": str(persisted.get("leadSessionId", "") or ""),
+            "members": members_payload,
+            "activeCount": active_count,
+            "teammateCount": teammate_count,
+        }
+
+    async def _control_runtime_task(
+        self,
+        session_id: str,
+        *,
+        task_id: str,
+        action: str,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        state = self._sessions.get(session_id)
+        if state is None:
+            return {"ok": False, "error": f"Unknown session: {session_id}"}
+
+        agent = state.agent
+        action_name = action.strip().lower()
+        extra = dict(payload or {})
+        message_text = str(extra.get("message", "") or "").strip()
+
+        task = agent.get_task(task_id)
+        if task is not None:
+            if action_name == "stop":
+                stopped = agent.cancel_task(task_id)
+                return {"ok": stopped, "action": action_name, "task_id": task_id}
+            if action_name in {"resume", "send_message"}:
+                if not message_text:
+                    return {"ok": False, "error": "message is required for resume/send_message"}
+                accepted = agent.send_message_to_task(task_id, message_text)
+                return {"ok": accepted, "action": action_name, "task_id": task_id}
+            if action_name in {"foreground", "describe"}:
+                return {
+                    "ok": True,
+                    "action": action_name,
+                    "task_id": task_id,
+                    "task": self._task_info_to_payload(task),
+                }
+
+        team_tool = getattr(agent, "_team_create_tool", None)
+        team_name = str(getattr(team_tool, "_active_team_name", "") or "").strip()
+        team = team_tool.get_team(team_name) if team_tool is not None and team_name else None
+        if team is not None:
+            if action_name == "stop":
+                await team.shutdown_teammate(task_id)
+                return {"ok": True, "action": action_name, "task_id": task_id}
+            if action_name in {"resume", "send_message"}:
+                if not message_text:
+                    return {"ok": False, "error": "message is required for resume/send_message"}
+                team.send_message(task_id, message_text)
+                return {"ok": True, "action": action_name, "task_id": task_id}
+            if action_name in {"foreground", "describe"}:
+                for member in self._build_team_snapshot(agent).get("members", []):
+                    if str(member.get("agentId", "") or "") == task_id or str(member.get("name", "") or "") == task_id:
+                        return {"ok": True, "action": action_name, "task_id": task_id, "member": member}
+
+        return {"ok": False, "error": f"Unknown task or teammate: {task_id}"}
+
+    def _get_runtime_transcript(
+        self,
+        session_id: str,
+        *,
+        task_id: str,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        state = self._sessions.get(session_id)
+        if state is None:
+            return {"ok": False, "error": f"Unknown session: {session_id}"}
+
+        agent = state.agent
+        transcript_file = ""
+        task = agent.get_task(task_id)
+        if task is not None:
+            transcript_file = str(getattr(task, "transcript_file", "") or "")
+        if not transcript_file:
+            for member in self._build_team_snapshot(agent).get("members", []):
+                if str(member.get("agentId", "") or "") == task_id or str(member.get("name", "") or "") == task_id:
+                    transcript_file = str(member.get("transcriptFile", "") or "")
+                    break
+        if not transcript_file:
+            return {"ok": False, "error": f"No transcript found for {task_id}"}
+
+        path = Path(transcript_file)
+        if not path.exists():
+            return {"ok": False, "error": f"Transcript file not found: {transcript_file}"}
+
+        lines = path.read_text(encoding="utf-8").splitlines()
+        entries: list[dict[str, Any]] = []
+        for line in lines[-limit:]:
+            try:
+                parsed = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(parsed, dict):
+                entries.append(parsed)
+        return {
+            "ok": True,
+            "task_id": task_id,
+            "transcript_file": transcript_file,
+            "entries": entries,
+        }
+
+    @staticmethod
+    def _task_info_to_payload(task: Any) -> dict[str, Any]:
+        metadata = dict(getattr(task, "metadata", {}) or {})
+        return {
+            "id": str(getattr(task, "id", "") or ""),
+            "status": str(getattr(getattr(task, "status", None), "value", getattr(task, "status", "")) or ""),
+            "description": str(getattr(task, "description", "") or ""),
+            "type": str(getattr(getattr(task, "type", None), "value", getattr(task, "type", "")) or ""),
+            "outputFile": str(getattr(task, "output_file", "") or ""),
+            "transcriptFile": str(getattr(task, "transcript_file", "") or ""),
+            "metadata": metadata,
+        }
+
     async def _publish_stream_event(
         self,
         session_id: str,
@@ -330,13 +577,37 @@ class RemoteExecutorHost:
             state.started = True
         return state
 
-    async def _handle_query(self, session_id: str, query_text: str) -> str:
+    async def _handle_query(
+        self,
+        session_id: str,
+        query_text: str,
+        *,
+        metadata: dict[str, Any] | None = None,
+        attachments: list[dict[str, Any]] | None = None,
+    ) -> str:
         state = await self._ensure_started(session_id)
         if state.active_query is not None and not state.active_query.done():
             return "busy"
 
+        query_metadata = dict(metadata or {})
+        session_status = self._api.get_session_status(session_id)
+        session_metadata = session_status.get("metadata", {}) if isinstance(session_status, dict) else {}
+        if isinstance(session_metadata, dict):
+            source = str(session_metadata.get("source", "") or "").strip()
+            if source:
+                query_metadata.setdefault("source", source)
+            if source and source != "ccmini-frontend":
+                query_metadata.setdefault("bridge_origin", True)
+                query_metadata.setdefault("skip_slash_commands", True)
+
         state.active_query = asyncio.create_task(
-            self._run_query(session_id, state, query_text),
+            self._run_query(
+                session_id,
+                state,
+                query_text,
+                query_metadata,
+                list(attachments or []),
+            ),
             name=f"remote-executor-{session_id}",
         )
         return "accepted"
@@ -362,12 +633,16 @@ class RemoteExecutorHost:
         session_id: str,
         state: _ExecutorSessionState,
         query_text: str,
+        metadata: dict[str, Any] | None = None,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> None:
         async with state.lock:
             try:
                 async for event in state.agent.query(
                     query_text,
                     conversation_id=session_id,
+                    metadata=metadata,
+                    attachments=attachments,
                 ):
                     await self._publish_stream_event(
                         session_id,

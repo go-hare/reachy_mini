@@ -260,6 +260,12 @@ export function applyCcminiBridgeEvent(
       })
     }
     case 'text':
+      if (String(payload.text ?? '').trim().startsWith('<task-notification>')) {
+        return [
+          ...endThinkingMessage(prev),
+          createCcminiSystemMessage(String(payload.text ?? ''), 'info'),
+        ]
+      }
       return updateStreamingAssistant(prev, String(payload.text ?? ''))
     case 'completion':
       return finalizeAssistant(prev, String(payload.text ?? ''))

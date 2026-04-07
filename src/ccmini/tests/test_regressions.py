@@ -17,6 +17,7 @@ import ccmini.factory as factory_module
 import ccmini.frontend_host as frontend_host_module
 import ccmini.engine.query as query_module
 import ccmini.engine.query_engine as query_engine_module
+import ccmini.delegation.background as background_module
 import ccmini.delegation.subagent as subagent_module
 import ccmini.kairos.dream as dream_module
 import ccmini.services.away_summary as away_summary_module
@@ -27,6 +28,8 @@ from ccmini.agent import Agent, AgentConfig, ConversationRecovery
 from ccmini.auth import load_auth_state
 from ccmini.bridge import BridgeConfig, BridgeServer, RemoteExecutorHost, create_remote_executor_host
 from ccmini.config import CLIConfig, load_config, load_profile, sync_remote_config
+from ccmini.commands import SlashCommand
+from ccmini.commands.types import Command, CommandSource, CommandType
 from ccmini.embedded import HostEvent, HostToolResult
 from ccmini.frontend_host import _build_ready_payload, _find_open_port, _port_is_available
 from ccmini.hooks import PostSamplingContext, PostSamplingHook
@@ -36,8 +39,11 @@ from ccmini.kairos.core import check_directory_trust
 from ccmini.kairos.proactive import IdleLevel, ProactiveSuggestionEngine
 from ccmini.messages import (
     CompletionEvent,
+    ErrorEvent,
+    ImageBlock,
     PromptSuggestionEvent,
     SpeculationEvent,
+    TextBlock,
     TextEvent,
     ToolResultBlock,
     assistant_message,
@@ -46,7 +52,10 @@ from ccmini.messages import (
 )
 from ccmini.permissions import BashCommandAnalyzer, PermissionChecker, PermissionConfig, PermissionMode, RiskLevel
 from ccmini.delegation.multi_agent import AgentTool
+from ccmini.delegation.builtin_agents import WORKER_AGENT
 from ccmini.delegation.tasks import TaskManager
+from ccmini.delegation.tasks import TaskType
+from ccmini.delegation.teammate import TeammateIdentity, TeammateState, TeammateStatus
 from ccmini.providers import ProviderConfig
 from ccmini.providers.compatible import OpenAICompatibleProvider
 from ccmini.tool import ToolUseContext
@@ -121,6 +130,12 @@ class _DummyAgent:
 
 class _DummyProvider:
     model_name = "dummy-model"
+
+
+class _NamedTool:
+    def __init__(self, name: str, aliases: tuple[str, ...] = ()) -> None:
+        self.name = name
+        self.aliases = aliases
 
 
 def _prepare_environment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
@@ -285,6 +300,64 @@ def test_builtin_background_agent_launches_async_by_default() -> None:
     assert payload["agentId"] == "agent-verification"
     assert parent_agent.background_runner.kwargs["max_turns"] == 15
     assert "verification specialist" in str(parent_agent.background_runner.kwargs["system_prompt"]).lower()
+
+
+def test_agent_tool_worker_resolution_uses_coordinator_safe_tools() -> None:
+    tool = AgentTool(
+        provider=_DummyProvider(),
+        parent_tools=[
+            _NamedTool("Read"),
+            _NamedTool("Bash"),
+            _NamedTool("SendMessage"),
+            _NamedTool("Agent", aliases=("Task",)),
+        ],
+    )
+
+    resolved = tool._resolve_tools(WORKER_AGENT, is_worker_context=True)
+
+    assert [candidate.name for candidate in resolved] == ["Read", "Bash"]
+
+
+def test_agent_tool_remote_isolation_launches_remote_typed_background_task() -> None:
+    class _BackgroundRunner:
+        def __init__(self) -> None:
+            self.kwargs: dict[str, object] = {}
+
+        def spawn(self, **kwargs: object) -> str:
+            self.kwargs = kwargs
+            return "remote-123"
+
+        def get_status(self, task_id: str) -> object:
+            assert task_id == "remote-123"
+            return SimpleNamespace(output_file="/tmp/remote-123.md")
+
+    parent_agent = SimpleNamespace(
+        background_runner=_BackgroundRunner(),
+        _coordinator_mode=None,
+        _team_create_tool=None,
+    )
+    tool = AgentTool(provider=_DummyProvider())
+    context = ToolUseContext(
+        conversation_id="conv-1",
+        agent_id="agent-1",
+        messages=[],
+        extras={"agent": parent_agent},
+    )
+
+    payload = json.loads(
+        asyncio.run(
+            tool.execute(
+                context=context,
+                description="remote worker",
+                prompt="Do the remote thing",
+                isolation="remote",
+            )
+        )
+    )
+
+    assert payload["status"] == "async_launched"
+    assert parent_agent.background_runner.kwargs["task_type"] is TaskType.REMOTE_AGENT
+    assert parent_agent.background_runner.kwargs["metadata"]["backendType"] == "embedded-remote"
 
 
 def test_send_message_accepts_agent_id_alias() -> None:
@@ -589,6 +662,240 @@ def test_bridge_tasks_endpoint_reports_runtime_plan_state(
 
     assert payload["planState"]["isActive"] is True
     assert payload["planState"]["planText"] == "## Implementation Plan\n\n- Review tasks"
+
+
+def test_bridge_tasks_endpoint_includes_background_and_team_snapshots(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _prepare_environment(monkeypatch, tmp_path)
+    write_team_file(
+        "team-alpha",
+        {
+            "name": "team-alpha",
+            "description": "alpha crew",
+            "members": [
+                {
+                    "agentId": "team-lead@team-alpha",
+                    "name": "team-lead",
+                    "isActive": True,
+                    "backendType": "in-process",
+                }
+            ],
+        },
+    )
+
+    class _SnapshotRunner:
+        def list_task_snapshots(self, *, include_completed: bool = True) -> list[dict[str, object]]:
+            assert include_completed is True
+            return [
+                {
+                    "id": "a123",
+                    "type": "local_agent",
+                    "status": "running",
+                    "description": "Review diff",
+                    "outputFile": "/tmp/a123.md",
+                    "transcriptFile": "/tmp/a123.jsonl",
+                    "workerName": "reviewer",
+                    "backendType": "in-process",
+                    "isolation": "shared",
+                    "canResume": True,
+                }
+            ]
+
+    class _SnapshotTeam:
+        def list_teammates(self) -> list[TeammateState]:
+            return [
+                TeammateState(
+                    identity=TeammateIdentity(
+                        agent_id="reviewer@team-alpha",
+                        agent_name="reviewer",
+                        team_name="team-alpha",
+                    ),
+                    status=TeammateStatus.RUNNING,
+                    current_task="Check tests",
+                    is_idle=False,
+                    last_update_ms=123,
+                    transcript_file="/tmp/reviewer.jsonl",
+                )
+            ]
+
+    class _SnapshotTeamTool:
+        _active_team_name = "team-alpha"
+
+        def get_team(self, team_name: str) -> object | None:
+            assert team_name == "team-alpha"
+            return _SnapshotTeam()
+
+    class _SnapshotAgent(_DummyAgent):
+        def __init__(self) -> None:
+            super().__init__()
+            self.background_runner = _SnapshotRunner()
+            self._team_create_tool = _SnapshotTeamTool()
+
+    async def run() -> dict[str, object]:
+        host = RemoteExecutorHost(
+            agent_factory=lambda _sid: _SnapshotAgent(),
+            bridge_config=BridgeConfig(enabled=True, host="127.0.0.1", port=9999, auth_token="tok"),
+        )
+        handle = await host.create_session(metadata={"source": "ccmini-frontend"})
+
+        class _Request:
+            headers = {"Authorization": "Bearer tok"}
+            query = {"session_id": handle.session_id, "include_completed": "true"}
+
+        response = await host.server._aiohttp_tasks(_Request())
+        payload = json.loads(response.text)
+        await host._shutdown_session_async(handle.session_id)
+        return payload
+
+    payload = asyncio.run(run())
+
+    assert payload["backgroundTasks"][0]["id"] == "a123"
+    assert payload["team"]["name"] == "team-alpha"
+    assert payload["team"]["members"][1]["name"] == "reviewer"
+
+
+def test_bridge_runtime_task_control_and_transcript(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _prepare_environment(monkeypatch, tmp_path)
+    transcript_path = tmp_path / "task-transcript.jsonl"
+    transcript_path.write_text(
+        json.dumps({"role": "assistant", "content": "done"}, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+    class _ControlAgent(_DummyAgent):
+        def __init__(self) -> None:
+            super().__init__()
+            self.cancelled: list[str] = []
+            self.sent: list[tuple[str, str]] = []
+
+        def get_task(self, task_id: str) -> object | None:
+            if task_id != "a123":
+                return None
+            return SimpleNamespace(
+                id="a123",
+                status=SimpleNamespace(value="completed"),
+                description="remote task",
+                type=SimpleNamespace(value="remote_agent"),
+                output_file="/tmp/a123.md",
+                transcript_file=str(transcript_path),
+                metadata={},
+            )
+
+        def cancel_task(self, task_id: str) -> bool:
+            self.cancelled.append(task_id)
+            return True
+
+        def send_message_to_task(self, task_id: str, message: str) -> bool:
+            self.sent.append((task_id, message))
+            return True
+
+    async def run() -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
+        host = RemoteExecutorHost(
+            agent_factory=lambda _sid: _ControlAgent(),
+            bridge_config=BridgeConfig(enabled=True, host="127.0.0.1", port=9999, auth_token="tok"),
+        )
+        handle = await host.create_session(metadata={"source": "ccmini-frontend"})
+
+        stop_result = await host.api.control_runtime_task(
+            handle.session_id,
+            task_id="a123",
+            action="stop",
+            payload={},
+        )
+        send_result = await host.api.control_runtime_task(
+            handle.session_id,
+            task_id="a123",
+            action="send_message",
+            payload={"message": "follow up"},
+        )
+        transcript_result = host.api.get_runtime_transcript(
+            handle.session_id,
+            task_id="a123",
+            limit=10,
+        )
+        await host._shutdown_session_async(handle.session_id)
+        return stop_result, send_result, transcript_result
+
+    stop_result, send_result, transcript_result = asyncio.run(run())
+
+    assert stop_result["ok"] is True
+    assert send_result["ok"] is True
+    assert transcript_result["ok"] is True
+    assert transcript_result["entries"][0]["content"] == "done"
+
+
+def test_run_subagent_writes_transcript_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _prepare_environment(monkeypatch, tmp_path)
+
+    async def fake_query(_params: object) -> object:
+        yield CompletionEvent(text="SUBAGENT_OK")
+
+    monkeypatch.setattr(subagent_module, "query", fake_query)
+
+    reply = asyncio.run(
+        subagent_module.run_subagent(
+            provider=_DummyProvider(),
+            system_prompt="You are helpful.",
+            user_text="hello",
+            tools=[],
+            agent_id="unit-subagent",
+        )
+    )
+
+    transcript_path = Path(subagent_module._subagent_transcript_path("unit-subagent", "subagent"))
+    assert reply == "SUBAGENT_OK"
+    assert transcript_path.exists()
+    transcript_text = transcript_path.read_text(encoding="utf-8")
+    assert '"content": "hello"' in transcript_text
+    assert '"content": "SUBAGENT_OK"' in transcript_text
+
+
+def test_background_runner_records_transcript_and_resume_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _prepare_environment(monkeypatch, tmp_path)
+
+    async def fake_run_subagent(**kwargs: object) -> str:
+        prompt = str(kwargs.get("user_text", ""))
+        return f"reply:{prompt}"
+
+    monkeypatch.setattr(background_module, "run_subagent", fake_run_subagent)
+
+    async def run() -> tuple[object, str]:
+        runner = background_module.BackgroundAgentRunner(provider=_DummyProvider(), task_manager=TaskManager())
+        task_id = runner.spawn(
+            name="worker-a",
+            prompt="first pass",
+            metadata={"teamName": "alpha"},
+        )
+        assert await runner.wait_completion(timeout=0.1) is not None
+        for _ in range(10):
+            info = runner.get_status(task_id)
+            if info is not None and getattr(info.status, "value", info.status) == "completed":
+                break
+            await asyncio.sleep(0)
+        assert runner.send_message(task_id, "follow up") is True
+        assert await runner.wait_completion(timeout=0.1) is not None
+        info = runner.get_status(task_id)
+        assert info is not None
+        transcript_text = Path(info.transcript_file).read_text(encoding="utf-8")
+        return info, transcript_text
+
+    info, transcript_text = asyncio.run(run())
+
+    assert info.metadata["resumeCount"] == 1
+    assert info.transcript_file.endswith(".jsonl")
+    assert '"content": "first pass"' in transcript_text
+    assert '"content": "follow up"' in transcript_text
 
 
 def test_create_remote_executor_host_passes_agent_config() -> None:
@@ -2647,3 +2954,228 @@ def test_set_mode_and_memory_roots_and_factory_disable_default_tools(
         use_default_tools=False,
     )
     assert created.tools == []
+
+
+def test_query_engine_prompt_command_applies_model_effort_and_allowed_tools(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _prepare_environment(monkeypatch, tmp_path)
+    seen: dict[str, object] = {}
+
+    async def fake_run_query(params: object):
+        seen["model"] = params.provider.model_name  # type: ignore[attr-defined]
+        seen["tools"] = [tool.name for tool in params.tools]  # type: ignore[attr-defined]
+        config = getattr(params.provider, "_config", None)  # type: ignore[attr-defined]
+        seen["effort"] = getattr(config, "extras", {}).get("reasoning_effort", "")
+        params.messages.append(assistant_message("done"))  # type: ignore[attr-defined]
+        yield CompletionEvent(text="done", stop_reason="end_turn")
+
+    monkeypatch.setattr(query_engine_module, "run_query", fake_run_query)
+
+    async def run() -> tuple[list[object], Agent]:
+        agent = Agent(
+            provider=ProviderConfig(type="mock", model="mock-model"),
+            system_prompt="You are helpful.",
+            config=AgentConfig(enable_builtin_commands=True),
+        )
+        agent._tools = [FileReadTool()]
+        agent._current_turn_tools = [FileReadTool()]
+        agent._command_registry.register_command(
+            Command(
+                name="focus",
+                description="Focused prompt command",
+                type=CommandType.PROMPT,
+                source=CommandSource.BUILTIN,
+                loaded_from=CommandSource.BUILTIN,
+                prompt_text="Focus on the requested task.",
+                allowed_tools=["Read"],
+                model="override-model",
+                effort="high",
+            )
+        )
+        engine = query_engine_module.QueryEngine(agent)
+        events = [event async for event in engine.submit_message("/focus inspect the repo")]
+        return events, agent
+
+    events, agent = asyncio.run(run())
+
+    assert isinstance(events[-1], CompletionEvent)
+    assert seen["model"] == "override-model"
+    assert seen["effort"] == "high"
+    assert seen["tools"] == ["Read"]
+    assert "Focus on the requested task." in agent.messages[0].text
+
+
+def test_query_engine_blocks_unsafe_bridge_slash_command(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _prepare_environment(monkeypatch, tmp_path)
+
+    class UnsafeCommand(SlashCommand):
+        @property
+        def name(self) -> str:
+            return "unsafe"
+
+        async def execute(self, args: str, agent: Agent) -> str:
+            raise AssertionError(f"unsafe command should not execute: {args} {agent}")
+
+    async def run() -> list[object]:
+        agent = Agent(
+            provider=ProviderConfig(type="mock", model="mock-model"),
+            system_prompt="You are helpful.",
+            config=AgentConfig(enable_builtin_commands=True),
+        )
+        agent._command_registry.register(UnsafeCommand())
+        engine = query_engine_module.QueryEngine(agent)
+        return [
+            event
+            async for event in engine.submit_message(
+                "/unsafe now",
+                metadata={"bridge_origin": True, "skip_slash_commands": True},
+            )
+        ]
+
+    events = asyncio.run(run())
+
+    assert isinstance(events[-1], CompletionEvent)
+    assert "/unsafe isn't available over Remote Control." in events[-1].text
+
+
+def test_query_engine_user_prompt_submit_hook_can_block_query(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _prepare_environment(monkeypatch, tmp_path)
+
+    class FakeHookRunner:
+        def __init__(self, cwd: str | None = None, session_id: str = "") -> None:
+            self.cwd = cwd
+            self.session_id = session_id
+
+        def has_hooks(self, event: object) -> bool:
+            return True
+
+        async def fire(self, event: object, hook_input: object) -> object:
+            del event, hook_input
+            return SimpleNamespace(
+                blocking=True,
+                should_continue=False,
+                system_message="Blocked by UserPromptSubmit",
+                reason="",
+                stop_reason="",
+                additional_context="",
+                updated_input=None,
+                initial_user_message="",
+            )
+
+    monkeypatch.setattr(query_engine_module, "UserHookRunner", FakeHookRunner)
+
+    async def run() -> list[object]:
+        agent = Agent(
+            provider=ProviderConfig(type="mock", model="mock-model"),
+            system_prompt="You are helpful.",
+        )
+        engine = query_engine_module.QueryEngine(agent)
+        return [event async for event in engine.submit_message("hello")]
+
+    events = asyncio.run(run())
+
+    assert len(events) == 1
+    assert isinstance(events[0], ErrorEvent)
+    assert events[0].error == "Blocked by UserPromptSubmit"
+
+
+def test_query_engine_bash_mode_rewrites_prompt_and_filters_tools(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _prepare_environment(monkeypatch, tmp_path)
+    seen: dict[str, object] = {}
+
+    async def fake_run_query(params: object):
+        seen["tools"] = [tool.name for tool in params.tools]  # type: ignore[attr-defined]
+        params.messages.append(assistant_message("done"))  # type: ignore[attr-defined]
+        yield CompletionEvent(text="done", stop_reason="end_turn")
+
+    monkeypatch.setattr(query_engine_module, "run_query", fake_run_query)
+
+    async def run() -> tuple[list[object], Agent]:
+        agent = Agent(
+            provider=ProviderConfig(type="mock", model="mock-model"),
+            system_prompt="You are helpful.",
+        )
+        agent._tools = [BashTool(), FileReadTool()]
+        agent._current_turn_tools = [BashTool(), FileReadTool()]
+        engine = query_engine_module.QueryEngine(agent)
+        events = [event async for event in engine.submit_message("!pwd")]
+        return events, agent
+
+    events, agent = asyncio.run(run())
+
+    assert isinstance(events[-1], CompletionEvent)
+    assert "Shell request:\npwd" in agent.messages[0].text
+    assert "Bash" in seen["tools"]
+    assert "Read" in seen["tools"]
+
+
+def test_submit_user_input_image_attachment_adds_metadata_block(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _prepare_environment(monkeypatch, tmp_path)
+    image_path = tmp_path / "pixel.png"
+    image_path.write_bytes(
+        b"\x89PNG\r\n\x1a\n"
+        b"\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde"
+        b"\x00\x00\x00\x0cIDATx\x9cc\xf8\xcf\xc0\x00\x00\x03\x01\x01\x00\xc9\xfe\x92\xef"
+        b"\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+
+    async def run() -> Agent:
+        agent = Agent(
+            provider=ProviderConfig(type="mock", model="mock-model"),
+            system_prompt="You are helpful.",
+        )
+        turn_id = agent.submit_user_input(
+            "inspect image",
+            attachments=[{"type": "image", "path": str(image_path)}],
+        )
+        assert turn_id
+        await agent.wait_reply(timeout=5.0)
+        return agent
+
+    agent = asyncio.run(run())
+
+    user_content = agent.messages[0].content
+    assert isinstance(user_content, list)
+    assert any(isinstance(block, TextBlock) and "Image metadata:" in block.text for block in user_content)
+    assert any(isinstance(block, ImageBlock) for block in user_content)
+
+
+def test_ultraplan_keyword_routes_to_ultraplan_prompt_command(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _prepare_environment(monkeypatch, tmp_path)
+
+    async def fake_run_query(params: object):
+        params.messages.append(assistant_message("done"))  # type: ignore[attr-defined]
+        yield CompletionEvent(text="done", stop_reason="end_turn")
+
+    monkeypatch.setattr(query_engine_module, "run_query", fake_run_query)
+
+    async def run() -> Agent:
+        agent = Agent(
+            provider=ProviderConfig(type="mock", model="mock-model"),
+            system_prompt="You are helpful.",
+            config=AgentConfig(enable_builtin_commands=True),
+        )
+        engine = query_engine_module.QueryEngine(agent)
+        _ = [event async for event in engine.submit_message("please ultraplan this migration")]
+        return agent
+
+    agent = asyncio.run(run())
+
+    assert "Create a comprehensive execution plan for the user's request." in agent.messages[0].text

@@ -100,6 +100,79 @@ export type CcminiTaskBoardTask = {
   metadata?: Record<string, unknown>
 }
 
+export type CcminiBackgroundTaskStatus =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'killed'
+
+export type CcminiBackgroundTaskType =
+  | 'local_agent'
+  | 'remote_agent'
+  | 'in_process_teammate'
+  | 'local_bash'
+  | 'local_workflow'
+  | 'monitor_mcp'
+  | 'dream'
+  | string
+
+export type CcminiBackgroundTask = {
+  id: string
+  type: CcminiBackgroundTaskType
+  status: CcminiBackgroundTaskStatus
+  description: string
+  outputFile?: string
+  transcriptFile?: string
+  startTime?: number
+  endTime?: number | null
+  updatedAt?: number
+  resumeCount?: number
+  canResume?: boolean
+  promptPreview?: string
+  model?: string
+  profile?: string
+  workerName?: string
+  teamName?: string
+  backendType?: string
+  isolation?: string
+  agentType?: string
+  subagentType?: string
+  result?: string
+  error?: string
+  metadata?: Record<string, unknown>
+}
+
+export type CcminiTeamMember = {
+  agentId: string
+  name: string
+  agentType?: string
+  model?: string
+  cwd?: string
+  status?: string
+  currentTask?: string
+  messagesProcessed?: number
+  totalTurns?: number
+  error?: string
+  isIdle?: boolean
+  isActive?: boolean
+  backendType?: string
+  transcriptFile?: string
+  color?: string
+  planModeRequired?: boolean
+  lastUpdateMs?: number
+}
+
+export type CcminiTeamState = {
+  name: string
+  description?: string
+  leadAgentId?: string
+  leadSessionId?: string
+  activeCount?: number
+  teammateCount?: number
+  members: CcminiTeamMember[]
+}
+
 export function createCcminiRequestId(): string {
   return randomUUID().replace(/-/g, '').slice(0, 12)
 }

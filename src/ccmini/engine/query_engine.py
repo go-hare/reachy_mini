@@ -11,9 +11,14 @@ import time
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from ..commands.types import CommandType
 from ..delegation.coordinator import get_coordinator_user_context
-from ..engine.input_processor import InputProcessor, process_attachments
+from ..engine.input_processor import (
+    InputProcessor,
+    ProcessedInput,
+    create_image_metadata_text,
+    process_attachments,
+)
+from ..hooks.user_scripts import HookEvent as UserHookEvent, HookInput, UserHookRunner
 from ..messages import (
     CompletionEvent,
     DocumentBlock,
@@ -29,6 +34,7 @@ from ..messages import (
     UsageEvent,
 )
 from ..prompts import SystemPrompt
+from ..providers import BaseProvider, ProviderConfig, create_provider
 from ..usage import UsageRecord
 from .query import QueryParams, _build_tool_result_message, query as run_query
 
@@ -46,6 +52,13 @@ class PreparedTurn:
     local_error: str | None = None
     message_content: list[Any] | str = ""
     accepted_speculation: Any | None = None
+    attachments: list[Any] = field(default_factory=list)
+    processed_input: ProcessedInput | None = None
+    model_override: str = ""
+    effort_override: str = ""
+    input_mode: str = "prompt"
+    bridge_origin: bool = False
+    skip_slash_commands: bool = False
 
 
 class TurnPhase(str, Enum):
@@ -277,6 +290,11 @@ class QueryEngine:
         host_metadata = dict(metadata or {})
         if user_id:
             host_metadata.setdefault("user_id", user_id)
+        input_mode = str(host_metadata.get("input_mode", "prompt") or "prompt").strip() or "prompt"
+        bridge_origin = bool(host_metadata.get("bridge_origin", False))
+        skip_slash_commands = bool(
+            host_metadata.get("skip_slash_commands", bridge_origin)
+        )
         try:
             from ..services.prompt_suggestion import (
                 abort_prompt_suggestion,
@@ -296,8 +314,15 @@ class QueryEngine:
                     message_content=await self._build_user_message_content(
                         user_text,
                         attachments=attachments,
+                        input_mode=input_mode,
+                        bridge_origin=bridge_origin,
+                        skip_slash_commands=skip_slash_commands,
                     ),
                     accepted_speculation=accepted_speculation,
+                    attachments=list(attachments or []),
+                    input_mode=input_mode,
+                    bridge_origin=bridge_origin,
+                    skip_slash_commands=skip_slash_commands,
                 )
 
             abort_prompt_suggestion(self._agent)
@@ -307,44 +332,96 @@ class QueryEngine:
 
         prepared = PreparedTurn(
             active_tools=list(self._agent._tools),
-            message_content=user_text,
             metadata=host_metadata,
+            attachments=list(attachments or []),
+            input_mode=input_mode,
+            bridge_origin=bridge_origin,
+            skip_slash_commands=skip_slash_commands,
         )
 
-        parsed = self._agent._command_registry.parse(user_text)
-        if parsed is not None:
-            command, args = parsed
-            prepared.local_result = await command.execute(args, self._agent)
-            return prepared
+        processor = InputProcessor(
+            cwd=self._get_working_directory(),
+            command_registry=self._agent._command_registry,
+        )
+        processed = await processor.process(
+            user_text,
+            mode=input_mode,
+            skip_slash_commands=skip_slash_commands,
+            bridge_origin=bridge_origin,
+        )
+        prepared.processed_input = processed
 
-        if user_text.strip().startswith("/"):
-            parsed_command = self._agent._command_registry.parse_user_command(user_text)
-            if parsed_command is not None:
-                command, args = parsed_command
-                if command.type == CommandType.LOCAL:
-                    prepared.local_error = (
-                        f"Command '/{command.name}' is registered but has no "
-                        "local executor wired into the runtime yet."
-                    )
+        if not processed.should_query:
+            if processed.command_type == "local":
+                parsed = self._agent._command_registry.parse(user_text)
+                if parsed is None:
+                    prepared.local_result = processed.result_text or processed.command_output
                     return prepared
-                prepared.query_text = self._build_prompt_command_input(command.prompt_text, command.name, args)
-                prepared.metadata = {
-                    **host_metadata,
-                    "command_name": command.name,
-                    "command_args": args,
-                    "original_text": f"/{command.name} {args}".strip(),
-                }
-                prepared.active_tools = self._filter_tools_for_command(command.allowed_tools)
-                prepared.message_content = await self._build_user_message_content(
-                    prepared.query_text,
-                    attachments=attachments,
-                )
+                command, args = parsed
+                prepared.local_result = await command.execute(args, self._agent)
                 return prepared
 
-        prepared.query_text = user_text
+            prepared.local_result = (
+                processed.result_text
+                or processed.command_output
+                or f"Skipped input: {user_text.strip()}"
+            )
+            return prepared
+
+        prepared.query_text = processed.prompt_text or user_text
+        prepared.active_tools = self._filter_tools_for_command(processed.allowed_tools)
+        prepared.model_override = processed.model_override
+        prepared.effort_override = processed.effort_override
+
+        if processed.command_name:
+            prepared.metadata = {
+                **host_metadata,
+                "command_name": processed.command_name,
+                "command_args": processed.command_args,
+                "original_text": processed.command_output or user_text.strip(),
+            }
+
+        hook_error, hook_added_attachments, updated_query_text = await self._apply_user_prompt_submit_hooks(
+            query_text=prepared.query_text,
+            original_text=user_text,
+            bridge_origin=bridge_origin,
+        )
+        if hook_error is not None:
+            prepared.local_error = hook_error
+            return prepared
+        if hook_added_attachments:
+            prepared.attachments.extend(hook_added_attachments)
+        if updated_query_text and updated_query_text != prepared.query_text:
+            prepared.query_text = updated_query_text
+            prepared.processed_input = await processor.process(
+                updated_query_text,
+                mode=input_mode,
+                skip_slash_commands=skip_slash_commands,
+                bridge_origin=bridge_origin,
+            )
+            if not prepared.processed_input.should_query:
+                prepared.local_result = (
+                    prepared.processed_input.result_text
+                    or prepared.processed_input.command_output
+                    or updated_query_text
+                )
+                return prepared
+            if prepared.processed_input.allowed_tools:
+                prepared.active_tools = self._filter_tools_for_command(
+                    prepared.processed_input.allowed_tools
+                )
+            if prepared.processed_input.model_override:
+                prepared.model_override = prepared.processed_input.model_override
+            if prepared.processed_input.effort_override:
+                prepared.effort_override = prepared.processed_input.effort_override
+
         prepared.message_content = await self._build_user_message_content(
-            user_text,
-            attachments=attachments,
+            prepared.query_text,
+            processed=prepared.processed_input,
+            attachments=prepared.attachments,
+            input_mode=input_mode,
+            bridge_origin=bridge_origin,
+            skip_slash_commands=skip_slash_commands,
         )
         return prepared
 
@@ -529,6 +606,8 @@ class QueryEngine:
         params = self._build_query_params(
             tools=prepared.active_tools,
             conversation_id=conv_id,
+            model_override=prepared.model_override,
+            effort_override=prepared.effort_override,
         )
 
         reply_text = ""
@@ -599,6 +678,8 @@ class QueryEngine:
         *,
         tools: list["Tool"],
         conversation_id: str,
+        model_override: str = "",
+        effort_override: str = "",
     ) -> QueryParams:
         query_source = (
             "sdk"
@@ -611,8 +692,12 @@ class QueryEngine:
         system_prompt = self._compose_system_prompt(
             conversation_id=conversation_id,
         )
+        provider = self._resolve_provider_for_turn(
+            model_override=model_override,
+            effort_override=effort_override,
+        )
         return QueryParams(
-            provider=self._agent._provider,
+            provider=provider,
             system_prompt=system_prompt,
             messages=self._agent._messages,
             tools=tools,
@@ -709,14 +794,36 @@ class QueryEngine:
             self._agent._stats_tracker.record_tool_call(event.tool_name)
             return
 
-    @staticmethod
-    def _build_prompt_command_input(prompt_text: str, command_name: str, args: str) -> str:
-        prompt = prompt_text.strip()
-        if not args.strip():
-            return prompt or f"Run the '{command_name}' command."
-        if not prompt:
-            return args.strip()
-        return f"{prompt}\n\nUser request for /{command_name}:\n{args.strip()}"
+    def _resolve_provider_for_turn(
+        self,
+        *,
+        model_override: str = "",
+        effort_override: str = "",
+    ) -> BaseProvider:
+        provider = self._agent._provider
+        if not model_override and not effort_override:
+            return provider
+
+        config = getattr(provider, "_config", None)
+        if not isinstance(config, ProviderConfig):
+            return provider
+
+        extras = dict(config.extras or {})
+        if effort_override:
+            extras["reasoning_effort"] = effort_override
+
+        cloned_config = ProviderConfig(
+            type=config.type,
+            model=model_override or config.model,
+            api_key=config.api_key,
+            base_url=config.base_url,
+            max_tokens=config.max_tokens,
+            temperature=config.temperature,
+            retry=config.retry,
+            enable_cache=config.enable_cache,
+            extras=extras,
+        )
+        return create_provider(cloned_config)
 
     def _filter_tools_for_command(self, allowed_tools: list[str] | None) -> list["Tool"]:
         if not allowed_tools:
@@ -728,14 +835,24 @@ class QueryEngine:
         self,
         raw_text: str,
         *,
+        processed: ProcessedInput | None = None,
         attachments: list[Any] | None = None,
+        input_mode: str = "prompt",
+        bridge_origin: bool = False,
+        skip_slash_commands: bool = False,
     ) -> list[Any] | str:
-        processor = InputProcessor(
-            cwd=self._get_working_directory(),
-            command_registry=self._agent._command_registry,
-        )
-        processed = await processor.process(raw_text) if raw_text.strip() else None
         user_payload = raw_text
+        if processed is None and raw_text.strip():
+            processor = InputProcessor(
+                cwd=self._get_working_directory(),
+                command_registry=self._agent._command_registry,
+            )
+            processed = await processor.process(
+                raw_text,
+                mode=input_mode,
+                skip_slash_commands=skip_slash_commands,
+                bridge_origin=bridge_origin,
+            )
         if processed is not None and processed.should_query and processed.messages:
             user_payload = processed.messages[0].get("content", raw_text)
         blocks: list[Any] = []
@@ -784,6 +901,13 @@ class QueryEngine:
                 deferred_attachments,
                 cwd=self._get_working_directory(),
             ):
+                if (
+                    attachment.attachment_type == "image"
+                    and attachment.metadata
+                ):
+                    metadata_text = create_image_metadata_text(attachment.metadata)
+                    if metadata_text:
+                        blocks.append(TextBlock(text=metadata_text))
                 content = attachment.content
                 if isinstance(content, str):
                     blocks.append(TextBlock(text=content))
@@ -822,6 +946,72 @@ class QueryEngine:
             return blocks[0].text
         return blocks
 
+    async def _apply_user_prompt_submit_hooks(
+        self,
+        *,
+        query_text: str,
+        original_text: str,
+        bridge_origin: bool,
+    ) -> tuple[str | None, list[dict[str, Any]], str]:
+        runner = UserHookRunner(
+            cwd=self._get_working_directory(),
+            session_id=self._agent._conversation_id,
+        )
+        if not runner.has_hooks(UserHookEvent.USER_PROMPT_SUBMIT):
+            return None, [], query_text
+
+        output = await runner.fire(
+            UserHookEvent.USER_PROMPT_SUBMIT,
+            HookInput(
+                session_id=self._agent._conversation_id,
+                cwd=self._get_working_directory(),
+                extra={
+                    "prompt": query_text,
+                    "original_text": original_text,
+                    "bridge_origin": bridge_origin,
+                },
+            ),
+        )
+
+        if output.blocking or not output.should_continue:
+            message = (
+                output.system_message
+                or output.reason
+                or output.stop_reason
+                or "Operation stopped by UserPromptSubmit hook."
+            )
+            return message, [], query_text
+
+        added_attachments: list[dict[str, Any]] = []
+        if output.additional_context:
+            added_attachments.append(
+                {
+                    "type": "text",
+                    "text": output.additional_context,
+                }
+            )
+
+        updated_query_text = query_text
+        if output.updated_input is not None:
+            extracted = self._extract_updated_input_text(output.updated_input)
+            if extracted:
+                updated_query_text = extracted
+        elif output.initial_user_message:
+            updated_query_text = output.initial_user_message
+
+        return None, added_attachments, updated_query_text
+
+    @staticmethod
+    def _extract_updated_input_text(updated_input: Any) -> str:
+        if isinstance(updated_input, str):
+            return updated_input.strip()
+        if isinstance(updated_input, dict):
+            for key in ("text", "prompt", "message", "content"):
+                value = updated_input.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        return ""
+
     def _build_attachment_blocks(
         self,
         attachments: list[Any],
@@ -834,6 +1024,24 @@ class QueryEngine:
                 blocks.append(attachment)
                 continue
 
+            if all(hasattr(attachment, field) for field in ("type", "content", "metadata")):
+                att_type = str(getattr(attachment, "type", "") or "").strip()
+                content = str(getattr(attachment, "content", "") or "")
+                metadata = getattr(attachment, "metadata", {}) or {}
+                if att_type == "image" and isinstance(metadata, dict) and metadata.get("path"):
+                    deferred.append({
+                        "type": "image",
+                        "path": str(metadata.get("path", "")),
+                    })
+                elif att_type == "file" and isinstance(metadata, dict) and metadata.get("path"):
+                    deferred.append({
+                        "type": "file",
+                        "path": str(metadata.get("path", "")),
+                    })
+                elif content:
+                    blocks.append(TextBlock(text=content))
+                continue
+
             if not isinstance(attachment, dict):
                 blocks.append(TextBlock(text=str(attachment)))
                 continue
@@ -841,6 +1049,36 @@ class QueryEngine:
             att_type = str(attachment.get("type", "") or "").strip()
             if att_type == "text":
                 blocks.append(TextBlock(text=str(attachment.get("text", ""))))
+                continue
+            if att_type == "agent_mention":
+                agent_type = str(attachment.get("agent_type", "") or "").strip()
+                prompt = str(attachment.get("prompt", "") or "").strip()
+                text = f"[Agent mention: {agent_type}]"
+                if prompt:
+                    text = f"{text}\n{prompt}"
+                blocks.append(TextBlock(text=text))
+                continue
+            if att_type == "ide_selection":
+                path = str(attachment.get("path", "") or "").strip()
+                selection = str(
+                    attachment.get("selection")
+                    or attachment.get("text")
+                    or attachment.get("content")
+                    or ""
+                ).strip()
+                header = f"[IDE selection: {path}]" if path else "[IDE selection]"
+                text = f"{header}\n{selection}" if selection else header
+                blocks.append(TextBlock(text=text))
+                continue
+            if att_type == "queued_command":
+                prompt = str(
+                    attachment.get("prompt")
+                    or attachment.get("text")
+                    or attachment.get("content")
+                    or ""
+                ).strip()
+                if prompt:
+                    blocks.append(TextBlock(text=prompt))
                 continue
             if att_type == "image":
                 source = attachment.get("source")

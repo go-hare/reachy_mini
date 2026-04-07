@@ -106,10 +106,13 @@ class TaskInfo:
     end_time: int | None = None
     total_paused_ms: int | None = None
     output_file: str = ""
+    transcript_file: str = ""
     output_offset: int = 0
     notified: bool = False
     result: str = ""
     error: str = ""
+    updated_at: int = 0
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 def create_task_state_base(
@@ -118,16 +121,18 @@ def create_task_state_base(
     description: str,
     tool_use_id: str | None = None,
 ) -> TaskInfo:
+    started_at = int(time.time() * 1000)
     return TaskInfo(
         id=task_id,
         type=task_type,
         status=TaskStatus.PENDING,
         description=description,
         tool_use_id=_normalize_tool_use_id(tool_use_id),
-        start_time=int(time.time() * 1000),
+        start_time=started_at,
         output_file=_get_task_output_path(task_id),
         output_offset=0,
         notified=False,
+        updated_at=started_at,
     )
 
 
@@ -147,6 +152,8 @@ class TaskManager:
         task_type: TaskType = TaskType.LOCAL_AGENT,
         description: str = "",
         tool_use_id: str | None = None,
+        transcript_file: str = "",
+        metadata: dict[str, Any] | None = None,
     ) -> str:
         task_id = task_id or generate_task_id(task_type)
         info = create_task_state_base(
@@ -156,6 +163,10 @@ class TaskManager:
             tool_use_id=tool_use_id,
         )
         info.status = TaskStatus.RUNNING
+        info.transcript_file = transcript_file
+        if metadata:
+            info.metadata.update(metadata)
+        info.updated_at = int(time.time() * 1000)
         self._tasks[task_id] = info
 
         task = asyncio.create_task(self._run_wrapper(task_id, coro))
@@ -196,6 +207,7 @@ class TaskManager:
             info.error = str(exc)
         finally:
             info.end_time = int(time.time() * 1000)
+            info.updated_at = info.end_time
 
     def cancel(self, task_id: str) -> bool:
         task = self._async_tasks.get(task_id)
@@ -205,6 +217,7 @@ class TaskManager:
         if info is not None:
             info.status = TaskStatus.KILLED
             info.end_time = int(time.time() * 1000)
+            info.updated_at = info.end_time
         task.cancel()
         return True
 

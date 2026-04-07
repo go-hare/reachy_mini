@@ -2329,7 +2329,28 @@ def register_builtin_commands(registry: CommandRegistry) -> None:
         user_invocable=True,
         has_user_specified_description=True,
     )
+    ultraplan_command = Command(
+        name="ultraplan",
+        description="Generate a deep implementation plan for complex work",
+        type=CommandType.PROMPT,
+        source=CommandSource.BUILTIN,
+        loaded_from=CommandSource.BUILTIN,
+        prompt_text=(
+            "Create a comprehensive execution plan for the user's request.\n\n"
+            "Requirements:\n"
+            "1. Break the work into clear phases.\n"
+            "2. Call out risks, dependencies, and assumptions.\n"
+            "3. Identify what should be verified after each phase.\n"
+            "4. Prefer concrete implementation steps over abstract advice.\n"
+            "5. If the request is ambiguous, make the smallest safe assumption and note it.\n"
+        ),
+        when_to_use="Use when the user asks for an exhaustive plan or says 'ultraplan'.",
+        allowed_tools=["Bash", "Read", "Grep", "Glob", "LSP", "TodoWrite"],
+        user_invocable=True,
+        has_user_specified_description=True,
+    )
     registry.register_command(review_command)
+    registry.register_command(ultraplan_command)
     registry.register(ContextCommand())
     registry.register(ThemeCommand())
     registry.register(OutputStyleCommand())

@@ -37,6 +37,8 @@ Architecture::
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
 import logging
 import time
 from collections.abc import Callable, Coroutine
@@ -90,9 +92,14 @@ class BackgroundResult:
     reply: str = ""
     error: str = ""
     output_file: str = ""
+    transcript_file: str = ""
     duration_ms: int = 0
     total_tokens: int | None = None
     tool_uses: int | None = None
+    worker_name: str = ""
+    team_name: str = ""
+    task_type: str = ""
+    isolation: str = ""
     #: When the background work was started from a tool call (e.g. main-session
     #: backgrounding in reference), correlates with that ``tool_use_id``.
     tool_use_id: str | None = None
@@ -119,10 +126,20 @@ class BackgroundResult:
             parts.append(f"<tool_use_id>{escape(self.tool_use_id)}</tool_use_id>")
         if self.output_file:
             parts.append(f"<output_file>{escape(self.output_file)}</output_file>")
+        if self.transcript_file:
+            parts.append(f"<transcript_file>{escape(self.transcript_file)}</transcript_file>")
         parts.extend([
             f"<status>{escape(status)}</status>",
             f"<summary>{escape(summary)}</summary>",
         ])
+        if self.worker_name:
+            parts.append(f"<worker_name>{escape(self.worker_name)}</worker_name>")
+        if self.team_name:
+            parts.append(f"<team_name>{escape(self.team_name)}</team_name>")
+        if self.task_type:
+            parts.append(f"<task_type>{escape(self.task_type)}</task_type>")
+        if self.isolation:
+            parts.append(f"<isolation>{escape(self.isolation)}</isolation>")
         if self.reply:
             parts.append(f"<result>{escape(self.reply)}</result>")
         if self.error and status != "killed":
@@ -166,6 +183,12 @@ class _TaskRuntimeContext:
     max_turns: int = 15
     model: str = ""
     runtime_overrides: dict[str, Any] = field(default_factory=dict)
+    task_type: TaskType = TaskType.LOCAL_AGENT
+    profile: str = ""
+    transcript_file: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+    remote_agent: Any | None = None
+    remote_conversation_id: str = ""
 
 
 class BackgroundAgentRunner:
@@ -204,6 +227,7 @@ class BackgroundAgentRunner:
         self._pending_messages: dict[str, list[str]] = {}
         self._task_contexts: dict[str, _TaskRuntimeContext] = {}
         self._on_complete: Callable[[BackgroundResult], Coroutine[Any, Any, None]] | None = None
+        self._on_state_change: Callable[[dict[str, Any]], Coroutine[Any, Any, None] | None] | None = None
 
     @property
     def task_manager(self) -> TaskManager:
@@ -215,6 +239,13 @@ class BackgroundAgentRunner:
     ) -> None:
         """Set an async callback that fires when any background task completes."""
         self._on_complete = callback
+
+    def set_on_state_change(
+        self,
+        callback: Callable[[dict[str, Any]], Coroutine[Any, Any, None] | None],
+    ) -> None:
+        """Set a callback invoked whenever a tracked task snapshot changes."""
+        self._on_state_change = callback
 
     @property
     def available_profiles(self) -> list[str]:
@@ -236,6 +267,7 @@ class BackgroundAgentRunner:
         name: str,
         prompt: str,
         profile: str | None = None,
+        task_type: TaskType = TaskType.LOCAL_AGENT,
         system_prompt: str | None = None,
         tools: list[Any] | None = None,
         context_messages: list[Message] | None = None,
@@ -243,6 +275,7 @@ class BackgroundAgentRunner:
         max_turns: int | None = None,
         model: str | None = None,
         runtime_overrides: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> str:
         """Spawn a background agent task. Returns the task ID immediately.
 
@@ -272,7 +305,19 @@ class BackgroundAgentRunner:
         final_prompt = system_prompt if system_prompt is not None else resolved_prompt
         final_turns = max_turns if max_turns is not None else resolved_turns
 
-        task_id = generate_task_id(TaskType.LOCAL_AGENT)
+        task_id = generate_task_id(task_type)
+        transcript_file = str(self._transcript_path_for(task_id))
+        task_metadata = self._merge_task_metadata(
+            metadata,
+            {
+                "promptPreview": prompt[:400],
+                "profile": profile or "",
+                "model": model or "",
+                "workerName": name,
+                "canResume": True,
+                "resumeCount": int((metadata or {}).get("resumeCount", 0) or 0),
+            },
+        )
 
         self._task_manager.submit(
             lambda: self._run_agent_task(
@@ -289,10 +334,14 @@ class BackgroundAgentRunner:
             ),
             name=name,
             task_id=task_id,
+            task_type=task_type,
+            transcript_file=transcript_file,
+            metadata=task_metadata,
         )
         info = self._task_manager.get_status(task_id)
         if info is not None:
             info.output_file = str(self._output_path_for(task_id))
+            info.transcript_file = transcript_file
         self._task_contexts[task_id] = _TaskRuntimeContext(
             system_prompt=final_prompt,
             tools=list(final_tools or []),
@@ -301,6 +350,27 @@ class BackgroundAgentRunner:
             max_turns=final_turns,
             model=model or "",
             runtime_overrides=dict(runtime_overrides or {}),
+            task_type=task_type,
+            profile=profile or "",
+            transcript_file=transcript_file,
+            metadata=task_metadata,
+        )
+        self._append_transcript_entry(
+            task_id,
+            role="user",
+            content=prompt,
+            metadata={
+                "event": "spawn",
+                "name": name,
+                "task_type": task_type.value,
+                "profile": profile or "",
+            },
+        )
+        self._update_task_snapshot(
+            task_id,
+            metadata_updates=task_metadata,
+            output_file=str(self._output_path_for(task_id)),
+            transcript_file=transcript_file,
         )
         logger.info(
             "Spawned background agent task: %s (%s) profile=%s tools=%d",
@@ -310,6 +380,237 @@ class BackgroundAgentRunner:
 
     def _output_path_for(self, task_id: str) -> Path:
         return mini_agent_path("task_outputs", f"{task_id}.md")
+
+    def _transcript_path_for(self, task_id: str) -> Path:
+        return mini_agent_path("task_transcripts", f"{task_id}.jsonl")
+
+    def _append_transcript_entry(
+        self,
+        task_id: str,
+        *,
+        role: str,
+        content: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> str:
+        path = self._transcript_path_for(task_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "ts": time.time(),
+            "task_id": task_id,
+            "role": role,
+            "content": content,
+            "metadata": dict(metadata or {}),
+        }
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+        return str(path)
+
+    @staticmethod
+    def _merge_task_metadata(
+        base: dict[str, Any] | None,
+        updates: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        merged = dict(base or {})
+        if updates:
+            merged.update(updates)
+        return merged
+
+    def _update_task_snapshot(
+        self,
+        task_id: str,
+        *,
+        metadata_updates: dict[str, Any] | None = None,
+        output_file: str | None = None,
+        transcript_file: str | None = None,
+    ) -> TaskInfo | None:
+        info = self._task_manager.get_status(task_id)
+        if info is None:
+            return None
+        if metadata_updates:
+            info.metadata.update(metadata_updates)
+        if output_file is not None:
+            info.output_file = output_file
+        if transcript_file is not None:
+            info.transcript_file = transcript_file
+        info.updated_at = int(time.time() * 1000)
+        if self._on_state_change is not None:
+            snapshot = self._task_snapshot(info)
+            maybe = self._on_state_change(snapshot)
+            if asyncio.iscoroutine(maybe):
+                asyncio.create_task(maybe)
+        return info
+
+    async def _execute_task_turn(
+        self,
+        *,
+        task_id: str,
+        prompt: str,
+        system_prompt: str,
+        tools: list[Any] | None,
+        parent_messages: list[Message] | None,
+        initial_messages: list[Message] | None,
+        max_turns: int,
+        model: str,
+        runtime_overrides: dict[str, Any],
+        runtime_context: _TaskRuntimeContext,
+        active_provider: Any,
+    ) -> str:
+        if runtime_context.task_type == TaskType.REMOTE_AGENT or runtime_context.metadata.get("isolation") == "remote":
+            remote_agent = await self._ensure_remote_agent(
+                task_id=task_id,
+                runtime=runtime_context,
+                system_prompt=system_prompt,
+                tools=tools,
+                max_turns=max_turns,
+                model=model,
+            )
+            reply = ""
+            error = ""
+            async for event in remote_agent.query(
+                prompt,
+                conversation_id=runtime_context.remote_conversation_id or task_id,
+                metadata={
+                    "source": "embedded-remote-agent",
+                    "remote_task_id": task_id,
+                },
+            ):
+                event_type = event.__class__.__name__
+                if event_type == "CompletionEvent":
+                    reply = str(getattr(event, "text", "") or "")
+                elif event_type == "ErrorEvent":
+                    error = str(getattr(event, "error", "") or "")
+            if error:
+                raise RuntimeError(error)
+            return reply
+
+        return await run_subagent(
+            provider=active_provider,
+            system_prompt=system_prompt,
+            user_text=prompt,
+            tools=tools,
+            parent_messages=parent_messages,
+            initial_messages=initial_messages,
+            max_turns=max_turns,
+            agent_id=task_id,
+            conversation_id=task_id,
+            query_source=str(runtime_overrides.get("query_source", "") or ""),
+            runtime_overrides=runtime_overrides,
+        )
+
+    def _task_snapshot(self, info: TaskInfo) -> dict[str, Any]:
+        metadata = dict(getattr(info, "metadata", {}) or {})
+        return {
+            "id": info.id,
+            "type": info.type.value if isinstance(info.type, TaskType) else str(info.type),
+            "status": info.status.value if isinstance(info.status, TaskStatus) else str(info.status),
+            "description": info.description,
+            "outputFile": str(info.output_file or ""),
+            "transcriptFile": str(getattr(info, "transcript_file", "") or ""),
+            "startTime": int(info.start_time or 0),
+            "endTime": int(info.end_time or 0) if info.end_time is not None else None,
+            "updatedAt": int(getattr(info, "updated_at", info.start_time or 0) or 0),
+            "toolUseId": str(info.tool_use_id or ""),
+            "result": str(info.result or ""),
+            "error": str(info.error or ""),
+            "resumeCount": int(metadata.get("resumeCount", 0) or 0),
+            "canResume": bool(metadata.get("canResume", True)),
+            "promptPreview": str(metadata.get("promptPreview", "") or ""),
+            "model": str(metadata.get("model", "") or ""),
+            "profile": str(metadata.get("profile", "") or ""),
+            "workerName": str(metadata.get("workerName", "") or ""),
+            "teamName": str(metadata.get("teamName", "") or ""),
+            "backendType": str(metadata.get("backendType", "") or ""),
+            "isolation": str(metadata.get("isolation", "") or ""),
+            "agentType": str(metadata.get("agentType", "") or ""),
+            "subagentType": str(metadata.get("subagentType", "") or ""),
+            "metadata": metadata,
+        }
+
+    async def _ensure_remote_agent(
+        self,
+        *,
+        task_id: str,
+        runtime: _TaskRuntimeContext,
+        system_prompt: str,
+        tools: list[Any] | None,
+        max_turns: int,
+        model: str,
+    ) -> Any:
+        if runtime.remote_agent is not None:
+            return runtime.remote_agent
+
+        from copy import deepcopy
+
+        from ..agent import AgentConfig
+        from ..factory import create_agent
+
+        spec = dict((runtime.runtime_overrides or {}).get("remote_executor_spec", {}) or {})
+        config_obj = spec.get("config")
+        if isinstance(config_obj, AgentConfig):
+            config_copy = deepcopy(config_obj)
+        else:
+            config_copy = AgentConfig()
+        config_copy.max_turns = max_turns
+
+        conversation_id = str(spec.get("conversation_id", "") or f"remote-{task_id}").strip()
+        provider = spec.get("provider", self._provider)
+        if model:
+            from ..providers import ProviderConfig, create_provider
+
+            provider_config = getattr(provider, "_config", None)
+            if isinstance(provider_config, ProviderConfig):
+                provider = create_provider(
+                    ProviderConfig(
+                        type=provider_config.type,
+                        model=model,
+                        api_key=provider_config.api_key,
+                        base_url=provider_config.base_url,
+                    )
+                )
+        effective_tools = list(spec.get("tools", tools or []))
+        remote_agent = create_agent(
+            provider=provider,
+            system_prompt=spec.get("system_prompt", system_prompt),
+            tools=effective_tools,
+            sub_agent_tools=list(spec.get("sub_agent_tools", []) or []),
+            tool_profiles=dict(spec.get("tool_profiles", {}) or {}),
+            hooks=list(spec.get("hooks", []) or []),
+            config=config_copy,
+            conversation_id=conversation_id,
+            agent_id=f"remote-task-{task_id}",
+            attachment_collector=spec.get("attachment_collector"),
+            fallback_config=spec.get("fallback_config"),
+            token_budget=spec.get("token_budget"),
+            summary_provider=spec.get("summary_provider"),
+            skill_prefetch=spec.get("skill_prefetch"),
+            use_default_tools=False,
+        )
+        await remote_agent.start()
+        runtime.remote_agent = remote_agent
+        runtime.remote_conversation_id = conversation_id
+        runtime.metadata = self._merge_task_metadata(
+            runtime.metadata,
+            {
+                "backendType": runtime.metadata.get("backendType", "embedded-remote"),
+                "isolation": runtime.metadata.get("isolation", "remote"),
+                "remoteConversationId": conversation_id,
+            },
+        )
+        self._update_task_snapshot(
+            task_id,
+            metadata_updates=runtime.metadata,
+        )
+        return remote_agent
+
+    async def _shutdown_remote_agent(self, runtime: _TaskRuntimeContext | None) -> None:
+        if runtime is None or runtime.remote_agent is None:
+            return
+        try:
+            with contextlib.suppress(Exception):
+                runtime.remote_agent.cancel_submit()
+            await runtime.remote_agent.stop()
+        finally:
+            runtime.remote_agent = None
 
     def _write_output_file(
         self,
@@ -323,11 +624,16 @@ class BackgroundAgentRunner:
     ) -> str:
         path = self._output_path_for(task_id)
         path.parent.mkdir(parents=True, exist_ok=True)
+        info = self._task_manager.get_status(task_id)
+        metadata = dict(getattr(info, "metadata", {}) or {})
+        transcript_file = str(getattr(info, "transcript_file", "") or self._transcript_path_for(task_id))
         body = [
             f"# Task {task_id}",
             "",
             f"- name: {name}",
             f"- status: {status}",
+            f"- transcript: {transcript_file}",
+            f"- resumes: {int(metadata.get('resumeCount', 0) or 0)}",
             "",
             "## Prompt",
             "",
@@ -375,11 +681,22 @@ class BackgroundAgentRunner:
     def list_active(self) -> list[TaskInfo]:
         return self._task_manager.list_tasks()
 
+    def list_task_snapshots(self, *, include_completed: bool = True) -> list[dict[str, Any]]:
+        tasks = self._task_manager.list_tasks(include_completed=include_completed)
+        return [self._task_snapshot(task) for task in tasks]
+
     def cancel(self, task_id: str) -> bool:
         task = self._task_manager.get_status(task_id)
         cancelled = self._task_manager.cancel(task_id)
         if not cancelled or task is None:
             return cancelled
+        runtime = self._task_contexts.get(task_id)
+        if runtime is not None:
+            runtime.metadata = self._merge_task_metadata(
+                runtime.metadata,
+                {"canResume": False},
+            )
+            asyncio.create_task(self._shutdown_remote_agent(runtime))
         result = BackgroundResult(
             task_id=task_id,
             name=task.description,
@@ -387,6 +704,11 @@ class BackgroundAgentRunner:
             status="killed",
             error="Task was stopped",
             output_file=str(getattr(task, "output_file", "") or ""),
+            transcript_file=str(getattr(task, "transcript_file", "") or ""),
+            worker_name=str((getattr(task, "metadata", {}) or {}).get("workerName", "") or task.description),
+            team_name=str((getattr(task, "metadata", {}) or {}).get("teamName", "") or ""),
+            task_type=str(getattr(task.type, "value", task.type)),
+            isolation=str((getattr(task, "metadata", {}) or {}).get("isolation", "") or ""),
         )
         self._completion_queue.put_nowait(result)
         if self._on_complete is not None:
@@ -395,6 +717,8 @@ class BackgroundAgentRunner:
 
     async def cancel_all(self) -> None:
         await self._task_manager.cancel_all()
+        for runtime in list(self._task_contexts.values()):
+            await self._shutdown_remote_agent(runtime)
 
     def resolve_task_ref(self, task_ref: str) -> str | None:
         """Resolve a task id or human-readable spawn name to the canonical task id."""
@@ -431,6 +755,29 @@ class BackgroundAgentRunner:
 
         if task.status == TaskStatus.RUNNING:
             self._pending_messages.setdefault(task_id, []).append(message)
+            next_resume_count = int((task.metadata or {}).get("resumeCount", 0) or 0) + 1
+            self._append_transcript_entry(
+                task_id,
+                role="user",
+                content=message,
+                metadata={"event": "queued_followup", "resumeCount": next_resume_count},
+            )
+            self._update_task_snapshot(
+                task_id,
+                metadata_updates={
+                    "resumeCount": next_resume_count,
+                    "canResume": True,
+                },
+            )
+            runtime = self._task_contexts.get(task_id)
+            if runtime is not None:
+                runtime.metadata = self._merge_task_metadata(
+                    runtime.metadata,
+                    {
+                        "resumeCount": next_resume_count,
+                        "canResume": True,
+                    },
+                )
             logger.info("Queued message for running task %s", task_id)
             return True
 
@@ -454,6 +801,11 @@ class BackgroundAgentRunner:
             initial_messages=[],
             max_turns=10,
         )
+        existing = self._task_manager.get_status(task_id)
+        current_resume_count = 0
+        if existing is not None:
+            current_resume_count = int((existing.metadata or {}).get("resumeCount", 0) or 0)
+        next_resume_count = current_resume_count + 1
         # Keep TaskInfo.description as the stable spawn name so name-based SendMessage works after resume.
         self._task_manager.submit(
             lambda: self._run_agent_task(
@@ -471,6 +823,39 @@ class BackgroundAgentRunner:
             name=f"{stable_name} (resumed)",
             task_id=task_id,
             description=stable_name,
+            task_type=runtime.task_type,
+            transcript_file=runtime.transcript_file,
+            metadata=self._merge_task_metadata(
+                runtime.metadata,
+                {
+                    "canResume": True,
+                    "resumeCount": next_resume_count,
+                    "workerName": stable_name,
+                },
+            ),
+        )
+        self._append_transcript_entry(
+            task_id,
+            role="user",
+            content=message,
+            metadata={"event": "resume", "resumeCount": next_resume_count},
+        )
+        self._update_task_snapshot(
+            task_id,
+            metadata_updates={
+                "resumeCount": next_resume_count,
+                "workerName": stable_name,
+                "canResume": True,
+            },
+            transcript_file=runtime.transcript_file or str(self._transcript_path_for(task_id)),
+        )
+        runtime.metadata = self._merge_task_metadata(
+            runtime.metadata,
+            {
+                "resumeCount": next_resume_count,
+                "workerName": stable_name,
+                "canResume": True,
+            },
         )
         logger.info("Resumed agent task %s with new message", task_id)
 
@@ -492,6 +877,7 @@ class BackgroundAgentRunner:
         history: list[Message],
         max_turns: int,
         runtime_overrides: dict[str, Any],
+        runtime_context: _TaskRuntimeContext,
         reply_ref: list[str],
     ) -> bool:
         """Run queued follow-ups until quiescent; updates ``history`` and ``reply_ref[0]``.
@@ -503,22 +889,36 @@ class BackgroundAgentRunner:
             pending = self.get_pending_messages(task_id)
             if pending:
                 for followup in pending:
-                    reply = await run_subagent(
-                        provider=active_provider,
+                    reply = await self._execute_task_turn(
+                        task_id=task_id,
+                        prompt=followup,
                         system_prompt=system_prompt,
-                        user_text=followup,
                         tools=tools,
                         parent_messages=history,
                         initial_messages=None,
                         max_turns=max_turns,
-                        agent_id=task_id,
-                        query_source=str(runtime_overrides.get("query_source", "") or ""),
+                        model=runtime_context.model,
                         runtime_overrides=runtime_overrides,
+                        runtime_context=runtime_context,
+                        active_provider=active_provider,
                     )
-                    history.extend([
-                        user_message(followup),
-                        assistant_message(reply),
-                    ])
+                    if runtime_context.task_type != TaskType.REMOTE_AGENT:
+                        history.extend([
+                            user_message(followup),
+                            assistant_message(reply),
+                        ])
+                    self._append_transcript_entry(
+                        task_id,
+                        role="user",
+                        content=followup,
+                        metadata={"event": "followup"},
+                    )
+                    self._append_transcript_entry(
+                        task_id,
+                        role="assistant",
+                        content=reply,
+                        metadata={"event": "followup_reply"},
+                    )
                     reply_ref[0] = reply
                     did_any = True
                 continue
@@ -561,9 +961,19 @@ class BackgroundAgentRunner:
                 history=history,
                 max_turns=max_turns,
                 runtime_overrides=runtime_overrides,
+                runtime_context=self._task_contexts.get(task_id) or _TaskRuntimeContext(
+                    system_prompt=system_prompt,
+                    tools=list(tools or []),
+                    max_turns=max_turns,
+                    model=model,
+                    runtime_overrides=dict(runtime_overrides),
+                ),
                 reply_ref=reply_ref,
             )
             if worked:
+                runtime_ctx = self._task_contexts.get(task_id)
+                task_info = self._task_manager.get_status(task_id)
+                metadata = dict(getattr(task_info, "metadata", {}) or getattr(runtime_ctx, "metadata", {}) or {})
                 output_path = self._write_output_file(
                     task_id,
                     name=name,
@@ -579,7 +989,14 @@ class BackgroundAgentRunner:
                     status="completed",
                     reply=reply_ref[0],
                     output_file=output_path,
+                    transcript_file=str(getattr(task_info, "transcript_file", "") or getattr(runtime_ctx, "transcript_file", "")),
                     duration_ms=_dur_ms,
+                    worker_name=str(metadata.get("workerName", "") or name),
+                    team_name=str(metadata.get("teamName", "") or ""),
+                    task_type=str(
+                        getattr(getattr(task_info, "type", None), "value", getattr(runtime_ctx, "task_type", ""))
+                    ),
+                    isolation=str(metadata.get("isolation", "") or ""),
                 )
                 self._task_contexts[task_id] = _TaskRuntimeContext(
                     system_prompt=system_prompt,
@@ -589,6 +1006,18 @@ class BackgroundAgentRunner:
                     max_turns=max_turns,
                     model=model,
                     runtime_overrides=dict(runtime_overrides),
+                    task_type=getattr(runtime_ctx, "task_type", TaskType.LOCAL_AGENT),
+                    profile=str(getattr(runtime_ctx, "profile", "") or ""),
+                    transcript_file=str(getattr(task_info, "transcript_file", "") or getattr(runtime_ctx, "transcript_file", "")),
+                    metadata=metadata,
+                    remote_agent=getattr(runtime_ctx, "remote_agent", None),
+                    remote_conversation_id=str(getattr(runtime_ctx, "remote_conversation_id", "") or ""),
+                )
+                self._update_task_snapshot(
+                    task_id,
+                    metadata_updates=metadata,
+                    output_file=output_path,
+                    transcript_file=result.transcript_file,
                 )
                 await self._completion_queue.put(result)
 
@@ -626,6 +1055,30 @@ class BackgroundAgentRunner:
         """Execute a sub-agent run and deliver the result to the queue."""
         _started = time.monotonic()
         worktree = runtime_overrides.get("agent_worktree")
+        task_info = self._task_manager.get_status(task_id)
+        task_metadata = dict(getattr(task_info, "metadata", {}) or {})
+        transcript_file = str(
+            getattr(task_info, "transcript_file", "") or self._transcript_path_for(task_id)
+        )
+        task_type_value = str(getattr(getattr(task_info, "type", None), "value", "") or "")
+        runtime_context = self._task_contexts.get(task_id) or _TaskRuntimeContext(
+            system_prompt=system_prompt,
+            tools=list(tools or []),
+            context_messages=list(context_messages or []),
+            initial_messages=list(initial_messages or []),
+            max_turns=max_turns,
+            model=model,
+            runtime_overrides=dict(runtime_overrides),
+            task_type=getattr(task_info, "type", TaskType.LOCAL_AGENT) if task_info is not None else TaskType.LOCAL_AGENT,
+            profile=str(task_metadata.get("profile", "") or ""),
+            transcript_file=transcript_file,
+            metadata=task_metadata,
+        )
+        self._update_task_snapshot(
+            task_id,
+            metadata_updates=task_metadata,
+            transcript_file=transcript_file,
+        )
         try:
             active_provider = self._provider
             if model:
@@ -640,23 +1093,31 @@ class BackgroundAgentRunner:
                         base_url=parent_config.base_url,
                     ))
             history = list(context_messages or [])
-            reply = await run_subagent(
-                provider=active_provider,
+            reply = await self._execute_task_turn(
+                task_id=task_id,
+                prompt=prompt,
                 system_prompt=system_prompt,
-                user_text=prompt,
                 tools=tools,
                 parent_messages=context_messages,
                 initial_messages=initial_messages,
                 max_turns=max_turns,
-                agent_id=task_id,
-                query_source=str(runtime_overrides.get("query_source", "") or ""),
+                model=model,
                 runtime_overrides=runtime_overrides,
+                runtime_context=runtime_context,
+                active_provider=active_provider,
             )
             if initial_messages:
                 history.extend(initial_messages)
             elif prompt:
                 history.append(user_message(prompt))
-            history.append(assistant_message(reply))
+            if runtime_context.task_type != TaskType.REMOTE_AGENT:
+                history.append(assistant_message(reply))
+            self._append_transcript_entry(
+                task_id,
+                role="assistant",
+                content=reply,
+                metadata={"event": "completion"},
+            )
 
             reply_ref = [reply]
             await self._drain_followups_quiescent(
@@ -667,6 +1128,7 @@ class BackgroundAgentRunner:
                 history=history,
                 max_turns=max_turns,
                 runtime_overrides=runtime_overrides,
+                runtime_context=runtime_context,
                 reply_ref=reply_ref,
             )
 
@@ -692,6 +1154,7 @@ class BackgroundAgentRunner:
                 history=history,
                 max_turns=max_turns,
                 runtime_overrides=runtime_overrides,
+                runtime_context=runtime_context,
                 reply_ref=reply_ref,
             )
 
@@ -703,6 +1166,12 @@ class BackgroundAgentRunner:
                 max_turns=max_turns,
                 model=model,
                 runtime_overrides=dict(runtime_overrides),
+                task_type=getattr(task_info, "type", TaskType.LOCAL_AGENT) if task_info is not None else TaskType.LOCAL_AGENT,
+                profile=str(task_metadata.get("profile", "") or ""),
+                transcript_file=transcript_file,
+                metadata=task_metadata,
+                remote_agent=runtime_context.remote_agent,
+                remote_conversation_id=runtime_context.remote_conversation_id,
             )
 
             result: BackgroundResult
@@ -723,7 +1192,18 @@ class BackgroundAgentRunner:
                     status="completed",
                     reply=reply_ref[0],
                     output_file=output_path,
+                    transcript_file=transcript_file,
                     duration_ms=_dur_ms,
+                    worker_name=str(task_metadata.get("workerName", "") or name),
+                    team_name=str(task_metadata.get("teamName", "") or ""),
+                    task_type=task_type_value,
+                    isolation=str(task_metadata.get("isolation", "") or ""),
+                )
+                self._update_task_snapshot(
+                    task_id,
+                    metadata_updates=task_metadata,
+                    output_file=output_path,
+                    transcript_file=transcript_file,
                 )
                 await self._completion_queue.put(result)
 
@@ -741,6 +1221,13 @@ class BackgroundAgentRunner:
                     history=history,
                     max_turns=max_turns,
                     runtime_overrides=runtime_overrides,
+                    runtime_context=self._task_contexts.get(task_id) or _TaskRuntimeContext(
+                        system_prompt=system_prompt,
+                        tools=list(tools or []),
+                        max_turns=max_turns,
+                        model=model,
+                        runtime_overrides=dict(runtime_overrides),
+                    ),
                     reply_ref=reply_ref,
                 )
                 if worked:
@@ -813,6 +1300,12 @@ class BackgroundAgentRunner:
                         runtime_overrides.pop("working_directory", None)
                 except Exception:
                     logger.warning("Failed to clean up agent worktree for task %s", task_id, exc_info=True)
+            self._append_transcript_entry(
+                task_id,
+                role="system",
+                content=str(exc),
+                metadata={"event": "error"},
+            )
             output_path = self._write_output_file(
                 task_id,
                 name=name,
@@ -828,12 +1321,20 @@ class BackgroundAgentRunner:
                 status="failed",
                 error=str(exc),
                 output_file=output_path,
+                transcript_file=transcript_file,
                 duration_ms=_dur_ms,
+                worker_name=str(task_metadata.get("workerName", "") or name),
+                team_name=str(task_metadata.get("teamName", "") or ""),
+                task_type=task_type_value,
+                isolation=str(task_metadata.get("isolation", "") or ""),
             )
 
         info = self._task_manager.get_status(task_id)
         if info is not None:
             info.output_file = output_path
+            info.transcript_file = transcript_file
+            info.metadata.update(task_metadata)
+            info.updated_at = int(time.time() * 1000)
 
         if not result.success:
             try:

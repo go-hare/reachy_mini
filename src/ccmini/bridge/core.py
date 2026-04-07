@@ -167,6 +167,8 @@ class BridgeServer:
         app.router.add_get("/bridge/status", self._aiohttp_handle_status)
         app.router.add_get("/api/kairos/inbox", self._aiohttp_kairos_inbox)
         app.router.add_get("/api/tasks", self._aiohttp_tasks)
+        app.router.add_post("/api/tasks/control", self._aiohttp_task_control)
+        app.router.add_get("/api/tasks/transcript", self._aiohttp_task_transcript)
 
         self._runner = web.AppRunner(app)
         await self._runner.setup()
@@ -439,6 +441,9 @@ class BridgeServer:
         records = [record for record in board.list() if not record.metadata.get("_internal")]
         resolved_ids = {record.id for record in records if record.status == "completed"}
         plan_state = get_plan_state()
+        runtime_snapshot = self._api.get_runtime_snapshot(session_id) if session_id else None
+        if not isinstance(runtime_snapshot, dict):
+            runtime_snapshot = {}
 
         payload_tasks: list[dict[str, Any]] = []
         for record in records:
@@ -455,6 +460,8 @@ class BridgeServer:
                 "task_list_id": task_list_id or session_id or "",
                 "tasks": payload_tasks,
                 "include_completed": include_completed,
+                "backgroundTasks": runtime_snapshot.get("backgroundTasks", []),
+                "team": runtime_snapshot.get("team", {}),
                 "planState": {
                     "isActive": bool(plan_state.is_active),
                     "planText": str(plan_state.plan_text or ""),
@@ -541,6 +548,57 @@ class BridgeServer:
                 "sessions": self._api.list_sessions(),
             }
         )
+
+    async def _aiohttp_task_control(self, request: Any) -> Any:
+        from aiohttp import web
+
+        if not self._is_http_authorized(request):
+            return web.json_response({"error": "Unauthorized"}, status=401)
+
+        try:
+            payload = await request.json()
+        except Exception as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+
+        if not isinstance(payload, dict):
+            return web.json_response({"error": "Request body must be a JSON object"}, status=400)
+
+        session_id = str(payload.get("session_id", "") or "").strip()
+        task_id = str(payload.get("task_id", "") or "").strip()
+        action = str(payload.get("action", "") or "").strip()
+        extra = payload.get("payload", {})
+        if not session_id or not task_id or not action:
+            return web.json_response({"error": "session_id, task_id, and action are required"}, status=400)
+        if not isinstance(extra, dict):
+            extra = {}
+
+        result = await self._api.control_runtime_task(
+            session_id,
+            task_id=task_id,
+            action=action,
+            payload=extra,
+        )
+        status = 200 if bool(result.get("ok", False)) else 400
+        return web.json_response(result, status=status)
+
+    async def _aiohttp_task_transcript(self, request: Any) -> Any:
+        from aiohttp import web
+
+        if not self._is_http_authorized(request):
+            return web.json_response({"error": "Unauthorized"}, status=401)
+
+        session_id = str(request.query.get("session_id", "") or "").strip()
+        task_id = str(request.query.get("task_id", "") or "").strip()
+        try:
+            limit = max(1, min(1000, int(request.query.get("limit", "200") or 200)))
+        except ValueError:
+            limit = 200
+        if not session_id or not task_id:
+            return web.json_response({"error": "session_id and task_id are required"}, status=400)
+
+        result = self._api.get_runtime_transcript(session_id, task_id=task_id, limit=limit)
+        status = 200 if bool(result.get("ok", False)) else 404
+        return web.json_response(result, status=status)
 
     # ── Heartbeat loop ──────────────────────────────────────────────
 

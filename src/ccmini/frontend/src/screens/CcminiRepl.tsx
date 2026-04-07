@@ -11,6 +11,7 @@ import {
 import { useTextInput } from '../hooks/useTextInput.js'
 import { useDeclaredCursor } from '../ink/hooks/use-declared-cursor.js'
 import {
+  type CcminiBackgroundTask,
   type CcminiConnectConfig,
   type CcminiPendingToolCall,
   type CcminiPendingToolRequest,
@@ -18,6 +19,8 @@ import {
   type CcminiRemoteContent,
   type CcminiSpeculationState,
   type CcminiTaskBoardTask,
+  type CcminiTeamMember,
+  type CcminiTeamState,
   type CcminiToolResultInput,
 } from '../ccmini/bridgeTypes.js'
 import { CcminiSessionManager } from '../ccmini/CcminiSessionManager.js'
@@ -79,6 +82,20 @@ type AskUserQuestionAnswer = {
 type RecentImeCandidate = {
   text: string
   at: number
+}
+
+type CcminiTaskNotification = {
+  taskId: string
+  status: string
+  summary: string
+  result: string
+  reason: string
+  outputFile: string
+  transcriptFile: string
+  workerName: string
+  teamName: string
+  taskType: string
+  isolation: string
 }
 
 const WELCOME_WIDTH = 58
@@ -286,6 +303,95 @@ function applyBackground(text: string, color: string): string {
   }
 
   return text
+}
+
+function decodeXmlText(value: string): string {
+  return value
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&')
+}
+
+function extractXmlTagValue(xml: string, tagName: string): string {
+  const match = xml.match(new RegExp(`<${tagName}>([\\s\\S]*?)</${tagName}>`, 'i'))
+  return match ? decodeXmlText(match[1]!.trim()) : ''
+}
+
+function parseTaskNotificationXml(raw: string): CcminiTaskNotification | null {
+  const xml = raw.trim()
+  if (!xml.startsWith('<task-notification>')) {
+    return null
+  }
+
+  return {
+    taskId: extractXmlTagValue(xml, 'task-id'),
+    status: extractXmlTagValue(xml, 'status') || 'completed',
+    summary: extractXmlTagValue(xml, 'summary'),
+    result: extractXmlTagValue(xml, 'result'),
+    reason: extractXmlTagValue(xml, 'reason'),
+    outputFile: extractXmlTagValue(xml, 'output_file'),
+    transcriptFile: extractXmlTagValue(xml, 'transcript_file'),
+    workerName: extractXmlTagValue(xml, 'worker_name'),
+    teamName: extractXmlTagValue(xml, 'team_name'),
+    taskType: extractXmlTagValue(xml, 'task_type'),
+    isolation: extractXmlTagValue(xml, 'isolation'),
+  }
+}
+
+function getMessageRawText(message: MessageType): string {
+  switch (message.type) {
+    case 'user': {
+      const content = message.message.content
+      return typeof content === 'string'
+        ? content
+        : extractCcminiTextContent(
+            content as Array<{ type: string; text?: string }>,
+            '\n',
+          )
+    }
+    case 'assistant': {
+      const content = message.message?.content
+      if (typeof content === 'string') {
+        return content
+      }
+      if (Array.isArray(content)) {
+        return extractCcminiTextContent(
+          content as Array<{ type: string; text?: string }>,
+          '\n',
+        )
+      }
+      return stringifyUnknown(content)
+    }
+    case 'system': {
+      const content = (message as { content?: unknown; message?: unknown }).content
+      return String(content ?? (message as { message?: unknown }).message ?? '')
+    }
+    case 'thinking':
+      return String((message as MessageType & { thinking?: unknown }).thinking ?? '')
+    case 'progress':
+      return String(getProgressPayload(message)?.content ?? '')
+    default:
+      return stringifyUnknown(message)
+  }
+}
+
+function getTaskNotificationStatusColor(
+  notification: CcminiTaskNotification | CcminiBackgroundTask | CcminiTeamMember,
+  theme: ReturnType<typeof getThemeTokens>,
+): string {
+  const status = String(notification.status ?? '').toLowerCase()
+  if (status === 'completed' || status === 'idle') {
+    return theme.permission
+  }
+  if (status === 'failed') {
+    return theme.error
+  }
+  if (status === 'killed' || status === 'shutdown') {
+    return theme.warning
+  }
+  return theme.claude
 }
 
 function trimMessageLines(lines: string[], maxLines = 4): string[] {
@@ -2467,6 +2573,19 @@ function normalizePlannerTaskStatus(value: unknown): PlannerTaskStatus {
   return 'pending'
 }
 
+function normalizeBackgroundTaskStatus(value: unknown): CcminiBackgroundTask['status'] {
+  if (
+    value === 'pending' ||
+    value === 'running' ||
+    value === 'completed' ||
+    value === 'failed' ||
+    value === 'killed'
+  ) {
+    return value
+  }
+  return 'pending'
+}
+
 function parsePlannerTask(value: unknown): PlannerTask | null {
   const record = asRecord(value)
   if (!record) {
@@ -2951,6 +3070,204 @@ function TaskBoardPanel({
   )
 }
 
+function WorkerBadge({
+  label,
+  themeSetting,
+}: {
+  label: string
+  themeSetting: ThemeSetting
+}): React.ReactNode {
+  const theme = getThemeTokens(themeSetting)
+
+  return (
+    <Text color={theme.permission}>{`@${label}`}</Text>
+  )
+}
+
+function TaskNotificationCard({
+  notification,
+  themeSetting,
+  width,
+}: {
+  notification: CcminiTaskNotification
+  themeSetting: ThemeSetting
+  width: number
+}): React.ReactNode {
+  const theme = getThemeTokens(themeSetting)
+  const statusColor = getTaskNotificationStatusColor(notification, theme)
+  const title = notification.summary || `Task ${notification.taskId || 'update'}`
+  const detail = notification.result || notification.reason || ''
+
+  return (
+    <MessageResponseFlow>
+      <Box flexDirection="column">
+        <Text color={statusColor} wrap="wrap">
+          {truncateInlineText(
+            `[task ${notification.status}] ${title}`,
+            Math.max(24, width),
+          )}
+        </Text>
+        <Box marginLeft={2} flexDirection="column">
+          <Text dimColor wrap="wrap">
+            {[
+              notification.taskId ? `id: ${notification.taskId}` : '',
+              notification.taskType ? `type: ${notification.taskType}` : '',
+              notification.isolation ? `isolation: ${notification.isolation}` : '',
+            ]
+              .filter(Boolean)
+              .join(' · ')}
+          </Text>
+          {notification.workerName ? (
+            <Text dimColor wrap="wrap">
+              Worker: <WorkerBadge label={notification.workerName} themeSetting={themeSetting} />
+              {notification.teamName ? ` in ${notification.teamName}` : ''}
+            </Text>
+          ) : null}
+          {detail ? (
+            <Text wrap="wrap">
+              {truncateInlineText(detail, Math.max(28, width))}
+            </Text>
+          ) : null}
+          {notification.outputFile ? (
+            <Text dimColor wrap="wrap">
+              {`output: ${truncateInlineText(notification.outputFile, Math.max(24, width))}`}
+            </Text>
+          ) : null}
+          {notification.transcriptFile ? (
+            <Text dimColor wrap="wrap">
+              {`transcript: ${truncateInlineText(notification.transcriptFile, Math.max(24, width))}`}
+            </Text>
+          ) : null}
+        </Box>
+      </Box>
+    </MessageResponseFlow>
+  )
+}
+
+function BackgroundAgentsPanel({
+  tasks,
+  themeSetting,
+  width,
+}: {
+  tasks: CcminiBackgroundTask[]
+  themeSetting: ThemeSetting
+  width: number
+}): React.ReactNode {
+  const theme = getThemeTokens(themeSetting)
+  const ordered = [...tasks].sort((left, right) => {
+    const leftRank = left.status === 'running' ? 0 : left.status === 'pending' ? 1 : 2
+    const rightRank = right.status === 'running' ? 0 : right.status === 'pending' ? 1 : 2
+    if (leftRank !== rightRank) {
+      return leftRank - rightRank
+    }
+    return (right.updatedAt ?? 0) - (left.updatedAt ?? 0)
+  })
+  const runningCount = ordered.filter(task => task.status === 'running').length
+
+  return (
+    <Box marginTop={1} flexDirection="column">
+      <Text dimColor>
+        {applyForeground('Agents', theme.claude)}
+        <Text dimColor>{` · ${ordered.length} tracked (${runningCount} running)`}</Text>
+      </Text>
+      <Box flexDirection="column" marginTop={1}>
+        {ordered.slice(0, 6).map(task => (
+          <Box key={task.id} flexDirection="column" marginBottom={1}>
+            <Text color={getTaskNotificationStatusColor(task, theme)} wrap="wrap">
+              {truncateInlineText(
+                `${task.status} · ${task.workerName || task.description || task.id}`,
+                Math.max(24, width),
+              )}
+            </Text>
+            <Box marginLeft={2} flexDirection="column">
+              <Text dimColor wrap="wrap">
+                {[
+                  task.id,
+                  task.type,
+                  task.isolation || task.backendType || '',
+                  task.canResume ? 'follow-up ready' : '',
+                ]
+                  .filter(Boolean)
+                  .join(' · ')}
+              </Text>
+              {task.description ? (
+                <Text wrap="wrap">
+                  {truncateInlineText(task.description, Math.max(28, width))}
+                </Text>
+              ) : null}
+              {task.outputFile ? (
+                <Text dimColor wrap="wrap">
+                  {`output: ${truncateInlineText(task.outputFile, Math.max(24, width))}`}
+                </Text>
+              ) : null}
+            </Box>
+          </Box>
+        ))}
+      </Box>
+    </Box>
+  )
+}
+
+function TeamStatusPanel({
+  team,
+  themeSetting,
+  width,
+}: {
+  team: CcminiTeamState
+  themeSetting: ThemeSetting
+  width: number
+}): React.ReactNode {
+  const theme = getThemeTokens(themeSetting)
+  const members = [...team.members].sort((left, right) => {
+    const leftActive = left.isActive ? 0 : 1
+    const rightActive = right.isActive ? 0 : 1
+    if (leftActive !== rightActive) {
+      return leftActive - rightActive
+    }
+    return left.name.localeCompare(right.name)
+  })
+
+  return (
+    <Box marginTop={1} flexDirection="column">
+      <Text dimColor>
+        {applyForeground('Team', theme.claude)}
+        <Text dimColor>{` · ${team.name} (${team.activeCount ?? 0} active, ${team.teammateCount ?? 0} teammates)`}</Text>
+      </Text>
+      <Box flexDirection="column" marginTop={1}>
+        {members.slice(0, 5).map(member => (
+          <Box key={member.agentId} flexDirection="column" marginBottom={1}>
+            <Text color={getTaskNotificationStatusColor(member, theme)} wrap="wrap">
+              <WorkerBadge label={member.name} themeSetting={themeSetting} />
+              {` · ${member.status || (member.isActive ? 'active' : 'idle')}`}
+            </Text>
+            <Box marginLeft={2} flexDirection="column">
+              <Text dimColor wrap="wrap">
+                {[
+                  member.agentType || '',
+                  member.backendType || '',
+                  member.isIdle ? 'ready for follow-up' : '',
+                ]
+                  .filter(Boolean)
+                  .join(' · ')}
+              </Text>
+              {member.currentTask ? (
+                <Text wrap="wrap">
+                  {truncateInlineText(member.currentTask, Math.max(28, width))}
+                </Text>
+              ) : null}
+              {member.transcriptFile ? (
+                <Text dimColor wrap="wrap">
+                  {`transcript: ${truncateInlineText(member.transcriptFile, Math.max(24, width))}`}
+                </Text>
+              ) : null}
+            </Box>
+          </Box>
+        ))}
+      </Box>
+    </Box>
+  )
+}
+
 function getMessageToolUseId(message: MessageType): string | null {
   if (message.type === 'assistant') {
     return getAssistantToolUseBlock(message)?.id ?? null
@@ -3314,11 +3631,15 @@ function useCcminiTasksV2(
   sessionId: string,
 ): {
   tasks: CcminiTaskBoardTask[]
+  backgroundTasks: CcminiBackgroundTask[]
+  team: CcminiTeamState
   hidden: boolean
   error: string | null
   planState: PlanPanelState
 } {
   const [tasks, setTasks] = useState<CcminiTaskBoardTask[]>([])
+  const [backgroundTasks, setBackgroundTasks] = useState<CcminiBackgroundTask[]>([])
+  const [team, setTeam] = useState<CcminiTeamState>({ name: '', members: [] })
   const [hidden, setHidden] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [planState, setPlanState] = useState<PlanPanelState>({ mode: 'idle' })
@@ -3372,6 +3693,8 @@ function useCcminiTasksV2(
 
         const payload = (await response.json()) as {
           tasks?: unknown[]
+          backgroundTasks?: unknown[]
+          team?: unknown
           planState?: unknown
         }
         if (cancelled) {
@@ -3404,11 +3727,164 @@ function useCcminiTasksV2(
               .filter(task => task.id && task.subject)
           : []
         const nextPlanState = parseRuntimePlanPanelState(payload.planState)
+        const nextBackgroundTasks = Array.isArray(payload.backgroundTasks)
+          ? payload.backgroundTasks
+              .map(raw => asRecord(raw))
+              .filter((record): record is Record<string, unknown> => record !== null)
+              .map(record => ({
+                id: typeof record.id === 'string' ? record.id : '',
+                type: typeof record.type === 'string' ? record.type : 'local_agent',
+                status: normalizeBackgroundTaskStatus(record.status),
+                description:
+                  typeof record.description === 'string' ? record.description : '',
+                outputFile:
+                  typeof record.outputFile === 'string' ? record.outputFile : undefined,
+                transcriptFile:
+                  typeof record.transcriptFile === 'string'
+                    ? record.transcriptFile
+                    : undefined,
+                startTime:
+                  typeof record.startTime === 'number' ? record.startTime : undefined,
+                endTime:
+                  typeof record.endTime === 'number' ? record.endTime : null,
+                updatedAt:
+                  typeof record.updatedAt === 'number' ? record.updatedAt : undefined,
+                resumeCount:
+                  typeof record.resumeCount === 'number' ? record.resumeCount : 0,
+                canResume:
+                  typeof record.canResume === 'boolean' ? record.canResume : false,
+                promptPreview:
+                  typeof record.promptPreview === 'string'
+                    ? record.promptPreview
+                    : undefined,
+                model: typeof record.model === 'string' ? record.model : undefined,
+                profile:
+                  typeof record.profile === 'string' ? record.profile : undefined,
+                workerName:
+                  typeof record.workerName === 'string'
+                    ? record.workerName
+                    : undefined,
+                teamName:
+                  typeof record.teamName === 'string'
+                    ? record.teamName
+                    : undefined,
+                backendType:
+                  typeof record.backendType === 'string'
+                    ? record.backendType
+                    : undefined,
+                isolation:
+                  typeof record.isolation === 'string'
+                    ? record.isolation
+                    : undefined,
+                agentType:
+                  typeof record.agentType === 'string'
+                    ? record.agentType
+                    : undefined,
+                subagentType:
+                  typeof record.subagentType === 'string'
+                    ? record.subagentType
+                    : undefined,
+                result: typeof record.result === 'string' ? record.result : undefined,
+                error: typeof record.error === 'string' ? record.error : undefined,
+                metadata: asRecord(record.metadata) ?? undefined,
+              }))
+              .filter(task => task.id.length > 0)
+          : []
+        const teamRecord = asRecord(payload.team)
+        const nextTeam: CcminiTeamState = {
+          name:
+            typeof teamRecord?.name === 'string'
+              ? teamRecord.name
+              : '',
+          description:
+            typeof teamRecord?.description === 'string'
+              ? teamRecord.description
+              : undefined,
+          leadAgentId:
+            typeof teamRecord?.leadAgentId === 'string'
+              ? teamRecord.leadAgentId
+              : undefined,
+          leadSessionId:
+            typeof teamRecord?.leadSessionId === 'string'
+              ? teamRecord.leadSessionId
+              : undefined,
+          activeCount:
+            typeof teamRecord?.activeCount === 'number'
+              ? teamRecord.activeCount
+              : undefined,
+          teammateCount:
+            typeof teamRecord?.teammateCount === 'number'
+              ? teamRecord.teammateCount
+              : undefined,
+          members: Array.isArray(teamRecord?.members)
+            ? teamRecord.members
+                .map(raw => asRecord(raw))
+                .filter((record): record is Record<string, unknown> => record !== null)
+                .map(record => ({
+                  agentId:
+                    typeof record.agentId === 'string' ? record.agentId : '',
+                  name: typeof record.name === 'string' ? record.name : '',
+                  agentType:
+                    typeof record.agentType === 'string'
+                      ? record.agentType
+                      : undefined,
+                  model:
+                    typeof record.model === 'string' ? record.model : undefined,
+                  cwd: typeof record.cwd === 'string' ? record.cwd : undefined,
+                  status:
+                    typeof record.status === 'string' ? record.status : undefined,
+                  currentTask:
+                    typeof record.currentTask === 'string'
+                      ? record.currentTask
+                      : undefined,
+                  messagesProcessed:
+                    typeof record.messagesProcessed === 'number'
+                      ? record.messagesProcessed
+                      : undefined,
+                  totalTurns:
+                    typeof record.totalTurns === 'number'
+                      ? record.totalTurns
+                      : undefined,
+                  error:
+                    typeof record.error === 'string' ? record.error : undefined,
+                  isIdle:
+                    typeof record.isIdle === 'boolean' ? record.isIdle : undefined,
+                  isActive:
+                    typeof record.isActive === 'boolean'
+                      ? record.isActive
+                      : undefined,
+                  backendType:
+                    typeof record.backendType === 'string'
+                      ? record.backendType
+                      : undefined,
+                  transcriptFile:
+                    typeof record.transcriptFile === 'string'
+                      ? record.transcriptFile
+                      : undefined,
+                  color:
+                    typeof record.color === 'string' ? record.color : undefined,
+                  planModeRequired:
+                    typeof record.planModeRequired === 'boolean'
+                      ? record.planModeRequired
+                      : undefined,
+                  lastUpdateMs:
+                    typeof record.lastUpdateMs === 'number'
+                      ? record.lastUpdateMs
+                      : undefined,
+                }))
+                .filter(member => member.agentId && member.name)
+            : [],
+        }
 
         setError(null)
         setTasks(nextTasks)
+        setBackgroundTasks(nextBackgroundTasks)
+        setTeam(nextTeam)
         setPlanState(nextPlanState)
-        const hasIncomplete = nextTasks.some(task => task.status !== 'completed')
+        const hasIncomplete =
+          nextTasks.some(task => task.status !== 'completed') ||
+          nextBackgroundTasks.some(task => task.status === 'running' || task.status === 'pending') ||
+          nextTeam.members.some(member => member.isActive && member.status !== 'shutdown')
         if (hasIncomplete || nextTasks.length === 0) {
           setHidden(false)
           resetHideTimer()
@@ -3440,6 +3916,8 @@ function useCcminiTasksV2(
 
   return {
     tasks: hidden ? [] : tasks,
+    backgroundTasks: hidden ? [] : backgroundTasks,
+    team,
     hidden,
     error,
     planState,
@@ -5529,6 +6007,14 @@ export function CcminiRepl({
         .slice(-visibleMessageCount),
     [showFullThinking, visibleMessageCount, renderedMessages],
   )
+  const recentTaskNotifications = useMemo(
+    () =>
+      messages
+        .map(message => parseTaskNotificationXml(getMessageRawText(message)))
+        .filter((notification): notification is CcminiTaskNotification => notification !== null)
+        .slice(-4),
+    [messages],
+  )
   const toolUseLookup = useMemo(() => buildToolUseLookup(messages), [messages])
   const transcriptPlanPanelState = useMemo(
     () => extractPlanPanelState(messages, toolUseLookup),
@@ -5598,6 +6084,15 @@ export function CcminiRepl({
     !showVisibleThemePicker &&
     !showVisibleCommandCatalog &&
     !pendingCcminiToolRequest
+  const showMultiAgentPanels =
+    !showWelcome &&
+    !showVisibleThemePicker &&
+    !showVisibleCommandCatalog &&
+    (
+      recentTaskNotifications.length > 0 ||
+      tasksV2.backgroundTasks.length > 0 ||
+      tasksV2.team.members.length > 0
+    )
   const taskPanelMode =
     !showWelcome &&
     !showVisibleThemePicker &&
@@ -5639,6 +6134,36 @@ export function CcminiRepl({
         <React.Fragment />
       ) : (
         <Box flexDirection="column" marginTop={1}>
+          {showMultiAgentPanels ? (
+            <React.Fragment>
+              {recentTaskNotifications.length > 0 ? (
+                <Box flexDirection="column">
+                  {recentTaskNotifications.map(notification => (
+                    <TaskNotificationCard
+                      key={`task-note-${notification.taskId}-${notification.status}-${notification.summary}`}
+                      notification={notification}
+                      themeSetting={activeThemeSetting}
+                      width={messageWidth}
+                    />
+                  ))}
+                </Box>
+              ) : null}
+              {tasksV2.backgroundTasks.length > 0 ? (
+                <BackgroundAgentsPanel
+                  tasks={tasksV2.backgroundTasks}
+                  themeSetting={activeThemeSetting}
+                  width={messageWidth}
+                />
+              ) : null}
+              {tasksV2.team.members.length > 0 ? (
+                <TeamStatusPanel
+                  team={tasksV2.team}
+                  themeSetting={activeThemeSetting}
+                  width={messageWidth}
+                />
+              ) : null}
+            </React.Fragment>
+          ) : null}
           {taskPanelMode === 'tasks_v2' ? (
             <TaskBoardPanel
               tasks={tasksV2.tasks}
@@ -5677,6 +6202,20 @@ export function CcminiRepl({
               {entry.kind === 'collapsed_read_search' ? (
                 <CollapsedReadSearchFlow
                   entry={entry}
+                  width={messageWidth}
+                />
+              ) : entry.kind === 'message' &&
+                (() => {
+                  const notification = parseTaskNotificationXml(
+                    getMessageRawText(entry.item.message),
+                  )
+                  return notification
+                })() ? (
+                <TaskNotificationCard
+                  notification={
+                    parseTaskNotificationXml(getMessageRawText(entry.item.message))!
+                  }
+                  themeSetting={activeThemeSetting}
                   width={messageWidth}
                 />
               ) : entry.item.message.type === 'user' ? (
@@ -5838,6 +6377,21 @@ export function CcminiRepl({
           {showSpeculationHint ? (
             <Box marginLeft={2}>
               <Text dimColor>{speculationHint}</Text>
+            </Box>
+          ) : null}
+          {tasksV2.team.members.length > 0 || tasksV2.backgroundTasks.length > 0 ? (
+            <Box marginLeft={2}>
+              <Text dimColor>
+                {[
+                  tasksV2.team.name ? `team ${tasksV2.team.name}` : '',
+                  tasksV2.team.activeCount ? `${tasksV2.team.activeCount} active` : '',
+                  tasksV2.backgroundTasks.filter(task => task.canResume).length > 0
+                    ? `${tasksV2.backgroundTasks.filter(task => task.canResume).length} follow-up ready`
+                    : '',
+                ]
+                  .filter(Boolean)
+                  .join(' · ')}
+              </Text>
             </Box>
           ) : null}
           {showVisibleThemePicker

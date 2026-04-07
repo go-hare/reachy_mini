@@ -48,6 +48,8 @@ from ..messages import (
 from ..prompts import SystemPrompt
 from ..providers import BaseProvider
 from ..tool import Tool, ToolUseContext
+from .coordinator import filter_worker_tools
+from .tasks import TaskType
 
 logger = logging.getLogger(__name__)
 _FORK_BOILERPLATE_TAG = "fork-boilerplate"
@@ -94,6 +96,7 @@ class SubAgentResult:
     agent_id: str
     role: str
     reply: str
+    transcript_file: str = ""
     messages: list[Message] = field(default_factory=list)
     success: bool = True
     error: str = ""
@@ -154,7 +157,7 @@ async def run_sub_agent(
     runtime_overrides: dict[str, Any] | None = None,
 ) -> SubAgentResult:
     """Run a sub-agent to completion and return its result."""
-    from .subagent import run_subagent
+    from .subagent import _subagent_transcript_path, run_subagent
 
     agent_id = f"{config.name}-{uuid4().hex[:6]}"
     system = config.system_prompt or f"You are a {config.role} assistant."
@@ -177,6 +180,9 @@ async def run_sub_agent(
             )
 
     try:
+        transcript_file = _subagent_transcript_path(agent_id, "subagent")
+        effective_overrides = dict(runtime_overrides or {})
+        effective_overrides.setdefault("transcript_file", transcript_file)
         reply_text = await run_subagent(
             provider=active_provider,
             system_prompt=system,
@@ -186,12 +192,13 @@ async def run_sub_agent(
             max_turns=config.max_turns,
             agent_id=agent_id,
             query_source=str(runtime_overrides.get("query_source", "") if runtime_overrides else ""),
-            runtime_overrides=runtime_overrides,
+            runtime_overrides=effective_overrides,
         )
         return SubAgentResult(
             agent_id=agent_id,
             role=config.role,
             reply=reply_text,
+            transcript_file=transcript_file,
             messages=[],
         )
     except Exception as exc:
@@ -199,6 +206,7 @@ async def run_sub_agent(
             agent_id=agent_id,
             role=config.role,
             reply="",
+            transcript_file=_subagent_transcript_path(agent_id, "subagent"),
             success=False,
             error=str(exc),
         )
@@ -347,8 +355,13 @@ class AgentTool(Tool):
                 },
                 "isolation": {
                     "type": "string",
-                    "enum": ["worktree"],
-                    "description": "Isolation mode. \"worktree\" creates a temporary git worktree.",
+                    "enum": ["worktree", "remote"],
+                    "description": "Isolation mode. \"worktree\" creates a temporary git worktree. \"remote\" runs the task inside a separate isolated agent runtime.",
+                },
+                "mcp_servers": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional MCP server allowlist for this agent. When set, only matching MCP tools are exposed.",
                 },
             },
             "required": ["description", "prompt"],
@@ -362,21 +375,55 @@ class AgentTool(Tool):
             schema["properties"]["subagent_type"]["enum"] = agent_types
         return schema
 
-    def _resolve_tools(self, definition: Any) -> list[Tool]:
+    @staticmethod
+    def _filter_mcp_tools(tools: list[Tool], allowed_servers: list[str]) -> list[Tool]:
+        if not allowed_servers:
+            return list(tools)
+        normalized_servers = {
+            server.strip().lower().replace("-", "_")
+            for server in allowed_servers
+            if server.strip()
+        }
+        if not normalized_servers:
+            return list(tools)
+
+        filtered: list[Tool] = []
+        for tool in tools:
+            name = str(getattr(tool, "name", "") or "").strip()
+            if not name:
+                continue
+            if name.startswith("mcp__"):
+                parts = name.split("__", 2)
+                if len(parts) >= 3 and parts[1].strip().lower() in normalized_servers:
+                    filtered.append(tool)
+                continue
+            server_name = str(getattr(tool, "server_name", "") or "").strip().lower().replace("-", "_")
+            if server_name and server_name not in normalized_servers:
+                continue
+            filtered.append(tool)
+        return filtered
+
+    def _resolve_tools(self, definition: Any, *, is_worker_context: bool = False) -> list[Tool]:
         """Resolve the tool set for a built-in agent definition."""
         if not self._parent_tools:
             return []
 
+        parent_tools = (
+            filter_worker_tools(self._parent_tools)
+            if is_worker_context
+            else list(self._parent_tools)
+        )
+
         disallowed = set(definition.disallowed_tools)
         if definition.tools == ["*"]:
             return [
-                t for t in self._parent_tools
+                t for t in parent_tools
                 if t.name not in disallowed and not any(alias in disallowed for alias in getattr(t, "aliases", ()))
             ]
 
         allowed = set(definition.tools) - disallowed
         return [
-            t for t in self._parent_tools
+            t for t in parent_tools
             if t.name in allowed or any(alias in allowed for alias in getattr(t, "aliases", ()))
         ]
 
@@ -567,6 +614,12 @@ class AgentTool(Tool):
         cwd_override = kwargs.get("cwd", "").strip()
         spawn_mode = kwargs.get("mode", "").strip()
         isolation = kwargs.get("isolation", "").strip()
+        raw_mcp_servers = kwargs.get("mcp_servers", [])
+        mcp_servers = (
+            [str(value).strip() for value in raw_mcp_servers if str(value).strip()]
+            if isinstance(raw_mcp_servers, list)
+            else []
+        )
         context_messages = context.messages if isinstance(context.messages, list) else []
         parent_messages = [msg for msg in context_messages if isinstance(msg, Message)]
         runtime_overrides = {
@@ -589,13 +642,13 @@ class AgentTool(Tool):
             runtime_overrides["working_directory"] = cwd_override
         if cwd_override and isolation == "worktree":
             return "Error: 'cwd' cannot be combined with isolation='worktree'."
-        if isolation == "remote":
-            return "Remote isolation is not supported by the current mini-agent runtime."
         parent_agent = context.extras.get("agent")
+        if isolation == "remote" and parent_agent is None:
+            return "Error: isolation='remote' requires a host-backed agent runtime."
         coordinator_mode = getattr(parent_agent, "_coordinator_mode", None)
         is_coordinator = bool(getattr(coordinator_mode, "is_active", False))
         fork_enabled = self._fork_subagent_enabled(context=context, is_coordinator=is_coordinator)
-        effective_run_in_background = bool(run_in_background) or fork_enabled
+        effective_run_in_background = bool(run_in_background) or fork_enabled or isolation == "remote"
         has_team_target = bool(
             parent_agent is not None
             and name
@@ -613,6 +666,38 @@ class AgentTool(Tool):
 
         is_fork_path = not subagent_type and fork_enabled
         requested_type = subagent_type or ("fork" if is_fork_path else "general-purpose")
+        task_type = TaskType.REMOTE_AGENT if isolation == "remote" else TaskType.LOCAL_AGENT
+        backend_type = (
+            "embedded-remote"
+            if isolation == "remote"
+            else "worktree"
+            if isolation == "worktree"
+            else "in-process"
+        )
+        task_metadata = {
+            "workerName": name or description or requested_type or "agent",
+            "teamName": team_name_override or "",
+            "backendType": backend_type,
+            "isolation": isolation or "shared",
+            "agentType": kwargs.get("role", subagent_type or "general"),
+            "subagentType": requested_type,
+            "mcpServers": list(mcp_servers),
+        }
+        if isolation == "remote" and parent_agent is not None:
+            parent_config = copy.deepcopy(getattr(parent_agent, "_config", None))
+            if parent_config is not None:
+                parent_config.max_turns = max(getattr(parent_config, "max_turns", 0) or 0, 10)
+                parent_config.enable_builtin_commands = False
+            runtime_overrides["remote_executor_spec"] = {
+                "provider": getattr(parent_agent, "_provider", self._provider),
+                "system_prompt": copy.deepcopy(getattr(parent_agent, "_system_prompt", "")),
+                "config": parent_config,
+                "attachment_collector": getattr(parent_agent, "_attachment_collector", None),
+                "fallback_config": getattr(parent_agent, "_fallback_config", None),
+                "summary_provider": getattr(parent_agent, "_summary_provider", None),
+                "skill_prefetch": getattr(parent_agent, "_skill_prefetch", None),
+            }
+        runtime_overrides["delegation_isolation"] = isolation or "shared"
         worktree = None
         if isolation == "worktree":
             from ..tools.worktree import create_agent_worktree
@@ -661,12 +746,14 @@ class AgentTool(Tool):
                 task_id = parent_agent.background_runner.spawn(
                     name=name or description or "fork",
                     prompt=fork_prompt,
+                    task_type=task_type,
                     system_prompt=system_prompt_text,
                     tools=list(self._parent_tools),
                     context_messages=fork_history,
                     max_turns=200,
                     runtime_overrides=fork_runtime_overrides,
                     initial_messages=fork_prompt_messages,
+                    metadata=dict(task_metadata),
                 )
                 task_info = parent_agent.background_runner.get_status(task_id)
                 output_file = getattr(task_info, "output_file", "") if task_info is not None else ""
@@ -700,7 +787,11 @@ class AgentTool(Tool):
                 built_in_background = effective_run_in_background or (
                     run_in_background is None and bool(getattr(definition, "background", False))
                 )
-                tools = self._resolve_tools(definition)
+                tools = self._resolve_tools(
+                    definition,
+                    is_worker_context=is_coordinator or definition.agent_type == "worker",
+                )
+                tools = self._filter_mcp_tools(tools, mcp_servers)
                 config = SubAgentConfig(
                     name=name or f"sub-{definition.agent_type}",
                     role=definition.agent_type,
@@ -709,6 +800,12 @@ class AgentTool(Tool):
                     tools=tools,
                     model=model_override or self._resolve_model(definition),
                 )
+                if isolation == "remote" and "remote_executor_spec" in runtime_overrides:
+                    runtime_overrides["remote_executor_spec"] = {
+                        **dict(runtime_overrides["remote_executor_spec"]),
+                        "tools": list(config.tools),
+                        "system_prompt": config.system_prompt,
+                    }
                 if parent_agent is not None and has_team_target:
                     teammate_id = self._spawn_team_teammate(
                         parent_agent=parent_agent,
@@ -733,12 +830,19 @@ class AgentTool(Tool):
                     task_id = parent_agent.background_runner.spawn(
                         name=name or description or definition.agent_type,
                         prompt=prompt,
+                        task_type=task_type,
                         system_prompt=config.system_prompt,
-                        tools=config.tools,
+                    tools=config.tools,
                         context_messages=None,
                         max_turns=config.max_turns,
                         model=config.model,
                         runtime_overrides=runtime_overrides,
+                        metadata={
+                            **task_metadata,
+                            "workerName": name or description or definition.agent_type,
+                            "agentType": definition.agent_type,
+                            "subagentType": definition.agent_type,
+                        },
                     )
                     task_info = parent_agent.background_runner.get_status(task_id)
                     output_file = getattr(task_info, "output_file", "") if task_info is not None else ""
@@ -777,7 +881,17 @@ class AgentTool(Tool):
             system_prompt=_role_prompts.get(role, ""),
             max_turns=5,
             model=model_override,
+            tools=self._filter_mcp_tools(
+                filter_worker_tools(self._parent_tools) if is_coordinator else list(self._parent_tools),
+                mcp_servers,
+            ),
         )
+        if isolation == "remote" and "remote_executor_spec" in runtime_overrides:
+            runtime_overrides["remote_executor_spec"] = {
+                **dict(runtime_overrides["remote_executor_spec"]),
+                "tools": list(config.tools),
+                "system_prompt": config.system_prompt,
+            }
 
         if parent_agent is not None and has_team_target:
             teammate_id = self._spawn_team_teammate(
@@ -803,12 +917,19 @@ class AgentTool(Tool):
             task_id = parent_agent.background_runner.spawn(
                 name=name or description or role,
                 prompt=prompt,
+                task_type=task_type,
                 system_prompt=config.system_prompt,
                 tools=config.tools,
                 context_messages=None,
                 max_turns=config.max_turns,
                 model=config.model,
                 runtime_overrides=runtime_overrides,
+                metadata={
+                    **task_metadata,
+                    "workerName": name or description or role,
+                    "agentType": role,
+                    "subagentType": role,
+                },
             )
             task_info = parent_agent.background_runner.get_status(task_id)
             output_file = getattr(task_info, "output_file", "") if task_info is not None else ""

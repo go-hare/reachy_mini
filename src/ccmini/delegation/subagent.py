@@ -19,10 +19,12 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
 import logging
 import time
 from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
@@ -36,12 +38,37 @@ from ..messages import (
     ToolResultEvent,
     user_message,
 )
+from ..paths import mini_agent_path
 from ..prompts import SystemPrompt
 from ..providers import BaseProvider
 from ..engine.query import QueryParams, query
 from ..tool import Tool
 
 logger = logging.getLogger(__name__)
+
+
+def _subagent_transcript_path(agent_id: str, prefix: str = "subagent") -> str:
+    safe_id = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in agent_id.strip())
+    return str(mini_agent_path("agent_transcripts", f"{prefix}-{safe_id or uuid4().hex[:8]}.jsonl"))
+
+
+def _append_subagent_transcript(
+    transcript_file: str,
+    *,
+    role: str,
+    content: str,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    path = Path(transcript_file)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "ts": time.time(),
+        "role": role,
+        "content": content,
+        "metadata": dict(metadata or {}),
+    }
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
 class _SubagentAgentView:
@@ -123,8 +150,11 @@ async def run_subagent(
     initial_messages: list[Message] | None = None,
     max_turns: int = 10,
     agent_id: str = "",
+    conversation_id: str = "",
     query_source: str = "",
     runtime_overrides: dict[str, Any] | None = None,
+    on_event: Callable[[StreamEvent], Any] | None = None,
+    transcript_file: str = "",
 ) -> str:
     """Run a sub-agent synchronously and return its final reply.
 
@@ -145,8 +175,9 @@ async def run_subagent(
     else:
         sp = system_prompt
 
-    conv_id = uuid4().hex[:16]
+    conv_id = conversation_id or uuid4().hex[:16]
     subagent_id = agent_id or f"subagent_{uuid4().hex[:8]}"
+    transcript_target = transcript_file or str((runtime_overrides or {}).get("transcript_file", "") or _subagent_transcript_path(subagent_id, "subagent"))
     effective_overrides = _subagent_runtime_overrides(
         runtime_overrides=runtime_overrides,
         provider=provider,
@@ -177,11 +208,34 @@ async def run_subagent(
 
     reply = ""
     error = ""
+    if user_text:
+        _append_subagent_transcript(
+            transcript_target,
+            role="user",
+            content=user_text,
+            metadata={"event": "prompt", "agent_id": subagent_id},
+        )
     async for event in query(params):
+        if on_event is not None:
+            maybe = on_event(event)
+            if asyncio.iscoroutine(maybe):
+                await maybe
         if isinstance(event, CompletionEvent):
             reply = event.text
+            _append_subagent_transcript(
+                transcript_target,
+                role="assistant",
+                content=event.text,
+                metadata={"event": "completion", "agent_id": subagent_id},
+            )
         elif isinstance(event, ErrorEvent):
             error = event.error
+            _append_subagent_transcript(
+                transcript_target,
+                role="system",
+                content=event.error,
+                metadata={"event": "error", "agent_id": subagent_id},
+            )
     if error:
         raise RuntimeError(error)
     return reply
@@ -197,8 +251,11 @@ async def run_subagent_streaming(
     initial_messages: list[Message] | None = None,
     max_turns: int = 10,
     agent_id: str = "",
+    conversation_id: str = "",
     query_source: str = "",
     runtime_overrides: dict[str, Any] | None = None,
+    on_event: Callable[[StreamEvent], Any] | None = None,
+    transcript_file: str = "",
 ) -> AsyncGenerator[StreamEvent, None]:
     """Run a sub-agent and yield its stream events."""
     messages: list[Message] = []
@@ -215,8 +272,9 @@ async def run_subagent_streaming(
     else:
         sp = system_prompt
 
-    conv_id = uuid4().hex[:16]
+    conv_id = conversation_id or uuid4().hex[:16]
     subagent_id = agent_id or f"subagent_{uuid4().hex[:8]}"
+    transcript_target = transcript_file or str((runtime_overrides or {}).get("transcript_file", "") or _subagent_transcript_path(subagent_id, "subagent"))
     effective_overrides = _subagent_runtime_overrides(
         runtime_overrides=runtime_overrides,
         provider=provider,
@@ -245,7 +303,33 @@ async def run_subagent_streaming(
             if hasattr(params, key):
                 setattr(params, key, value)
 
+    if user_text:
+        _append_subagent_transcript(
+            transcript_target,
+            role="user",
+            content=user_text,
+            metadata={"event": "prompt", "agent_id": subagent_id},
+        )
+
     async for event in query(params):
+        if on_event is not None:
+            maybe = on_event(event)
+            if asyncio.iscoroutine(maybe):
+                await maybe
+        if isinstance(event, CompletionEvent):
+            _append_subagent_transcript(
+                transcript_target,
+                role="assistant",
+                content=event.text,
+                metadata={"event": "completion", "agent_id": subagent_id},
+            )
+        elif isinstance(event, ErrorEvent):
+            _append_subagent_transcript(
+                transcript_target,
+                role="system",
+                content=event.error,
+                metadata={"event": "error", "agent_id": subagent_id},
+            )
         yield event
 
 
@@ -293,6 +377,7 @@ class ForkedAgentResult:
     duration_ms: float = 0.0
     stop_reason: str = ""
     error: str = ""
+    transcript_file: str = ""
     events: list[StreamEvent] = field(default_factory=list, repr=False)
     added_messages: list[Message] = field(default_factory=list, repr=False)
 
@@ -324,6 +409,7 @@ async def run_forked_agent(
     on_message: Callable[[Any], None] | None = None,
     skip_transcript: bool = False,
     working_directory: str = "",
+    transcript_file: str = "",
 ) -> ForkedAgentResult:
     """Run a forked agent that shares the parent's message prefix.
 
@@ -346,10 +432,18 @@ async def run_forked_agent(
         logger.debug("run_forked_agent skip_transcript=True (no session sidechain persistence in mini_agent)")
 
     _fork_start_time = time.monotonic()
+    transcript_target = transcript_file or _subagent_transcript_path(agent_id or f"forked_{uuid4().hex[:8]}", "fork")
     messages = copy.deepcopy(context.parent_messages)
     effective_prompt_messages = copy.deepcopy(prompt_messages or context.prompt_messages)
     if fork_prompt.strip():
         effective_prompt_messages.append(user_message(fork_prompt))
+        if not skip_transcript:
+            _append_subagent_transcript(
+                transcript_target,
+                role="user",
+                content=fork_prompt,
+                metadata={"event": "fork_prompt", "agent_id": agent_id or ""},
+            )
     messages.extend(effective_prompt_messages)
 
     filtered_tools = [
@@ -400,6 +494,13 @@ async def run_forked_agent(
             # One CompletionEvent per assistant turn; usage matches the stream's
             # final tallies (do not also sum UsageEvent — would double-count).
             _accumulate_fork_usage(total_usage, event.usage)
+            if not skip_transcript:
+                _append_subagent_transcript(
+                    transcript_target,
+                    role="assistant",
+                    content=event.text,
+                    metadata={"event": "completion", "agent_id": agent_id or ""},
+                )
         elif isinstance(event, ToolResultEvent):
             tool_results.append({
                 "tool_use_id": event.tool_use_id,
@@ -409,6 +510,13 @@ async def run_forked_agent(
             })
         elif isinstance(event, ErrorEvent):
             error_text = event.error
+            if not skip_transcript:
+                _append_subagent_transcript(
+                    transcript_target,
+                    role="system",
+                    content=event.error,
+                    metadata={"event": "error", "agent_id": agent_id or ""},
+                )
         if on_message is not None:
             on_message(event)
 
@@ -423,6 +531,7 @@ async def run_forked_agent(
         duration_ms=duration_ms,
         stop_reason=stop_reason,
         error=error_text,
+        transcript_file="" if skip_transcript else transcript_target,
         events=list(observed_events),
         added_messages=copy.deepcopy(messages[messages_before:]),
     )
