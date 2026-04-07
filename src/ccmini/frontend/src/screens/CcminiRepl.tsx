@@ -5072,7 +5072,9 @@ export function CcminiRepl({
       onEvent: event => {
         if (event.type === 'stream_event') {
           const eventType = event.payload?.event_type
-          if (eventType === 'prompt_suggestion') {
+          if (eventType === 'request_start') {
+            setIsLoading(true)
+          } else if (eventType === 'prompt_suggestion') {
             setPromptSuggestion({
               text: String(event.payload?.text ?? ''),
               shownAt: Number(event.payload?.shown_at ?? 0),
