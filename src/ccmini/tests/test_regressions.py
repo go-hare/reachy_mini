@@ -1513,6 +1513,127 @@ def test_background_runner_records_transcript_and_resume_metadata(
     assert '"content": "follow up"' in transcript_text
 
 
+def test_background_runner_cancel_marks_task_not_resumable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _prepare_environment(monkeypatch, tmp_path)
+
+    gate = asyncio.Event()
+
+    async def fake_run_subagent(**kwargs: object) -> str:
+        await gate.wait()
+        return "late"
+
+    monkeypatch.setattr(background_module, "run_subagent", fake_run_subagent)
+
+    async def run() -> dict[str, object]:
+        runner = background_module.BackgroundAgentRunner(provider=_DummyProvider(), task_manager=TaskManager())
+        task_id = runner.spawn(name="worker-a", prompt="first pass")
+        for _ in range(10):
+            info = runner.get_status(task_id)
+            if info is not None and getattr(info.status, "value", info.status) == "running":
+                break
+            await asyncio.sleep(0)
+        assert runner.cancel(task_id) is True
+        info = runner.get_status(task_id)
+        assert info is not None
+        gate.set()
+        return runner._task_snapshot(info)  # type: ignore[attr-defined]
+
+    snapshot = asyncio.run(run())
+
+    assert snapshot["status"] == "killed"
+    assert snapshot["canResume"] is False
+
+
+def test_remote_background_task_seeds_initial_messages_and_releases_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _prepare_environment(monkeypatch, tmp_path)
+    seen = {"query_called": False, "stop_called": 0, "seeded": False}
+
+    class _FakeRemoteAgent:
+        def __init__(self) -> None:
+            self._messages: list[object] = []
+            self._provider = _DummyProvider()
+            self._system_prompt = "remote system"
+            self._tools: list[object] = []
+            self._agent_id = "remote-agent"
+            self._config = SimpleNamespace(compact_threshold=100_000, max_turns=10)
+            self._hook_runner = SimpleNamespace(pre_query=[], post_query=[], stream_event=[])
+            self._permission_checker = None
+            self._attachment_collector = None
+            self._fallback_config = None
+            self._summary_provider = None
+
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            seen["stop_called"] += 1
+
+        async def query(self, *_args: object, **_kwargs: object) -> object:
+            seen["query_called"] = True
+            raise AssertionError("remote_agent.query should not be used when initial_messages exist")
+
+        @property
+        def messages(self) -> list[object]:
+            return list(self._messages)
+
+        @property
+        def working_directory(self) -> str:
+            return str(tmp_path)
+
+        def _persist_session_snapshot(self) -> None:
+            return None
+
+        def _fire_event(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+        def _get_session_memory_content(self) -> None:
+            return None
+
+    async def fake_query(params: object) -> object:
+        query_params = params
+        messages = list(getattr(query_params, "messages", []))
+        seen["seeded"] = any(getattr(message, "text", "") == "seeded context" for message in messages)
+        yield CompletionEvent(text="REMOTE_OK")
+
+    monkeypatch.setattr(factory_module, "create_agent", lambda **_kwargs: _FakeRemoteAgent())
+    monkeypatch.setattr(background_module, "query", fake_query)
+
+    async def run() -> tuple[str, object]:
+        runner = background_module.BackgroundAgentRunner(provider=_DummyProvider(), task_manager=TaskManager())
+        task_id = runner.spawn(
+            name="remote-worker",
+            prompt="ignored prompt",
+            task_type=TaskType.REMOTE_AGENT,
+            initial_messages=[user_message("seeded context")],
+            metadata={"isolation": "remote"},
+            runtime_overrides={"remote_executor_spec": {}},
+        )
+        result = await runner.wait_completion(timeout=0.1)
+        assert result is not None
+        for _ in range(10):
+            runtime = runner._task_contexts[task_id]  # type: ignore[attr-defined]
+            if runtime.remote_agent is None:
+                break
+            await asyncio.sleep(0)
+        runtime = runner._task_contexts[task_id]  # type: ignore[attr-defined]
+        return task_id, runtime
+
+    task_id, runtime = asyncio.run(run())
+
+    assert seen["query_called"] is False
+    assert seen["seeded"] is True
+    assert seen["stop_called"] == 1
+    assert runtime.remote_agent is None
+    assert runtime.context_messages
+    assert task_id.startswith("r")
+
+
 def test_create_remote_executor_host_passes_agent_config() -> None:
     seen: dict[str, object] = {}
 

@@ -37,6 +37,7 @@ Architecture::
 from __future__ import annotations
 
 import asyncio
+import copy
 import contextlib
 import json
 import logging
@@ -47,7 +48,8 @@ from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape
 
-from ..messages import Message, assistant_message, user_message
+from ..engine.query import QueryParams, query
+from ..messages import CompletionEvent, ErrorEvent, Message, assistant_message, user_message
 from ..paths import mini_agent_path
 from ..providers import BaseProvider
 from .subagent import run_subagent
@@ -464,21 +466,66 @@ class BackgroundAgentRunner:
                 max_turns=max_turns,
                 model=model,
             )
+        if not getattr(remote_agent, "_messages", None):
+            seeded_messages = list(parent_messages or [])
+            if initial_messages:
+                seeded_messages.extend(initial_messages)
+            if seeded_messages:
+                remote_agent._messages = copy.deepcopy(seeded_messages)
+                runtime_context.context_messages = copy.deepcopy(seeded_messages)
+                with contextlib.suppress(Exception):
+                    remote_agent._persist_session_snapshot()
             reply = ""
             error = ""
-            async for event in remote_agent.query(
-                prompt,
-                conversation_id=runtime_context.remote_conversation_id or task_id,
-                metadata={
-                    "source": "embedded-remote-agent",
-                    "remote_task_id": task_id,
-                },
-            ):
-                event_type = event.__class__.__name__
-                if event_type == "CompletionEvent":
-                    reply = str(getattr(event, "text", "") or "")
-                elif event_type == "ErrorEvent":
-                    error = str(getattr(event, "error", "") or "")
+            if initial_messages:
+                params = QueryParams(
+                    provider=remote_agent._provider,
+                    system_prompt=remote_agent._system_prompt,
+                    messages=remote_agent._messages,
+                    tools=list(remote_agent._tools),
+                    agent=remote_agent,
+                    conversation_id=runtime_context.remote_conversation_id or task_id,
+                    agent_id=remote_agent._agent_id,
+                    max_turns=max_turns,
+                    compact_threshold=remote_agent._config.compact_threshold,
+                    compact_config=getattr(remote_agent, "_compact_config", None),
+                    compact_tracker=getattr(remote_agent, "_compact_tracker", None),
+                    pre_hooks=remote_agent._hook_runner.pre_query,
+                    post_hooks=remote_agent._hook_runner.post_query,
+                    stream_hooks=remote_agent._hook_runner.stream_event,
+                    permission_checker=remote_agent._permission_checker,
+                    attachment_collector=remote_agent._attachment_collector,
+                    hook_runner=remote_agent._hook_runner,
+                    fallback_config=remote_agent._fallback_config,
+                    summary_provider=remote_agent._summary_provider,
+                    on_tool_summary=remote_agent._fire_event,
+                    session_memory_content=remote_agent._get_session_memory_content(),
+                    snip_config=getattr(remote_agent, "_snip_config", None),
+                    collapse_config=getattr(remote_agent, "_collapse_config", None),
+                    working_directory=remote_agent.working_directory,
+                    query_source="embedded_remote_continue",
+                    is_non_interactive=bool(getattr(remote_agent, "_runtime_is_non_interactive", False)),
+                )
+                async for event in query(params):
+                    if isinstance(event, CompletionEvent):
+                        reply = str(event.text or "")
+                    elif isinstance(event, ErrorEvent):
+                        error = str(event.error or "")
+                remote_agent._messages = params.messages
+            else:
+                async for event in remote_agent.query(
+                    prompt,
+                    conversation_id=runtime_context.remote_conversation_id or task_id,
+                    metadata={
+                        "source": "embedded-remote-agent",
+                        "remote_task_id": task_id,
+                    },
+                ):
+                    if isinstance(event, CompletionEvent):
+                        reply = str(event.text or "")
+                    elif isinstance(event, ErrorEvent):
+                        error = str(event.error or "")
+            runtime_context.context_messages = copy.deepcopy(list(remote_agent.messages))
             if error:
                 raise RuntimeError(error)
             return reply
@@ -707,6 +754,11 @@ class BackgroundAgentRunner:
         cancelled = self._task_manager.cancel(task_id)
         if not cancelled or task is None:
             return cancelled
+        updated_task = self._update_task_snapshot(
+            task_id,
+            metadata_updates={"canResume": False},
+        )
+        current_task = updated_task or task
         runtime = self._task_contexts.get(task_id)
         if runtime is not None:
             runtime.metadata = self._merge_task_metadata(
@@ -716,16 +768,16 @@ class BackgroundAgentRunner:
             asyncio.create_task(self._shutdown_remote_agent(runtime))
         result = BackgroundResult(
             task_id=task_id,
-            name=task.description,
+            name=current_task.description,
             success=False,
             status="killed",
             error="Task was stopped",
-            output_file=str(getattr(task, "output_file", "") or ""),
-            transcript_file=str(getattr(task, "transcript_file", "") or ""),
-            worker_name=str((getattr(task, "metadata", {}) or {}).get("workerName", "") or task.description),
-            team_name=str((getattr(task, "metadata", {}) or {}).get("teamName", "") or ""),
-            task_type=str(getattr(task.type, "value", task.type)),
-            isolation=str((getattr(task, "metadata", {}) or {}).get("isolation", "") or ""),
+            output_file=str(getattr(current_task, "output_file", "") or ""),
+            transcript_file=str(getattr(current_task, "transcript_file", "") or ""),
+            worker_name=str((getattr(current_task, "metadata", {}) or {}).get("workerName", "") or current_task.description),
+            team_name=str((getattr(current_task, "metadata", {}) or {}).get("teamName", "") or ""),
+            task_type=str(getattr(current_task.type, "value", current_task.type)),
+            isolation=str((getattr(current_task, "metadata", {}) or {}).get("isolation", "") or ""),
         )
         self._completion_queue.put_nowait(result)
         if self._on_complete is not None:
@@ -924,6 +976,8 @@ class BackgroundAgentRunner:
                             user_message(followup),
                             assistant_message(reply),
                         ])
+                    else:
+                        history[:] = copy.deepcopy(list(runtime_context.context_messages))
                     self._append_transcript_entry(
                         task_id,
                         role="user",
@@ -1129,6 +1183,8 @@ class BackgroundAgentRunner:
                 history.append(user_message(prompt))
             if runtime_context.task_type != TaskType.REMOTE_AGENT:
                 history.append(assistant_message(reply))
+            else:
+                history = copy.deepcopy(list(runtime_context.context_messages))
             self._append_transcript_entry(
                 task_id,
                 role="assistant",
@@ -1380,5 +1436,10 @@ class BackgroundAgentRunner:
                     await self._on_complete(result)
                 except Exception:
                     logger.warning("on_complete callback failed for task %s", task_id)
+
+        if runtime_context.task_type == TaskType.REMOTE_AGENT:
+            await self._shutdown_remote_agent(
+                self._task_contexts.get(task_id) or runtime_context
+            )
 
         return result.reply if result.success else f"Error: {result.error}"
