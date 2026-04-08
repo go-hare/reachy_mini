@@ -24,7 +24,7 @@ import ccmini.services.away_summary as away_summary_module
 import ccmini.services.auto_dream as auto_dream_module
 import ccmini.services.prompt_suggestion as prompt_suggestion_module
 import ccmini.tools.plan_mode as plan_mode_module
-from ccmini.agent import Agent, AgentConfig, ConversationRecovery
+from ccmini.agent import Agent, AgentConfig, ConversationRecovery, ToolProfile
 from ccmini.auth import load_auth_state
 from ccmini.bridge import BridgeConfig, BridgeServer, RemoteExecutorHost, create_remote_executor_host
 from ccmini.config import CLIConfig, load_config, load_profile, sync_remote_config
@@ -41,10 +41,12 @@ from ccmini.messages import (
     CompletionEvent,
     ErrorEvent,
     ImageBlock,
+    Message,
     PromptSuggestionEvent,
     SpeculationEvent,
     TextBlock,
     TextEvent,
+    ToolUseBlock,
     ToolResultBlock,
     assistant_message,
     system_message,
@@ -55,12 +57,21 @@ from ccmini.delegation.multi_agent import AgentTool
 from ccmini.delegation.builtin_agents import WORKER_AGENT
 from ccmini.delegation.tasks import TaskManager
 from ccmini.delegation.tasks import TaskType
-from ccmini.delegation.teammate import TeammateIdentity, TeammateState, TeammateStatus
+from ccmini.delegation.teammate import (
+    PersistentTeammate,
+    SharedTaskList,
+    Team,
+    TeamConfig,
+    TeammateIdentity,
+    TeammateState,
+    TeammateStatus,
+)
+from ccmini.delegation.mailbox import MemoryMailbox
 from ccmini.providers import ProviderConfig
 from ccmini.providers.compatible import OpenAICompatibleProvider
 from ccmini.tool import ToolUseContext
 from ccmini.usage import UsageRecord
-from ccmini.delegation.team_files import write_team_file
+from ccmini.delegation.team_files import get_task_board_path, write_team_file
 from ccmini.tools.list_peers import _get_sessions_dir
 from ccmini.tools.bash import BashTool
 from ccmini.tools.file_read import FileReadTool
@@ -109,6 +120,7 @@ class _ToolContext:
 class _DummyAgent:
     def __init__(self) -> None:
         self._listeners: list[object] = []
+        self._messages: list[Message] = []
 
     async def start(self) -> None:
         return None
@@ -126,6 +138,10 @@ class _DummyAgent:
                 pass
 
         return _unsubscribe
+
+    @property
+    def messages(self) -> list[Message]:
+        return list(self._messages)
 
 
 class _DummyProvider:
@@ -300,6 +316,292 @@ def test_builtin_background_agent_launches_async_by_default() -> None:
     assert payload["agentId"] == "agent-verification"
     assert parent_agent.background_runner.kwargs["max_turns"] == 15
     assert "verification specialist" in str(parent_agent.background_runner.kwargs["system_prompt"]).lower()
+
+
+def test_agent_tool_coordinator_mode_launches_async_by_default() -> None:
+    class _BackgroundRunner:
+        def __init__(self) -> None:
+            self.kwargs: dict[str, object] = {}
+
+        def spawn(self, **kwargs: object) -> str:
+            self.kwargs = kwargs
+            return "agent-coordinator"
+
+        def get_status(self, task_id: str) -> object:
+            assert task_id == "agent-coordinator"
+            return SimpleNamespace(output_file="D:/tmp/task_outputs/agent-coordinator.md")
+
+    parent_agent = SimpleNamespace(
+        background_runner=_BackgroundRunner(),
+        _coordinator_mode=SimpleNamespace(is_active=True),
+        _team_create_tool=None,
+    )
+    tool = AgentTool(provider=_DummyProvider())
+    context = ToolUseContext(
+        conversation_id="conv-1",
+        agent_id="agent-1",
+        messages=[],
+        extras={"agent": parent_agent},
+    )
+
+    raw = asyncio.run(
+        tool.execute(
+            context=context,
+            description="coordinator research",
+            prompt="Inspect the auth module and report findings.",
+            role="worker",
+        )
+    )
+    payload = json.loads(raw)
+
+    assert payload["status"] == "async_launched"
+    assert payload["agentId"] == "agent-coordinator"
+
+
+def test_agent_tool_kairos_mode_launches_async_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _BackgroundRunner:
+        def __init__(self) -> None:
+            self.kwargs: dict[str, object] = {}
+
+        def spawn(self, **kwargs: object) -> str:
+            self.kwargs = kwargs
+            return "agent-kairos"
+
+        def get_status(self, task_id: str) -> object:
+            assert task_id == "agent-kairos"
+            return SimpleNamespace(output_file="D:/tmp/task_outputs/agent-kairos.md")
+
+    monkeypatch.setattr(
+        AgentTool,
+        "_assistant_force_async",
+        staticmethod(lambda _parent_agent: True),
+    )
+    parent_agent = SimpleNamespace(
+        background_runner=_BackgroundRunner(),
+        _coordinator_mode=None,
+        _team_create_tool=None,
+    )
+    tool = AgentTool(provider=_DummyProvider())
+    context = ToolUseContext(
+        conversation_id="conv-1",
+        agent_id="agent-1",
+        messages=[],
+        extras={"agent": parent_agent},
+    )
+
+    raw = asyncio.run(
+        tool.execute(
+            context=context,
+            description="kairos follow-up",
+            prompt="Inspect recent activity and continue the investigation.",
+            role="worker",
+        )
+    )
+    payload = json.loads(raw)
+
+    assert payload["status"] == "async_launched"
+    assert payload["agentId"] == "agent-kairos"
+
+
+def test_agent_tool_sync_subagent_uses_background_runner_and_returns_reply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _BackgroundRunner:
+        def __init__(self) -> None:
+            self.kwargs: dict[str, object] = {}
+            self.status_calls = 0
+            self.discarded: list[str] = []
+
+        def spawn(self, **kwargs: object) -> str:
+            self.kwargs = kwargs
+            return "agent-sync"
+
+        def get_status(self, task_id: str) -> object:
+            assert task_id == "agent-sync"
+            self.status_calls += 1
+            if self.status_calls < 2:
+                return SimpleNamespace(
+                    output_file="D:/tmp/task_outputs/agent-sync.md",
+                    status=SimpleNamespace(value="running"),
+                    result="",
+                    error="",
+                )
+            return SimpleNamespace(
+                output_file="D:/tmp/task_outputs/agent-sync.md",
+                status=SimpleNamespace(value="completed"),
+                result="SYNC_OK",
+                error="",
+            )
+
+        def discard_completion(self, task_id: str) -> bool:
+            self.discarded.append(task_id)
+            return True
+
+    monkeypatch.setattr(
+        AgentTool,
+        "_assistant_force_async",
+        staticmethod(lambda _parent_agent: False),
+    )
+    monkeypatch.setattr(
+        AgentTool,
+        "_get_background_hint_threshold_ms",
+        staticmethod(lambda: 10_000),
+    )
+    monkeypatch.setattr(
+        AgentTool,
+        "_get_auto_background_ms",
+        staticmethod(lambda: 0),
+    )
+    parent_agent = SimpleNamespace(
+        background_runner=_BackgroundRunner(),
+        _coordinator_mode=None,
+        _team_create_tool=None,
+    )
+    tool = AgentTool(provider=_DummyProvider())
+    context = ToolUseContext(
+        conversation_id="conv-1",
+        agent_id="agent-1",
+        messages=[],
+        extras={"agent": parent_agent},
+    )
+
+    result = asyncio.run(
+        tool.execute(
+            context=context,
+            description="sync review",
+            prompt="Read the auth module and report the answer.",
+            role="worker",
+        )
+    )
+
+    assert result == "SYNC_OK"
+    assert parent_agent.background_runner.kwargs["task_type"] is TaskType.LOCAL_AGENT
+    assert parent_agent.background_runner.discarded == ["agent-sync"]
+
+
+def test_agent_tool_sync_subagent_auto_backgrounds_after_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _BackgroundRunner:
+        def __init__(self) -> None:
+            self.kwargs: dict[str, object] = {}
+
+        def spawn(self, **kwargs: object) -> str:
+            self.kwargs = kwargs
+            return "agent-auto"
+
+        def get_status(self, task_id: str) -> object:
+            assert task_id == "agent-auto"
+            return SimpleNamespace(
+                output_file="D:/tmp/task_outputs/agent-auto.md",
+                status=SimpleNamespace(value="running"),
+                result="",
+                error="",
+            )
+
+    monkeypatch.setattr(
+        AgentTool,
+        "_assistant_force_async",
+        staticmethod(lambda _parent_agent: False),
+    )
+    monkeypatch.setattr(
+        AgentTool,
+        "_get_background_hint_threshold_ms",
+        staticmethod(lambda: 10_000),
+    )
+    monkeypatch.setattr(
+        AgentTool,
+        "_get_auto_background_ms",
+        staticmethod(lambda: 1),
+    )
+    parent_agent = SimpleNamespace(
+        background_runner=_BackgroundRunner(),
+        _coordinator_mode=None,
+        _team_create_tool=None,
+    )
+    tool = AgentTool(provider=_DummyProvider())
+    context = ToolUseContext(
+        conversation_id="conv-1",
+        agent_id="agent-1",
+        messages=[],
+        extras={"agent": parent_agent},
+    )
+
+    raw = asyncio.run(
+        tool.execute(
+            context=context,
+            description="auto background review",
+            prompt="Keep digging and continue in the background if needed.",
+            role="worker",
+        )
+    )
+    payload = json.loads(raw)
+
+    assert payload["status"] == "async_launched"
+    assert payload["agentId"] == "agent-auto"
+
+
+def test_in_process_teammate_cannot_spawn_background_agent() -> None:
+    class _BackgroundRunner:
+        def spawn(self, **kwargs: object) -> str:
+            raise AssertionError("background spawn should be blocked")
+
+    parent_agent = SimpleNamespace(
+        background_runner=_BackgroundRunner(),
+        _coordinator_mode=None,
+        _team_create_tool=SimpleNamespace(_active_team_name="team-alpha"),
+    )
+    tool = AgentTool(provider=_DummyProvider())
+    context = ToolUseContext(
+        conversation_id="conv-1",
+        agent_id="reviewer@team-alpha",
+        messages=[],
+        extras={"agent": parent_agent},
+    )
+
+    result = asyncio.run(
+        tool.execute(
+            context=context,
+            description="background follow-up",
+            prompt="Keep investigating.",
+            role="worker",
+            run_in_background=True,
+        )
+    )
+
+    assert "In-process teammates cannot spawn background agents" in result
+
+
+def test_in_process_teammate_cannot_spawn_builtin_background_agent() -> None:
+    class _BackgroundRunner:
+        def spawn(self, **kwargs: object) -> str:
+            raise AssertionError("background spawn should be blocked")
+
+    parent_agent = SimpleNamespace(
+        background_runner=_BackgroundRunner(),
+        _coordinator_mode=None,
+        _team_create_tool=SimpleNamespace(_active_team_name="team-alpha"),
+    )
+    tool = AgentTool(provider=_DummyProvider())
+    context = ToolUseContext(
+        conversation_id="conv-1",
+        agent_id="reviewer@team-alpha",
+        messages=[],
+        extras={"agent": parent_agent},
+    )
+
+    result = asyncio.run(
+        tool.execute(
+            context=context,
+            description="verification sweep",
+            prompt="Verify the implementation.",
+            subagent_type="verification",
+        )
+    )
+
+    assert "In-process teammates cannot spawn background agents" in result
 
 
 def test_agent_tool_worker_resolution_uses_coordinator_safe_tools() -> None:
@@ -639,29 +941,69 @@ def test_bridge_tasks_endpoint_reports_owner_activity_from_team_file(
     assert payload["tasks"][0]["ownerIsActive"] is False
 
 
-def test_bridge_tasks_endpoint_reports_runtime_plan_state(
+def test_bridge_tasks_endpoint_reports_session_scoped_plan_state(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     _prepare_environment(monkeypatch, tmp_path)
-    plan_mode_module.reset_plan_state()
-    server = BridgeServer(BridgeConfig(enabled=True, host="127.0.0.1", port=9999, auth_token="tok"))
 
-    class _Request:
-        headers = {"Authorization": "Bearer tok"}
-        query = {"session_id": "session-abc", "include_completed": "true"}
+    class _PlanAgent(_DummyAgent):
+        def __init__(self, *, active: bool) -> None:
+            super().__init__()
+            if active:
+                self._messages = [
+                    assistant_message(
+                        [ToolUseBlock(id="plan-enter", name="EnterPlanMode", input={})]
+                    ),
+                ]
+            else:
+                self._messages = [
+                    assistant_message(
+                        [ToolUseBlock(id="plan-exit", name="ExitPlanMode", input={})]
+                    ),
+                    Message(
+                        role="user",
+                        content=[
+                            ToolResultBlock(
+                                tool_use_id="plan-exit",
+                                content="## Implementation Plan\n\n- Review tasks",
+                            )
+                        ],
+                        metadata={
+                            "toolUseResult": "## Implementation Plan\n\n- Review tasks",
+                        },
+                    ),
+                ]
 
-    try:
-        plan_mode_module.enter_plan_mode()
-        plan_mode_module.get_plan_state().plan_text = "## Implementation Plan\n\n- Review tasks"
+    async def run() -> tuple[dict[str, object], dict[str, object]]:
+        active_by_call = iter([True, False])
+        host = RemoteExecutorHost(
+            agent_factory=lambda _session_id: _PlanAgent(active=next(active_by_call)),
+            bridge_config=BridgeConfig(enabled=True, host="127.0.0.1", port=9999, auth_token="tok"),
+        )
+        active_handle = await host.create_session(metadata={"source": "ccmini-frontend"})
+        ready_handle = await host.create_session(metadata={"source": "ccmini-frontend"})
 
-        response = asyncio.run(server._aiohttp_tasks(_Request()))
-        payload = json.loads(response.text)
-    finally:
-        plan_mode_module.reset_plan_state()
+        class _ActiveRequest:
+            headers = {"Authorization": "Bearer tok"}
+            query = {"session_id": active_handle.session_id, "include_completed": "true"}
 
-    assert payload["planState"]["isActive"] is True
-    assert payload["planState"]["planText"] == "## Implementation Plan\n\n- Review tasks"
+        class _ReadyRequest:
+            headers = {"Authorization": "Bearer tok"}
+            query = {"session_id": ready_handle.session_id, "include_completed": "true"}
+
+        active_response = await host.server._aiohttp_tasks(_ActiveRequest())
+        ready_response = await host.server._aiohttp_tasks(_ReadyRequest())
+        await host._shutdown_session_async(active_handle.session_id)
+        await host._shutdown_session_async(ready_handle.session_id)
+        return json.loads(active_response.text), json.loads(ready_response.text)
+
+    active_payload, ready_payload = asyncio.run(run())
+
+    assert active_payload["planState"]["isActive"] is True
+    assert active_payload["planState"]["planText"] == ""
+    assert ready_payload["planState"]["isActive"] is False
+    assert ready_payload["planState"]["planText"] == "## Implementation Plan\n\n- Review tasks"
 
 
 def test_bridge_tasks_endpoint_includes_background_and_team_snapshots(
@@ -756,6 +1098,48 @@ def test_bridge_tasks_endpoint_includes_background_and_team_snapshots(
     assert payload["team"]["members"][1]["name"] == "reviewer"
 
 
+def test_bridge_tasks_endpoint_uses_runtime_task_list_id(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _prepare_environment(monkeypatch, tmp_path)
+    board = TaskBoard()
+    board.set_scope("team-alpha")
+    board.create(subject="Shared task", description="Team-wide task")
+
+    class _TeamTool:
+        _active_team_name = "team-alpha"
+
+        def get_team(self, team_name: str) -> object | None:
+            assert team_name == "team-alpha"
+            return None
+
+    class _TaskListAgent(_DummyAgent):
+        def __init__(self) -> None:
+            super().__init__()
+            self._team_create_tool = _TeamTool()
+
+    async def run() -> dict[str, object]:
+        host = RemoteExecutorHost(
+            agent_factory=lambda _sid: _TaskListAgent(),
+            bridge_config=BridgeConfig(enabled=True, host="127.0.0.1", port=9999, auth_token="tok"),
+        )
+        handle = await host.create_session(metadata={"source": "ccmini-frontend"})
+
+        class _Request:
+            headers = {"Authorization": "Bearer tok"}
+            query = {"session_id": handle.session_id, "include_completed": "true"}
+
+        response = await host.server._aiohttp_tasks(_Request())
+        await host._shutdown_session_async(handle.session_id)
+        return json.loads(response.text)
+
+    payload = asyncio.run(run())
+
+    assert payload["task_list_id"] == "team-alpha"
+    assert payload["tasks"][0]["subject"] == "Shared task"
+
+
 def test_bridge_runtime_task_control_and_transcript(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -827,6 +1211,237 @@ def test_bridge_runtime_task_control_and_transcript(
     assert send_result["ok"] is True
     assert transcript_result["ok"] is True
     assert transcript_result["entries"][0]["content"] == "done"
+
+
+def test_bridge_task_control_resets_completed_task_list(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _prepare_environment(monkeypatch, tmp_path)
+    board = TaskBoard()
+    board.set_scope("team-alpha")
+    created = board.create(subject="Done task", description="Already finished")
+    board.update(created.id, status="completed")
+
+    class _TeamTool:
+        _active_team_name = "team-alpha"
+
+        def get_team(self, team_name: str) -> object | None:
+            assert team_name == "team-alpha"
+            return None
+
+    class _ResetAgent(_DummyAgent):
+        def __init__(self) -> None:
+            super().__init__()
+            self._team_create_tool = _TeamTool()
+
+        def get_task(self, task_id: str) -> object | None:
+            del task_id
+            return None
+
+    async def run() -> dict[str, object]:
+        host = RemoteExecutorHost(
+            agent_factory=lambda _sid: _ResetAgent(),
+            bridge_config=BridgeConfig(enabled=True, host="127.0.0.1", port=9999, auth_token="tok"),
+        )
+        handle = await host.create_session(metadata={"source": "ccmini-frontend"})
+        result = await host.api.control_runtime_task(
+            handle.session_id,
+            task_id="",
+            action="reset_task_list_if_completed",
+            payload={},
+        )
+        await host._shutdown_session_async(handle.session_id)
+        return result
+
+    result = asyncio.run(run())
+
+    assert result["ok"] is True
+    assert result["cleared"] is True
+    assert result["task_list_id"] == "team-alpha"
+    assert board.list() == []
+
+
+def test_bridge_team_task_control_rejects_unknown_teammate(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _prepare_environment(monkeypatch, tmp_path)
+    write_team_file(
+        "team-alpha",
+        {
+            "name": "team-alpha",
+            "members": [
+                {"agentId": "known@team-alpha", "name": "known", "isActive": True},
+            ],
+        },
+    )
+
+    class _ControlTeam:
+        def __init__(self) -> None:
+            self.shutdowns: list[str] = []
+            self.sent: list[tuple[str, str]] = []
+
+        async def shutdown_teammate(self, agent_name: str) -> None:
+            self.shutdowns.append(agent_name)
+
+        def send_message(self, agent_name: str, text: str) -> bool:
+            self.sent.append((agent_name, text))
+            return agent_name == "known@team-alpha"
+
+    class _ControlTeamTool:
+        _active_team_name = "team-alpha"
+
+        def __init__(self) -> None:
+            self.team = _ControlTeam()
+
+        def get_team(self, team_name: str) -> object | None:
+            assert team_name == "team-alpha"
+            return self.team
+
+    class _ControlAgent(_DummyAgent):
+        def __init__(self) -> None:
+            super().__init__()
+            self._team_create_tool = _ControlTeamTool()
+
+        def get_task(self, task_id: str) -> object | None:
+            del task_id
+            return None
+
+    async def run() -> tuple[dict[str, object], dict[str, object], _ControlAgent]:
+        agent = _ControlAgent()
+        host = RemoteExecutorHost(
+            agent_factory=lambda _sid: agent,
+            bridge_config=BridgeConfig(enabled=True, host="127.0.0.1", port=9999, auth_token="tok"),
+        )
+        handle = await host.create_session(metadata={"source": "ccmini-frontend"})
+        stop_result = await host.api.control_runtime_task(
+            handle.session_id,
+            task_id="ghost@team-alpha",
+            action="stop",
+            payload={},
+        )
+        send_result = await host.api.control_runtime_task(
+            handle.session_id,
+            task_id="ghost@team-alpha",
+            action="send_message",
+            payload={"message": "follow up"},
+        )
+        await host._shutdown_session_async(handle.session_id)
+        return stop_result, send_result, agent
+
+    stop_result, send_result, agent = asyncio.run(run())
+
+    assert stop_result["ok"] is False
+    assert send_result["ok"] is False
+    assert agent._team_create_tool.team.shutdowns == []
+    assert agent._team_create_tool.team.sent == []
+
+
+def test_persistent_teammate_syncs_claim_and_completion_to_task_board(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _prepare_environment(monkeypatch, tmp_path)
+    board = TaskBoard(path=get_task_board_path("team-alpha"))
+    record = board.create(subject="Review auth", description="Inspect auth flow")
+    task_list = SharedTaskList()
+    task_list.upsert(
+        task_id=record.id,
+        subject=record.subject,
+        description=record.description,
+        status="pending",
+        owner="",
+        blocked_by=[],
+    )
+    teammate = PersistentTeammate(
+        config=SimpleNamespace(
+            name="reviewer",
+            team_name="team-alpha",
+            initial_prompt="Bootstrap",
+            system_prompt="You are a helpful assistant.",
+            tools=[],
+            provider=_DummyProvider(),
+            max_turns_per_prompt=3,
+            color=None,
+            model="",
+            working_directory="",
+            plan_mode_required=False,
+            transcript_file="",
+        ),
+        mailbox=MemoryMailbox(),
+        provider=_DummyProvider(),
+        task_list=task_list,
+    )
+    seen_prompts: list[str] = []
+
+    async def _fake_execute(prompt: str) -> SimpleNamespace:
+        seen_prompts.append(prompt)
+        if prompt.startswith(f"Complete task #{record.id}:"):
+            teammate.shutdown()
+        return SimpleNamespace(success=True, reply="done", error="")
+
+    monkeypatch.setattr(teammate, "_execute_prompt", _fake_execute)
+
+    asyncio.run(teammate.run())
+
+    updated = board.get(record.id)
+    assert updated is not None
+    assert updated.status == "completed"
+    assert updated.owner == "reviewer"
+    assert any(prompt.startswith(f"Complete task #{record.id}:") for prompt in seen_prompts)
+    assert task_list.list_all()[0]["status"] == "completed"
+
+
+def test_team_shutdown_teammate_unassigns_owned_tasks(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _prepare_environment(monkeypatch, tmp_path)
+    board = TaskBoard(path=get_task_board_path("team-alpha"))
+    record = board.create(subject="Need follow-up", description="Still in progress")
+    board.update(record.id, status="in_progress", owner="reviewer")
+
+    task_list = SharedTaskList()
+    task_list.upsert(
+        task_id=record.id,
+        subject=record.subject,
+        description=record.description,
+        status="in_progress",
+        owner="reviewer",
+        blocked_by=[],
+    )
+    team = Team(
+        provider=_DummyProvider(),
+        config=TeamConfig(team_name="team-alpha"),
+        mailbox=MemoryMailbox(),
+        task_list=task_list,
+    )
+
+    class _StubTeammate:
+        def __init__(self) -> None:
+            self.identity = TeammateIdentity(
+                agent_id="reviewer@team-alpha",
+                agent_name="reviewer",
+                team_name="team-alpha",
+            )
+            self.shutdown_calls = 0
+
+        def shutdown(self) -> None:
+            self.shutdown_calls += 1
+
+    stub = _StubTeammate()
+    team._teammates[stub.identity.agent_id] = stub  # type: ignore[assignment]
+
+    asyncio.run(team.shutdown_teammate("reviewer"))
+
+    updated = board.get(record.id)
+    assert updated is not None
+    assert updated.status == "pending"
+    assert updated.owner is None
+    assert task_list.list_all()[0]["status"] == "pending"
+    assert task_list.list_all()[0]["owner"] == ""
+    assert stub.shutdown_calls == 1
 
 
 def test_run_subagent_writes_transcript_file(
@@ -2954,6 +3569,193 @@ def test_set_mode_and_memory_roots_and_factory_disable_default_tools(
         use_default_tools=False,
     )
     assert created.tools == []
+
+
+def test_agent_kairos_host_api_controls_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _prepare_environment(monkeypatch, tmp_path)
+
+    async def run() -> tuple[bool, dict[str, object], dict[str, object]]:
+        agent = Agent(
+            provider=ProviderConfig(type="mock", model="mock-model"),
+            system_prompt="You are helpful.",
+        )
+        cfg = agent.configure_kairos(
+            {
+                "kairos_enabled": True,
+                "brief_enabled": True,
+                "proactive_enabled": True,
+                "cron_enabled": True,
+                "channels_enabled": True,
+            }
+        )
+        assert cfg.kairos_enabled is True
+
+        activated = await agent.activate_kairos(mode="assistant", trust_accepted=True)
+        assert activated is True
+        assert agent.is_kairos_active() is True
+
+        agent.pause_proactive()
+        paused_state = agent.get_kairos_state()
+        assert paused_state["paused"] is True
+
+        agent.resume_proactive()
+        assert agent.get_kairos_state()["paused"] is False
+
+        assert agent.set_brief_level("minimal") == "minimal"
+        assert agent.get_brief_level() == "minimal"
+        assert agent.set_view_mode("chat") == "chat"
+        assert agent.get_view_mode() == "chat"
+
+        agent.enqueue_runtime_command(
+            source="system",
+            content="queued task",
+            metadata={"origin": "test"},
+        )
+        await agent.wake("system", "wake ping", {"kind": "wake"})
+
+        accepted = await agent.publish_channel_notification(
+            "server:alerts",
+            "disk nearly full",
+            sender="ops",
+        )
+
+        cron_task = agent.create_cron_task(
+            name="night-check",
+            cron_expr="0 * * * *",
+            prompt="run nightly check",
+        )
+        listed = agent.list_cron_tasks()
+        assert any(task.id == cron_task.id for task in listed)
+        assert agent.delete_cron_task(cron_task.id) is True
+
+        inbox = agent.get_inbox_snapshot()
+        state_before_stop = agent.get_kairos_state()
+
+        await agent.deactivate_kairos()
+        assert agent.is_kairos_active() is False
+        return accepted, inbox, state_before_stop
+
+    accepted, inbox, state_before_stop = asyncio.run(run())
+
+    assert accepted is True
+    assert isinstance(inbox, dict)
+    assert state_before_stop["active"] is True
+    assert state_before_stop["command_queue_size"] >= 2
+
+
+def test_agent_buddy_host_api_controls_companion(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _prepare_environment(monkeypatch, tmp_path)
+    seen: list[dict[str, object]] = []
+
+    agent = Agent(
+        provider=ProviderConfig(type="mock", model="mock-model"),
+        system_prompt="You are helpful.",
+    )
+    unsubscribe = agent.on_companion_event(lambda event: seen.append(dict(event)))
+    try:
+        agent.enable_buddy(True)
+        assert agent.is_buddy_enabled() is True
+
+        companion = agent.hatch_companion(name="Momo")
+        assert companion.name == "Momo"
+        assert agent.get_companion() is not None
+
+        intro = agent.get_companion_intro_attachment()
+        assert intro
+        assert intro[0]["name"] == "Momo"
+
+        before = agent.get_companion_nurture_stats()["pet_count"]
+        pet_stats = agent.pet_companion()
+        assert pet_stats["pet_count"] == before + 1
+
+        payload = agent.get_companion_render_payload(columns=120)
+        assert payload["companion"]["name"] == "Momo"
+        assert payload["rendered"]
+        assert payload["reserved_columns"] >= 0
+
+        agent.set_companion_muted(True)
+        assert agent.is_companion_muted() is True
+        assert agent.get_companion_intro_attachment() == []
+
+        agent.enable_buddy(False)
+        assert agent.is_buddy_enabled() is False
+    finally:
+        unsubscribe()
+
+    event_types = [event["event_type"] for event in seen]
+    assert "buddy_enabled" in event_types
+    assert "companion_hatched" in event_types
+    assert "companion_pet" in event_types
+    assert "companion_muted" in event_types
+
+
+def test_agent_team_peer_and_tool_profile_host_api(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _prepare_environment(monkeypatch, tmp_path)
+    monkeypatch.delenv("CLAUDE_CODE_COORDINATOR_MODE", raising=False)
+
+    from ccmini.tools.list_peers import register_session, unregister_session
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    async def run() -> tuple[list[object], dict[str, object], str]:
+        agent = Agent(
+            provider=ProviderConfig(type="mock", model="mock-model"),
+            system_prompt="You are helpful.",
+        )
+        agent.set_working_directory(str(workspace))
+        agent.set_tools([FileReadTool()])
+        agent.set_sub_agent_tools([FileWriteTool()])
+        agent.set_tool_profiles(
+            {
+                "writer": ToolProfile(
+                    tools=[FileWriteTool()],
+                    system_prompt="write things",
+                    max_turns=3,
+                )
+            }
+        )
+        assert [tool.name for tool in agent.tools] == ["Read"]
+        assert [tool.name for tool in agent.sub_agent_tools] == ["Write"]
+        assert list(agent.tool_profiles.keys()) == ["writer"]
+
+        agent.set_mode("coordinator")
+        assert agent.is_coordinator_mode() is True
+        assert os.environ.get("CLAUDE_CODE_COORDINATOR_MODE", "") == ""
+
+        register_session(
+            "peer-alpha",
+            name="alpha",
+            working_dir=str(workspace),
+            model="mock-model",
+            agent_id="peer-agent",
+        )
+        try:
+            peers = agent.list_live_peers()
+            created = await agent.create_team(
+                team_name="host-team",
+                description="team from host api",
+            )
+            deleted = await agent.delete_team("host-team")
+            return peers, created, deleted
+        finally:
+            unregister_session("peer-alpha")
+
+    peers, created, deleted = asyncio.run(run())
+
+    assert any(getattr(peer, "session_id", "") == "peer-alpha" for peer in peers)
+    assert created["success"] is True
+    assert created["team_name"] == "host-team"
+    assert "host-team" in deleted
 
 
 def test_query_engine_prompt_command_applies_model_effort_and_allowed_tools(

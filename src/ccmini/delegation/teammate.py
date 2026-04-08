@@ -54,6 +54,7 @@ from .mailbox import (
 from .team_files import (
     TEAM_LEAD_NAME,
     ensure_team_directories,
+    get_task_board_path,
     get_team_mailbox_dir,
     remove_team_member,
     set_member_active,
@@ -188,6 +189,21 @@ class SharedTaskList:
                 t["status"] = "failed"
                 return
 
+    def unassign(self, *owner_refs: str) -> list[dict[str, Any]]:
+        normalized_refs = {str(value).strip() for value in owner_refs if str(value).strip()}
+        if not normalized_refs:
+            return []
+        released: list[dict[str, Any]] = []
+        for task in self._tasks:
+            if task["status"] == "completed":
+                continue
+            if str(task.get("owner", "")).strip() not in normalized_refs:
+                continue
+            task["owner"] = ""
+            task["status"] = "pending"
+            released.append(dict(task))
+        return released
+
     def list_all(self) -> list[dict[str, Any]]:
         return list(self._tasks)
 
@@ -275,6 +291,33 @@ class PersistentTeammate:
         self._state.transcript_file = self._transcript_file
         self._state.last_update_ms = int(time.time() * 1000)
 
+    @staticmethod
+    def _task_board(team_name: str) -> Any:
+        from ..tools.task_tools import TaskBoard
+
+        return TaskBoard(path=get_task_board_path(team_name))
+
+    def _sync_claimed_task_to_board(self, task_id: str) -> None:
+        try:
+            board = self._task_board(self.identity.team_name)
+            board.update(
+                task_id,
+                owner=self.identity.agent_name,
+                status="in_progress",
+            )
+        except Exception:
+            logger.debug("Failed to sync claimed task %s to task board", task_id, exc_info=True)
+
+    def _sync_finished_task_to_board(self, task_id: str, *, success: bool) -> None:
+        try:
+            board = self._task_board(self.identity.team_name)
+            if success:
+                board.update(task_id, status="completed")
+            else:
+                board.update(task_id, status="pending", owner="")
+        except Exception:
+            logger.debug("Failed to sync finished task %s to task board", task_id, exc_info=True)
+
     @property
     def state(self) -> TeammateState:
         return self._state
@@ -335,9 +378,11 @@ class PersistentTeammate:
                 if completed_task_id and self._task_list is not None:
                     if execution.success:
                         self._task_list.complete(completed_task_id)
+                        self._sync_finished_task_to_board(completed_task_id, success=True)
                         completed_status = "resolved"
                     else:
                         self._task_list.fail(completed_task_id)
+                        self._sync_finished_task_to_board(completed_task_id, success=False)
                         completed_status = "failed"
                         idle_reason = "failed"
                         failure_reason = execution.error
@@ -533,6 +578,7 @@ class PersistentTeammate:
                 task = self._task_list.claim_next(self._identity.agent_name)
                 if task is not None:
                     self._active_task_id = task["id"]
+                    self._sync_claimed_task_to_board(task["id"])
                     if self._identity.plan_mode_required:
                         self._plan_approved = False
                     prompt = f"Complete task #{task['id']}: {task['subject']}"
@@ -690,6 +736,39 @@ class Team:
             if agent_ref == agent_id or agent_ref == handle.agent_name:
                 return handle.agent_name
         return None
+
+    @staticmethod
+    def _task_board(team_name: str) -> Any:
+        from ..tools.task_tools import TaskBoard
+
+        return TaskBoard(path=get_task_board_path(team_name))
+
+    def _release_owned_tasks(self, *owner_refs: str) -> list[str]:
+        normalized_refs = [str(value).strip() for value in owner_refs if str(value).strip()]
+        if not normalized_refs:
+            return []
+
+        released_ids: set[str] = set()
+        if self._task_list is not None:
+            for task in self._task_list.unassign(*normalized_refs):
+                task_id = str(task.get("id", "")).strip()
+                if task_id:
+                    released_ids.add(task_id)
+
+        try:
+            board = self._task_board(self.team_name)
+            for record in board.list():
+                owner = str(record.owner or "").strip()
+                if not owner or owner not in normalized_refs:
+                    continue
+                if record.status == "completed":
+                    continue
+                board.update(record.id, status="pending", owner="")
+                released_ids.add(record.id)
+        except Exception:
+            logger.debug("Failed to release owned tasks for %s", normalized_refs, exc_info=True)
+
+        return sorted(released_ids)
 
     def _ensure_file_mailbox_for_external(self, config: TeammateConfig) -> None:
         """External workers read ``FileMailbox`` on disk; align leader mailbox."""
@@ -935,6 +1014,7 @@ class Team:
         self.send_shutdown(agent_name)
         for aid, handle in list(self._external.items()):
             if handle.agent_name == agent_name or aid == agent_name:
+                self._release_owned_tasks(handle.agent_name, aid)
                 _terminate_sidecar(handle.proc)
                 self._discovery.unregister(aid)
                 remove_team_member(self.team_name, aid)
@@ -949,6 +1029,7 @@ class Team:
                         await asyncio.wait_for(task, timeout=5.0)
                     except asyncio.TimeoutError:
                         task.cancel()
+                self._release_owned_tasks(t.identity.agent_name, aid)
                 self._discovery.unregister(aid)
                 remove_team_member(self.team_name, aid)
                 break
@@ -971,10 +1052,14 @@ class Team:
                 p.cancel()
 
         for aid, handle in list(self._external.items()):
+            self._release_owned_tasks(handle.agent_name, aid)
             _terminate_sidecar(handle.proc)
             self._discovery.unregister(aid)
             remove_team_member(self.team_name, aid)
         self._external.clear()
+
+        for aid, teammate in list(self._teammates.items()):
+            self._release_owned_tasks(teammate.identity.agent_name, aid)
 
         self._teammates.clear()
         self._tasks.clear()

@@ -28,6 +28,7 @@ import json
 import logging
 import os
 import re
+import time
 from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass, field
 from enum import Enum
@@ -558,6 +559,140 @@ class AgentTool(Tool):
             suffix += 1
         return f"{candidate}-{suffix}"
 
+    @staticmethod
+    def _is_in_process_teammate_context(context: ToolUseContext) -> bool:
+        """Whether the current caller is an in-process teammate."""
+        from .teammate_sidecar import teammate_external_only
+
+        agent_id = str(getattr(context, "agent_id", "") or "").strip()
+        return "@" in agent_id and not teammate_external_only()
+
+    @staticmethod
+    def _assistant_force_async(parent_agent: Any) -> bool:
+        """Match donor assistant/proactive force-async semantics when available."""
+        if parent_agent is None:
+            return False
+        try:
+            from ..kairos import is_kairos_active, is_proactive_active
+
+            if is_kairos_active() or is_proactive_active():
+                return True
+        except Exception:
+            logger.debug("Failed to inspect Kairos/proactive async state", exc_info=True)
+        return bool(
+            getattr(parent_agent, "_kairos_activated_by_agent", False)
+            or getattr(parent_agent, "_kairos_proactive_task", None) is not None
+        )
+
+    @staticmethod
+    def _get_background_hint_threshold_ms() -> int:
+        return 2_000
+
+    @staticmethod
+    def _get_auto_background_ms() -> int:
+        raw_ms = str(os.environ.get("CCMINI_AUTO_BACKGROUND_TASKS_MS", "") or "").strip()
+        if raw_ms:
+            try:
+                return max(0, int(raw_ms))
+            except ValueError:
+                logger.debug("Invalid CCMINI_AUTO_BACKGROUND_TASKS_MS=%r", raw_ms)
+        for env_name in ("CCMINI_AUTO_BACKGROUND_TASKS", "MINI_AGENT_AUTO_BACKGROUND_TASKS"):
+            raw = str(os.environ.get(env_name, "") or "").strip().lower()
+            if raw in {"1", "true", "yes", "on"}:
+                return 120_000
+        return 0
+
+    @staticmethod
+    def _emit_background_hint(parent_agent: Any, description: str) -> None:
+        dispatcher = getattr(parent_agent, "_dispatch_runtime_event", None)
+        if not callable(dispatcher):
+            return
+        try:
+            dispatcher(
+                TextEvent(
+                    text=(
+                        f"[Agent '{description or 'worker'}' is still running. "
+                        "It can keep working in the background.]"
+                    ),
+                    metadata={
+                        "event_type": "agent_background_hint",
+                        "description": description or "worker",
+                    },
+                )
+            )
+        except Exception:
+            logger.debug("Failed to emit background hint event", exc_info=True)
+
+    async def _run_sync_via_background_runner(
+        self,
+        *,
+        parent_agent: Any,
+        name: str,
+        description: str,
+        prompt: str,
+        task_type: TaskType,
+        system_prompt: str,
+        tools: list[Tool],
+        max_turns: int,
+        model: str,
+        runtime_overrides: dict[str, Any],
+        metadata: dict[str, Any],
+        error_prefix: str,
+    ) -> str:
+        background_runner = getattr(parent_agent, "background_runner", None)
+        if background_runner is None:
+            raise RuntimeError("Parent agent has no background runner")
+
+        task_id = background_runner.spawn(
+            name=name or description or "agent",
+            prompt=prompt,
+            task_type=task_type,
+            system_prompt=system_prompt,
+            tools=tools,
+            context_messages=None,
+            max_turns=max_turns,
+            model=model,
+            runtime_overrides=runtime_overrides,
+            metadata=metadata,
+        )
+        task_info = background_runner.get_status(task_id)
+        output_file = getattr(task_info, "output_file", "") if task_info is not None else ""
+
+        started_at = time.monotonic()
+        hint_sent = False
+        hint_threshold_ms = self._get_background_hint_threshold_ms()
+        auto_background_ms = self._get_auto_background_ms()
+
+        while True:
+            info = background_runner.get_status(task_id)
+            status = str(getattr(getattr(info, "status", None), "value", getattr(info, "status", "")) or "")
+            if status in {"completed", "failed", "killed"}:
+                discard_completion = getattr(background_runner, "discard_completion", None)
+                if callable(discard_completion):
+                    try:
+                        discard_completion(task_id)
+                    except Exception:
+                        logger.debug("Failed to discard sync completion for %s", task_id, exc_info=True)
+                if status == "completed":
+                    return str(getattr(info, "result", "") or "")
+                detail = str(getattr(info, "error", "") or ("stopped" if status == "killed" else "unknown error"))
+                return f"{error_prefix}: {detail}"
+
+            elapsed_ms = int((time.monotonic() - started_at) * 1000)
+            if not hint_sent and hint_threshold_ms > 0 and elapsed_ms >= hint_threshold_ms:
+                self._emit_background_hint(parent_agent, description or name or "agent")
+                hint_sent = True
+
+            if auto_background_ms > 0 and elapsed_ms >= auto_background_ms:
+                return _background_launch_payload(
+                    task_id=task_id,
+                    description=name or description or "agent",
+                    prompt=prompt,
+                    output_file=output_file,
+                )
+
+            await asyncio.sleep(0.05)
+
     def _spawn_team_teammate(
         self,
         *,
@@ -648,7 +783,14 @@ class AgentTool(Tool):
         coordinator_mode = getattr(parent_agent, "_coordinator_mode", None)
         is_coordinator = bool(getattr(coordinator_mode, "is_active", False))
         fork_enabled = self._fork_subagent_enabled(context=context, is_coordinator=is_coordinator)
-        effective_run_in_background = bool(run_in_background) or fork_enabled or isolation == "remote"
+        assistant_force_async = self._assistant_force_async(parent_agent)
+        effective_run_in_background = (
+            bool(run_in_background)
+            or fork_enabled
+            or isolation == "remote"
+            or is_coordinator
+            or assistant_force_async
+        )
         has_team_target = bool(
             parent_agent is not None
             and name
@@ -663,6 +805,13 @@ class AgentTool(Tool):
                 ).strip()
             )
         )
+        is_in_process_teammate = self._is_in_process_teammate_context(context)
+
+        if is_in_process_teammate and effective_run_in_background:
+            return (
+                "Error: In-process teammates cannot spawn background agents. "
+                "Use run_in_background=false for synchronous subagents."
+            )
 
         is_fork_path = not subagent_type and fork_enabled
         requested_type = subagent_type or ("fork" if is_fork_path else "general-purpose")
@@ -787,6 +936,11 @@ class AgentTool(Tool):
                 built_in_background = effective_run_in_background or (
                     run_in_background is None and bool(getattr(definition, "background", False))
                 )
+                if is_in_process_teammate and built_in_background:
+                    return (
+                        "Error: In-process teammates cannot spawn background agents. "
+                        f"Agent '{definition.agent_type}' has background semantics."
+                    )
                 tools = self._resolve_tools(
                     definition,
                     is_worker_context=is_coordinator or definition.agent_type == "worker",
@@ -851,6 +1005,26 @@ class AgentTool(Tool):
                         description=name or description or definition.agent_type,
                         prompt=prompt,
                         output_file=output_file,
+                    )
+                if parent_agent is not None:
+                    return await self._run_sync_via_background_runner(
+                        parent_agent=parent_agent,
+                        name=name,
+                        description=name or description or definition.agent_type,
+                        prompt=prompt,
+                        task_type=task_type,
+                        system_prompt=config.system_prompt,
+                        tools=config.tools,
+                        max_turns=config.max_turns,
+                        model=config.model,
+                        runtime_overrides=runtime_overrides,
+                        metadata={
+                            **task_metadata,
+                            "workerName": name or description or definition.agent_type,
+                            "agentType": definition.agent_type,
+                            "subagentType": definition.agent_type,
+                        },
+                        error_prefix=f"Agent [{definition.agent_type}] error",
                     )
                 result = await run_sub_agent(
                     provider=self._provider,
@@ -938,6 +1112,26 @@ class AgentTool(Tool):
                 description=name or description or role,
                 prompt=prompt,
                 output_file=output_file,
+            )
+        if parent_agent is not None:
+            return await self._run_sync_via_background_runner(
+                parent_agent=parent_agent,
+                name=name,
+                description=name or description or role,
+                prompt=prompt,
+                task_type=task_type,
+                system_prompt=config.system_prompt,
+                tools=config.tools,
+                max_turns=config.max_turns,
+                model=config.model,
+                runtime_overrides=runtime_overrides,
+                metadata={
+                    **task_metadata,
+                    "workerName": name or description or role,
+                    "agentType": role,
+                    "subagentType": role,
+                },
+                error_prefix="Sub-agent error",
             )
 
         result = await run_sub_agent(

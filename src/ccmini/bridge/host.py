@@ -25,6 +25,7 @@ from ..messages import (
     ToolResultEvent,
     ToolUseSummaryEvent,
     UsageEvent,
+    tool_result_content_to_text,
 )
 from ..profiles import RuntimeProfile
 from ..prompts import SystemPrompt
@@ -357,9 +358,70 @@ class RemoteExecutorHost:
 
         team_snapshot = self._build_team_snapshot(agent)
         return {
+            "taskListId": self._resolve_task_list_id(session_id, agent),
             "backgroundTasks": background_tasks,
             "team": team_snapshot,
+            "planState": self._build_plan_state_snapshot(agent),
         }
+
+    @staticmethod
+    def _resolve_task_list_id(session_id: str, agent: Agent) -> str:
+        team_tool = getattr(agent, "_team_create_tool", None)
+        team_name = str(getattr(team_tool, "_active_team_name", "") or "").strip()
+        return team_name or session_id
+
+    @staticmethod
+    def _build_plan_state_snapshot(agent: Agent) -> dict[str, Any]:
+        """Derive plan-mode state from this session's transcript, not globals."""
+        try:
+            messages = list(agent.messages)
+        except Exception:
+            return {}
+
+        tool_names_by_id: dict[str, str] = {}
+        latest_enter_index = -1
+        latest_exit_index = -1
+        latest_plan_text = ""
+
+        for index, message in enumerate(messages):
+            for tool_use in getattr(message, "tool_use_blocks", []):
+                tool_use_id = str(getattr(tool_use, "id", "") or "").strip()
+                tool_name = str(getattr(tool_use, "name", "") or "").strip().lower()
+                if tool_use_id:
+                    tool_names_by_id[tool_use_id] = tool_name
+                if tool_name == "enterplanmode":
+                    latest_enter_index = index
+                elif tool_name == "exitplanmode":
+                    latest_exit_index = index
+
+            for tool_result in getattr(message, "tool_result_blocks", []):
+                if bool(getattr(tool_result, "is_error", False)):
+                    continue
+                tool_use_id = str(getattr(tool_result, "tool_use_id", "") or "").strip()
+                if tool_names_by_id.get(tool_use_id) != "exitplanmode":
+                    continue
+                raw = tool_result_content_to_text(getattr(tool_result, "content", "")).strip()
+                if not raw:
+                    continue
+                latest_exit_index = index
+                marker = "## Implementation Plan"
+                latest_plan_text = raw[raw.index(marker):].strip() if marker in raw else raw
+
+        if latest_enter_index > latest_exit_index:
+            return {
+                "isActive": True,
+                "planText": "",
+                "prePermissionMode": "plan",
+            }
+
+        if latest_exit_index >= 0 and latest_exit_index >= latest_enter_index and latest_plan_text:
+            return {
+                "isActive": False,
+                "planText": latest_plan_text,
+                "prePermissionMode": "default",
+            }
+
+        return {}
 
     def _build_team_snapshot(self, agent: Agent) -> dict[str, Any]:
         from ..delegation.team_files import TEAM_LEAD_NAME, read_team_file
@@ -447,6 +509,9 @@ class RemoteExecutorHost:
         extra = dict(payload or {})
         message_text = str(extra.get("message", "") or "").strip()
 
+        if action_name == "reset_task_list_if_completed":
+            return self._reset_completed_task_list(session_id, agent)
+
         task = agent.get_task(task_id)
         if task is not None:
             if action_name == "stop":
@@ -469,20 +534,62 @@ class RemoteExecutorHost:
         team_name = str(getattr(team_tool, "_active_team_name", "") or "").strip()
         team = team_tool.get_team(team_name) if team_tool is not None and team_name else None
         if team is not None:
+            member = None
+            for candidate in self._build_team_snapshot(agent).get("members", []):
+                candidate_id = str(candidate.get("agentId", "") or "")
+                candidate_name = str(candidate.get("name", "") or "")
+                if candidate_id == task_id or candidate_name == task_id:
+                    member = candidate
+                    break
             if action_name == "stop":
+                if member is None:
+                    return {"ok": False, "error": f"Unknown teammate: {task_id}"}
                 await team.shutdown_teammate(task_id)
                 return {"ok": True, "action": action_name, "task_id": task_id}
             if action_name in {"resume", "send_message"}:
                 if not message_text:
                     return {"ok": False, "error": "message is required for resume/send_message"}
-                team.send_message(task_id, message_text)
+                if member is None:
+                    return {"ok": False, "error": f"Unknown teammate: {task_id}"}
+                accepted = bool(team.send_message(task_id, message_text))
+                if not accepted:
+                    return {"ok": False, "error": f"Unknown teammate: {task_id}"}
                 return {"ok": True, "action": action_name, "task_id": task_id}
             if action_name in {"foreground", "describe"}:
-                for member in self._build_team_snapshot(agent).get("members", []):
-                    if str(member.get("agentId", "") or "") == task_id or str(member.get("name", "") or "") == task_id:
-                        return {"ok": True, "action": action_name, "task_id": task_id, "member": member}
+                if member is not None:
+                    return {"ok": True, "action": action_name, "task_id": task_id, "member": member}
 
         return {"ok": False, "error": f"Unknown task or teammate: {task_id}"}
+
+    @staticmethod
+    def _reset_completed_task_list(session_id: str, agent: Agent) -> dict[str, Any]:
+        from ..tools.task_tools import TaskBoard
+
+        task_list_id = RemoteExecutorHost._resolve_task_list_id(session_id, agent)
+        board = TaskBoard()
+        board.set_scope(task_list_id)
+        tasks = [task for task in board.list() if not task.metadata.get("_internal")]
+        if not tasks:
+            return {
+                "ok": True,
+                "cleared": False,
+                "task_list_id": task_list_id,
+                "reason": "empty",
+            }
+        if any(str(task.status) != "completed" for task in tasks):
+            return {
+                "ok": True,
+                "cleared": False,
+                "task_list_id": task_list_id,
+                "reason": "incomplete",
+            }
+
+        cleared = board.reset()
+        return {
+            "ok": True,
+            "cleared": cleared,
+            "task_list_id": task_list_id,
+        }
 
     def _get_runtime_transcript(
         self,

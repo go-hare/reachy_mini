@@ -404,7 +404,6 @@ class BridgeServer:
         from aiohttp import web
 
         from ..delegation.team_files import read_team_file
-        from ..tools.plan_mode import get_plan_state
         from ..tools.task_tools import TaskBoard
 
         if not self._is_http_authorized(request):
@@ -415,13 +414,20 @@ class BridgeServer:
         include_completed_arg = str(request.query.get("include_completed", "true") or "").strip().lower()
         include_completed = include_completed_arg not in {"0", "false", "no"}
 
-        board = TaskBoard()
-        if task_list_id:
-            board.set_scope(task_list_id)
-        elif session_id:
-            board.set_scope(session_id)
+        runtime_snapshot = self._api.get_runtime_snapshot(session_id) if session_id else None
+        if not isinstance(runtime_snapshot, dict):
+            runtime_snapshot = {}
+        resolved_task_list_id = (
+            task_list_id
+            or str(runtime_snapshot.get("taskListId", "") or "").strip()
+            or session_id
+        )
 
-        team_name = task_list_id or session_id
+        board = TaskBoard()
+        if resolved_task_list_id:
+            board.set_scope(resolved_task_list_id)
+
+        team_name = resolved_task_list_id
         owner_activity: dict[str, bool] = {}
         if team_name:
             team_data = read_team_file(team_name)
@@ -440,10 +446,9 @@ class BridgeServer:
 
         records = [record for record in board.list() if not record.metadata.get("_internal")]
         resolved_ids = {record.id for record in records if record.status == "completed"}
-        plan_state = get_plan_state()
-        runtime_snapshot = self._api.get_runtime_snapshot(session_id) if session_id else None
-        if not isinstance(runtime_snapshot, dict):
-            runtime_snapshot = {}
+        runtime_plan_state = runtime_snapshot.get("planState", {})
+        if not isinstance(runtime_plan_state, dict):
+            runtime_plan_state = {}
 
         payload_tasks: list[dict[str, Any]] = []
         for record in records:
@@ -457,16 +462,12 @@ class BridgeServer:
 
         return web.json_response(
             {
-                "task_list_id": task_list_id or session_id or "",
+                "task_list_id": resolved_task_list_id or "",
                 "tasks": payload_tasks,
                 "include_completed": include_completed,
                 "backgroundTasks": runtime_snapshot.get("backgroundTasks", []),
                 "team": runtime_snapshot.get("team", {}),
-                "planState": {
-                    "isActive": bool(plan_state.is_active),
-                    "planText": str(plan_state.plan_text or ""),
-                    "prePermissionMode": str(plan_state.pre_permission_mode or "default"),
-                },
+                "planState": runtime_plan_state,
             }
         )
 
@@ -564,11 +565,13 @@ class BridgeServer:
             return web.json_response({"error": "Request body must be a JSON object"}, status=400)
 
         session_id = str(payload.get("session_id", "") or "").strip()
-        task_id = str(payload.get("task_id", "") or "").strip()
+        task_id = str(payload.get("task_id", "") or payload.get("taskId", "") or "").strip()
         action = str(payload.get("action", "") or "").strip()
         extra = payload.get("payload", {})
-        if not session_id or not task_id or not action:
-            return web.json_response({"error": "session_id, task_id, and action are required"}, status=400)
+        if not session_id or not action:
+            return web.json_response({"error": "session_id and action are required"}, status=400)
+        if action != "reset_task_list_if_completed" and not task_id:
+            return web.json_response({"error": "task_id is required for this action"}, status=400)
         if not isinstance(extra, dict):
             extra = {}
 

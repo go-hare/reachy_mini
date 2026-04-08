@@ -265,6 +265,24 @@ class TaskBoard:
                     self._write_task(task)
             return True
 
+    def reset(self) -> bool:
+        """Clear the current task list while preserving the high-water mark."""
+        with self._locked(self._lock_path()):
+            current_highest = self._find_highest_task_id_from_files()
+            if current_highest > 0:
+                existing_mark = self._read_high_water_mark()
+                if current_highest > existing_mark:
+                    self._write_high_water_mark(current_highest)
+
+            removed_any = False
+            for path in self._ensure_tasks_dir().glob("*.json"):
+                try:
+                    path.unlink()
+                    removed_any = True
+                except FileNotFoundError:
+                    continue
+            return removed_any
+
     def block(self, from_task_id: str, to_task_id: str) -> bool:
         with self._locked(self._lock_path()):
             source = self.get(str(from_task_id))

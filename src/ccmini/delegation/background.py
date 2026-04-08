@@ -675,6 +675,23 @@ class BackgroundAgentRunner:
                 break
         return results
 
+    def discard_completion(self, task_id: str) -> bool:
+        """Remove one queued completion for *task_id* while preserving order."""
+        kept: list[BackgroundResult] = []
+        removed = False
+        while True:
+            try:
+                item = self._completion_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if not removed and item.task_id == task_id:
+                removed = True
+                continue
+            kept.append(item)
+        for item in kept:
+            self._completion_queue.put_nowait(item)
+        return removed
+
     def get_status(self, task_id: str) -> TaskInfo | None:
         return self._task_manager.get_status(task_id)
 

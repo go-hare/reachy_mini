@@ -28,6 +28,10 @@ import { BuddyCompanion } from '../ccmini/BuddyCompanion.js'
 import { applyCcminiBridgeEvent } from '../ccmini/ccminiMessageAdapter.js'
 import { saveConfiguredTheme } from '../ccmini/loadCcminiConfig.js'
 import {
+  requestCcminiTasksStoreRefresh,
+  useCcminiTasksV2Store,
+} from '../ccmini/tasksStore.js'
+import {
   type DonorCommandCatalogEntry,
   findDonorCommand,
   getDonorCommandCatalog,
@@ -2278,25 +2282,6 @@ function createReadyPlanPanelState(planText: string): PlanPanelState {
   }
 }
 
-function parseRuntimePlanPanelState(value: unknown): PlanPanelState {
-  const record = asRecord(value)
-  if (!record) {
-    return { mode: 'idle' }
-  }
-
-  const isActive = Boolean(record.isActive)
-  const planText =
-    typeof record.planText === 'string' ? record.planText.trim() : ''
-
-  if (isActive) {
-    return createActivePlanPanelState()
-  }
-  if (planText) {
-    return createReadyPlanPanelState(planText)
-  }
-  return { mode: 'idle' }
-}
-
 function mergePlanPanelStates(
   runtimePlanState: PlanPanelState,
   transcriptPlanState: PlanPanelState,
@@ -2568,19 +2553,6 @@ function buildToolUseLookup(
 
 function normalizePlannerTaskStatus(value: unknown): PlannerTaskStatus {
   if (value === 'completed' || value === 'in_progress' || value === 'pending') {
-    return value
-  }
-  return 'pending'
-}
-
-function normalizeBackgroundTaskStatus(value: unknown): CcminiBackgroundTask['status'] {
-  if (
-    value === 'pending' ||
-    value === 'running' ||
-    value === 'completed' ||
-    value === 'failed' ||
-    value === 'killed'
-  ) {
     return value
   }
   return 'pending'
@@ -3637,291 +3609,7 @@ function useCcminiTasksV2(
   error: string | null
   planState: PlanPanelState
 } {
-  const [tasks, setTasks] = useState<CcminiTaskBoardTask[]>([])
-  const [backgroundTasks, setBackgroundTasks] = useState<CcminiBackgroundTask[]>([])
-  const [team, setTeam] = useState<CcminiTeamState>({ name: '', members: [] })
-  const [hidden, setHidden] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [planState, setPlanState] = useState<PlanPanelState>({ mode: 'idle' })
-
-  useEffect(() => {
-    let cancelled = false
-    const root = baseUrl.replace(/\/$/, '')
-    const encodedSessionId = encodeURIComponent(sessionId)
-    let intervalId: ReturnType<typeof setInterval> | null = null
-    let hideTimer: ReturnType<typeof setTimeout> | null = null
-
-    const resetHideTimer = (): void => {
-      if (hideTimer) {
-        clearTimeout(hideTimer)
-        hideTimer = null
-      }
-    }
-
-    const scheduleHide = (): void => {
-      resetHideTimer()
-      hideTimer = setTimeout(() => {
-        if (!cancelled) {
-          setHidden(true)
-        }
-      }, 5000)
-    }
-
-    const resetPoll = (hasActiveTasks: boolean): void => {
-      if (intervalId) {
-        clearInterval(intervalId)
-      }
-      intervalId = setInterval(() => {
-        void poll()
-      }, hasActiveTasks ? 1000 : 4000)
-    }
-
-    const poll = async (): Promise<void> => {
-      try {
-        const response = await fetch(
-          `${root}/api/tasks?session_id=${encodedSessionId}&include_completed=true`,
-          {
-            headers: { Authorization: `Bearer ${authToken}` },
-          },
-        )
-        if (!response.ok) {
-          if (!cancelled) {
-            setError(`HTTP ${response.status}`)
-          }
-          return
-        }
-
-        const payload = (await response.json()) as {
-          tasks?: unknown[]
-          backgroundTasks?: unknown[]
-          team?: unknown
-          planState?: unknown
-        }
-        if (cancelled) {
-          return
-        }
-
-        const nextTasks = Array.isArray(payload.tasks)
-          ? payload.tasks
-              .map(raw => asRecord(raw))
-              .filter((record): record is Record<string, unknown> => record !== null)
-              .map(record => ({
-                id: typeof record.id === 'string' ? record.id : '',
-                subject: typeof record.subject === 'string' ? record.subject : '',
-                description: typeof record.description === 'string' ? record.description : '',
-                activeForm: typeof record.activeForm === 'string' ? record.activeForm : undefined,
-                owner: typeof record.owner === 'string' ? record.owner : undefined,
-                ownerIsActive:
-                  typeof record.ownerIsActive === 'boolean'
-                    ? record.ownerIsActive
-                    : undefined,
-                status: normalizePlannerTaskStatus(record.status),
-                blocks: Array.isArray(record.blocks)
-                  ? record.blocks.filter((value): value is string => typeof value === 'string')
-                  : [],
-                blockedBy: Array.isArray(record.blockedBy)
-                  ? record.blockedBy.filter((value): value is string => typeof value === 'string')
-                  : [],
-                metadata: asRecord(record.metadata) ?? undefined,
-              }))
-              .filter(task => task.id && task.subject)
-          : []
-        const nextPlanState = parseRuntimePlanPanelState(payload.planState)
-        const nextBackgroundTasks = Array.isArray(payload.backgroundTasks)
-          ? payload.backgroundTasks
-              .map(raw => asRecord(raw))
-              .filter((record): record is Record<string, unknown> => record !== null)
-              .map(record => ({
-                id: typeof record.id === 'string' ? record.id : '',
-                type: typeof record.type === 'string' ? record.type : 'local_agent',
-                status: normalizeBackgroundTaskStatus(record.status),
-                description:
-                  typeof record.description === 'string' ? record.description : '',
-                outputFile:
-                  typeof record.outputFile === 'string' ? record.outputFile : undefined,
-                transcriptFile:
-                  typeof record.transcriptFile === 'string'
-                    ? record.transcriptFile
-                    : undefined,
-                startTime:
-                  typeof record.startTime === 'number' ? record.startTime : undefined,
-                endTime:
-                  typeof record.endTime === 'number' ? record.endTime : null,
-                updatedAt:
-                  typeof record.updatedAt === 'number' ? record.updatedAt : undefined,
-                resumeCount:
-                  typeof record.resumeCount === 'number' ? record.resumeCount : 0,
-                canResume:
-                  typeof record.canResume === 'boolean' ? record.canResume : false,
-                promptPreview:
-                  typeof record.promptPreview === 'string'
-                    ? record.promptPreview
-                    : undefined,
-                model: typeof record.model === 'string' ? record.model : undefined,
-                profile:
-                  typeof record.profile === 'string' ? record.profile : undefined,
-                workerName:
-                  typeof record.workerName === 'string'
-                    ? record.workerName
-                    : undefined,
-                teamName:
-                  typeof record.teamName === 'string'
-                    ? record.teamName
-                    : undefined,
-                backendType:
-                  typeof record.backendType === 'string'
-                    ? record.backendType
-                    : undefined,
-                isolation:
-                  typeof record.isolation === 'string'
-                    ? record.isolation
-                    : undefined,
-                agentType:
-                  typeof record.agentType === 'string'
-                    ? record.agentType
-                    : undefined,
-                subagentType:
-                  typeof record.subagentType === 'string'
-                    ? record.subagentType
-                    : undefined,
-                result: typeof record.result === 'string' ? record.result : undefined,
-                error: typeof record.error === 'string' ? record.error : undefined,
-                metadata: asRecord(record.metadata) ?? undefined,
-              }))
-              .filter(task => task.id.length > 0)
-          : []
-        const teamRecord = asRecord(payload.team)
-        const nextTeam: CcminiTeamState = {
-          name:
-            typeof teamRecord?.name === 'string'
-              ? teamRecord.name
-              : '',
-          description:
-            typeof teamRecord?.description === 'string'
-              ? teamRecord.description
-              : undefined,
-          leadAgentId:
-            typeof teamRecord?.leadAgentId === 'string'
-              ? teamRecord.leadAgentId
-              : undefined,
-          leadSessionId:
-            typeof teamRecord?.leadSessionId === 'string'
-              ? teamRecord.leadSessionId
-              : undefined,
-          activeCount:
-            typeof teamRecord?.activeCount === 'number'
-              ? teamRecord.activeCount
-              : undefined,
-          teammateCount:
-            typeof teamRecord?.teammateCount === 'number'
-              ? teamRecord.teammateCount
-              : undefined,
-          members: Array.isArray(teamRecord?.members)
-            ? teamRecord.members
-                .map(raw => asRecord(raw))
-                .filter((record): record is Record<string, unknown> => record !== null)
-                .map(record => ({
-                  agentId:
-                    typeof record.agentId === 'string' ? record.agentId : '',
-                  name: typeof record.name === 'string' ? record.name : '',
-                  agentType:
-                    typeof record.agentType === 'string'
-                      ? record.agentType
-                      : undefined,
-                  model:
-                    typeof record.model === 'string' ? record.model : undefined,
-                  cwd: typeof record.cwd === 'string' ? record.cwd : undefined,
-                  status:
-                    typeof record.status === 'string' ? record.status : undefined,
-                  currentTask:
-                    typeof record.currentTask === 'string'
-                      ? record.currentTask
-                      : undefined,
-                  messagesProcessed:
-                    typeof record.messagesProcessed === 'number'
-                      ? record.messagesProcessed
-                      : undefined,
-                  totalTurns:
-                    typeof record.totalTurns === 'number'
-                      ? record.totalTurns
-                      : undefined,
-                  error:
-                    typeof record.error === 'string' ? record.error : undefined,
-                  isIdle:
-                    typeof record.isIdle === 'boolean' ? record.isIdle : undefined,
-                  isActive:
-                    typeof record.isActive === 'boolean'
-                      ? record.isActive
-                      : undefined,
-                  backendType:
-                    typeof record.backendType === 'string'
-                      ? record.backendType
-                      : undefined,
-                  transcriptFile:
-                    typeof record.transcriptFile === 'string'
-                      ? record.transcriptFile
-                      : undefined,
-                  color:
-                    typeof record.color === 'string' ? record.color : undefined,
-                  planModeRequired:
-                    typeof record.planModeRequired === 'boolean'
-                      ? record.planModeRequired
-                      : undefined,
-                  lastUpdateMs:
-                    typeof record.lastUpdateMs === 'number'
-                      ? record.lastUpdateMs
-                      : undefined,
-                }))
-                .filter(member => member.agentId && member.name)
-            : [],
-        }
-
-        setError(null)
-        setTasks(nextTasks)
-        setBackgroundTasks(nextBackgroundTasks)
-        setTeam(nextTeam)
-        setPlanState(nextPlanState)
-        const hasIncomplete =
-          nextTasks.some(task => task.status !== 'completed') ||
-          nextBackgroundTasks.some(task => task.status === 'running' || task.status === 'pending') ||
-          nextTeam.members.some(member => member.isActive && member.status !== 'shutdown')
-        if (hasIncomplete || nextTasks.length === 0) {
-          setHidden(false)
-          resetHideTimer()
-        } else {
-          scheduleHide()
-        }
-        resetPoll(hasIncomplete)
-      } catch (fetchError) {
-        if (!cancelled) {
-          setError(
-            fetchError instanceof Error
-              ? fetchError.message
-              : 'tasks fetch failed',
-          )
-        }
-      }
-    }
-
-    void poll()
-
-    return () => {
-      cancelled = true
-      if (intervalId) {
-        clearInterval(intervalId)
-      }
-      resetHideTimer()
-    }
-  }, [authToken, baseUrl, sessionId])
-
-  return {
-    tasks: hidden ? [] : tasks,
-    backgroundTasks: hidden ? [] : backgroundTasks,
-    team,
-    hidden,
-    error,
-    planState,
-  }
+  return useCcminiTasksV2Store(baseUrl, authToken, sessionId)
 }
 
 function extractPlanPanelState(
@@ -5548,6 +5236,29 @@ export function CcminiRepl({
         setMessages(prev => appendSystemMessageOnce(prev, error.message, 'error'))
       },
       onEvent: event => {
+        const maybeRefreshTasksStore = (): void => {
+          if (event.type !== 'stream_event') {
+            return
+          }
+          const eventType =
+            typeof event.payload?.event_type === 'string'
+              ? event.payload.event_type
+              : ''
+          const text =
+            typeof event.payload?.text === 'string' ? event.payload.text : ''
+          if (
+            eventType === 'tool_result' ||
+            eventType === 'completion' ||
+            eventType === 'task_state' ||
+            eventType === 'error' ||
+            eventType === 'executor_error' ||
+            (eventType === 'text' &&
+              text.trim().startsWith('<task-notification>'))
+          ) {
+            requestCcminiTasksStoreRefresh(ccminiConnectConfig)
+          }
+        }
+
         if (event.type === 'stream_event') {
           const eventType = event.payload?.event_type
           if (eventType === 'request_start') {
@@ -5624,6 +5335,7 @@ export function CcminiRepl({
           }
         }
 
+        maybeRefreshTasksStore()
         setMessages(prev => applyCcminiBridgeEvent(event, prev))
         if (
           event.type === 'stream_event' &&
@@ -6009,11 +5721,31 @@ export function CcminiRepl({
   )
   const recentTaskNotifications = useMemo(
     () =>
-      messages
-        .map(message => parseTaskNotificationXml(getMessageRawText(message)))
-        .filter((notification): notification is CcminiTaskNotification => notification !== null)
+      renderedMessages
+        .map(item => {
+          const notification = parseTaskNotificationXml(getMessageRawText(item.message))
+          if (!notification) {
+            return null
+          }
+          return {
+            key: item.key,
+            notification,
+          }
+        })
+        .filter(
+          (
+            item,
+          ): item is {
+            key: string
+            notification: CcminiTaskNotification
+          } => item !== null,
+        )
         .slice(-4),
-    [messages],
+    [renderedMessages],
+  )
+  const promotedTaskNotificationKeys = useMemo(
+    () => new Set(recentTaskNotifications.map(item => item.key)),
+    [recentTaskNotifications],
   )
   const toolUseLookup = useMemo(() => buildToolUseLookup(messages), [messages])
   const transcriptPlanPanelState = useMemo(
@@ -6138,9 +5870,9 @@ export function CcminiRepl({
             <React.Fragment>
               {recentTaskNotifications.length > 0 ? (
                 <Box flexDirection="column">
-                  {recentTaskNotifications.map(notification => (
+                  {recentTaskNotifications.map(({ key, notification }) => (
                     <TaskNotificationCard
-                      key={`task-note-${notification.taskId}-${notification.status}-${notification.summary}`}
+                      key={`task-note-${key}`}
                       notification={notification}
                       themeSetting={activeThemeSetting}
                       width={messageWidth}
@@ -6181,6 +5913,14 @@ export function CcminiRepl({
           ) : null}
           {displayEntries.map((entry, index) => {
             const previousEntry = index > 0 ? displayEntries[index - 1] : null
+            const isPromotedTaskNotification =
+              showMultiAgentPanels &&
+              entry.kind === 'message' &&
+              promotedTaskNotificationKeys.has(entry.item.key)
+
+            if (isPromotedTaskNotification) {
+              return null
+            }
 
             return (
               <Box

@@ -34,7 +34,7 @@ import os
 import signal
 import time
 from collections.abc import AsyncGenerator, Callable
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -315,6 +315,9 @@ class Agent:
         self._installed_signals: list[int] = []
         self._coordinator_mode: Any | None = None
         self._mode_overridden_by_host = False
+        self._companion_render_state: Any | None = None
+        self._companion_event_listeners: list[Callable[[dict[str, Any]], Any]] = []
+        self._kairos_task_store: Any | None = None
         self._kairos_prompt_sections_installed = False
         self._kairos_activated_by_agent = False
         self._kairos_proactive_stop: asyncio.Event | None = None
@@ -736,6 +739,28 @@ class Agent:
             for key, value in dict(values or {}).items()
             if str(key).strip() and str(value).strip()
         }
+
+    def set_tools(self, tools: list[Tool]) -> None:
+        """Replace the main tool pool for this agent."""
+        self._tools = list(tools)
+        self._current_turn_tools = list(self._tools)
+        self._refresh_tool_handles()
+
+    def set_sub_agent_tools(self, tools: list[Tool]) -> None:
+        """Replace the default sub-agent tool pool."""
+        self._sub_agent_tools = list(tools)
+
+    def set_tool_profiles(self, profiles: dict[str, ToolProfile]) -> None:
+        """Replace sub-agent tool profiles."""
+        self._tool_profiles = dict(profiles)
+
+    def _refresh_tool_handles(self) -> None:
+        """Refresh host-visible handles derived from the current tool pool."""
+        self._team_create_tool = None
+        for tool in self._tools:
+            if getattr(tool, "name", "") == "TeamCreate":
+                self._team_create_tool = tool
+                break
 
     def on_event(self, callback: Callable[[StreamEvent], Any]) -> Callable[[], None]:
         """Register a listener called for every StreamEvent.
@@ -1371,6 +1396,444 @@ class Agent:
             sync_env=False,
         )
 
+    def is_coordinator_mode(self) -> bool:
+        """Return whether this agent instance is currently in coordinator mode."""
+        return self.get_mode() == "coordinator"
+
+    def list_live_peers(self, *, include_self: bool = False) -> list[Any]:
+        """List other live local sessions discoverable by this runtime."""
+        from .tools.list_peers import list_live_peers
+
+        exclude_session = "" if include_self else self._conversation_id
+        return list_live_peers(exclude_session=exclude_session)
+
+    def _ensure_team_create_tool(self) -> Any:
+        team_tool = getattr(self, "_team_create_tool", None)
+        if team_tool is not None:
+            return team_tool
+
+        from .tools.team import TeamCreateTool
+
+        team_tool = TeamCreateTool(
+            provider=self._provider,
+            coordinator=self._ensure_coordinator_mode(),
+        )
+        self._team_create_tool = team_tool
+        return team_tool
+
+    async def create_team(
+        self,
+        *,
+        team_name: str,
+        description: str = "",
+        agent_type: str = "",
+    ) -> Any:
+        """Create a persistent worker team from the host side."""
+        from .tool import ToolUseContext
+
+        team_tool = self._ensure_team_create_tool()
+        with contextlib.chdir(self.working_directory):
+            result = await team_tool.execute(
+                context=ToolUseContext(conversation_id=self._conversation_id),
+                team_name=team_name,
+                description=description,
+                agent_type=agent_type,
+            )
+        try:
+            return json.loads(result)
+        except Exception:
+            return result
+
+    async def delete_team(self, team_name: str = "") -> str:
+        """Delete the current or named persistent team from the host side."""
+        from .tools.team import TeamDeleteTool
+        from .tool import ToolUseContext
+
+        delete_tool = TeamDeleteTool(self._ensure_team_create_tool())
+        with contextlib.chdir(self.working_directory):
+            return await delete_tool.execute(
+                context=ToolUseContext(conversation_id=self._conversation_id),
+                team_name=team_name,
+            )
+
+    def configure_kairos(self, gate_config: GateConfig | dict[str, Any]) -> GateConfig:
+        """Apply a Kairos gate configuration for this agent instance."""
+        cfg = gate_config if isinstance(gate_config, GateConfig) else GateConfig.from_dict(dict(gate_config))
+        self._config.kairos_gate_config = cfg
+        set_gate_config(cfg)
+        return cfg
+
+    async def activate_kairos(
+        self,
+        *,
+        mode: str | Any = "assistant",
+        trust_accepted: bool | None = None,
+        gate_config: GateConfig | dict[str, Any] | None = None,
+    ) -> bool:
+        """Activate the Kairos runtime and start its live loops when needed."""
+        from .kairos import KairosMode
+
+        if gate_config is not None:
+            self.configure_kairos(gate_config)
+        cfg = self._config.kairos_gate_config or GateConfig.from_env()
+        set_gate_config(cfg)
+
+        normalized_mode = mode.value if isinstance(mode, KairosMode) else str(mode).strip().lower()
+        mode_map = {
+            "assistant": KairosMode.ASSISTANT,
+            "proactive": KairosMode.PROACTIVE_ONLY,
+            "proactive_only": KairosMode.PROACTIVE_ONLY,
+            "cron": KairosMode.CRON_ONLY,
+            "cron_only": KairosMode.CRON_ONLY,
+        }
+        kairos_mode = mode_map.get(normalized_mode)
+        if kairos_mode is None:
+            raise ValueError("mode must be one of: assistant, proactive, cron")
+
+        trusted = check_directory_trust(self.working_directory) if trust_accepted is None else bool(trust_accepted)
+        self._kairos_activated_by_agent = activate_kairos(
+            mode=kairos_mode,
+            trust_accepted=trusted,
+            gate_config=cfg,
+        )
+        if self._kairos_activated_by_agent:
+            self._install_kairos_prompt_sections()
+            if self._running:
+                await self._start_kairos_runtime()
+        return self._kairos_activated_by_agent
+
+    async def deactivate_kairos(self) -> None:
+        """Deactivate Kairos and stop any active runtime loops."""
+        if self._running:
+            await self._stop_kairos_runtime()
+        deactivate_kairos()
+        self._kairos_activated_by_agent = False
+
+    def get_kairos_state(self) -> dict[str, Any]:
+        """Return a host-friendly snapshot of the Kairos runtime state."""
+        from .kairos import get_command_queue, get_gate_config, get_kairos_state as _get_kairos_state
+        from .kairos import is_proactive_active as _is_proactive_active
+
+        state = _get_kairos_state()
+        gate = get_gate_config()
+        queue = get_command_queue()
+        return {
+            "active": bool(state.active),
+            "mode": state.mode.value,
+            "forced": bool(state.forced),
+            "trusted": bool(state.trusted),
+            "paused": bool(state.paused),
+            "sleeping": bool(state.sleeping),
+            "context_blocked": bool(state.context_blocked),
+            "brief_enabled": bool(state.brief_enabled),
+            "user_msg_opt_in": bool(state.user_msg_opt_in),
+            "tick_count": int(state.tick_count),
+            "last_tick_ts": float(state.last_tick_ts),
+            "last_wake_ts": float(state.last_wake_ts),
+            "channels": list(state.channels),
+            "allowed_channel_plugins": list(state.allowed_channel_plugins),
+            "command_queue_size": int(queue.size()),
+            "proactive_active": bool(_is_proactive_active()),
+            "cron_running": bool(getattr(self._kairos_cron_scheduler, "running", False)),
+            "gate_config": {
+                "kairos_enabled": bool(gate.kairos_enabled),
+                "brief_enabled": bool(gate.brief_enabled),
+                "proactive_enabled": bool(gate.proactive_enabled),
+                "cron_enabled": bool(gate.cron_enabled),
+                "cron_durable": bool(gate.cron_durable),
+                "channels_enabled": bool(gate.channels_enabled),
+                "dream_enabled": bool(gate.dream_enabled),
+            },
+        }
+
+    def is_kairos_active(self) -> bool:
+        """Return whether Kairos is active for this runtime."""
+        return bool(is_kairos_active())
+
+    def pause_proactive(self) -> None:
+        """Pause proactive Kairos ticks."""
+        from .kairos import pause_proactive
+
+        pause_proactive()
+
+    def resume_proactive(self) -> None:
+        """Resume proactive Kairos ticks."""
+        from .kairos import resume_proactive
+
+        resume_proactive()
+
+    def is_proactive_active(self) -> bool:
+        """Return whether proactive Kairos ticks are currently active."""
+        from .kairos import is_proactive_active
+
+        return bool(is_proactive_active())
+
+    async def wake(
+        self,
+        reason: str,
+        content: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Interrupt Kairos sleep with a host-originated wake command."""
+        from .kairos import wake_agent
+
+        await wake_agent(reason=reason, content=content, **dict(metadata or {}))
+
+    def enqueue_runtime_command(
+        self,
+        *,
+        source: str,
+        content: str,
+        priority: str = "normal",
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Enqueue a runtime command for Kairos to process on the next wake."""
+        from .kairos import QueuedCommand, get_command_queue
+
+        get_command_queue().enqueue_nowait(
+            QueuedCommand(
+                source=source,
+                content=content,
+                priority=priority,
+                metadata=dict(metadata or {}),
+            )
+        )
+
+    async def publish_channel_notification(
+        self,
+        channel_tag: str,
+        content: str,
+        *,
+        sender: str = "",
+        metadata: dict[str, Any] | None = None,
+        server_name: str = "",
+    ) -> bool:
+        """Publish a Kairos channel notification from the host side."""
+        return await self.inject_channel_notification(
+            channel_tag=channel_tag,
+            content=content,
+            sender=sender,
+            metadata=metadata,
+            server_name=server_name,
+        )
+
+    def _get_kairos_task_store(self) -> Any:
+        from .kairos import TaskStore
+
+        if self._kairos_task_store is None:
+            self._kairos_task_store = TaskStore()
+        return self._kairos_task_store
+
+    def create_cron_task(
+        self,
+        *,
+        name: str,
+        cron_expr: str,
+        prompt: str,
+        task_type: str = "recurring",
+        max_fires: int = 0,
+        metadata: dict[str, Any] | None = None,
+    ) -> Any:
+        """Create a Kairos cron task from the host side."""
+        from .kairos import create_cron_task
+
+        return create_cron_task(
+            self._get_kairos_task_store(),
+            name=name,
+            cron_expr=cron_expr,
+            prompt=prompt,
+            task_type=task_type,
+            max_fires=max_fires,
+            metadata=dict(metadata or {}),
+        )
+
+    def list_cron_tasks(self) -> list[Any]:
+        """List Kairos cron tasks from the host side."""
+        from .kairos import list_cron_tasks
+
+        return list_cron_tasks(self._get_kairos_task_store())
+
+    def delete_cron_task(self, task_id: str) -> bool:
+        """Delete a Kairos cron task from the host side."""
+        from .kairos import delete_cron_task
+
+        return bool(delete_cron_task(self._get_kairos_task_store(), task_id))
+
+    def set_brief_level(self, level: str | Any) -> str:
+        """Set the Kairos brief level."""
+        from .kairos import BriefLevel, set_brief_level
+
+        normalized = level if isinstance(level, BriefLevel) else BriefLevel(str(level).strip().lower())
+        set_brief_level(normalized)
+        return normalized.value
+
+    def get_brief_level(self) -> str:
+        """Return the current Kairos brief level."""
+        from .kairos import get_brief_level
+
+        return get_brief_level().value
+
+    def set_view_mode(self, mode: str | Any) -> str:
+        """Set the Kairos view mode."""
+        from .kairos import ViewMode, set_view_mode
+
+        normalized = mode if isinstance(mode, ViewMode) else ViewMode(str(mode).strip().lower())
+        set_view_mode(normalized)
+        return normalized.value
+
+    def get_view_mode(self) -> str:
+        """Return the current Kairos view mode."""
+        from .kairos import get_view_mode
+
+        return get_view_mode().value
+
+    def get_inbox_snapshot(
+        self,
+        *,
+        limit_per_stream: int = 50,
+        streams: frozenset[str] | None = None,
+    ) -> dict[str, Any]:
+        """Return the Kairos inbox snapshot for host/UI consumption."""
+        from .kairos import get_inbox_snapshot
+
+        return get_inbox_snapshot(limit_per_stream=limit_per_stream, streams=streams)
+
+    def enable_buddy(self, enabled: bool) -> None:
+        """Enable or disable Buddy/Companion behavior for this agent."""
+        self._buddy_enabled = bool(enabled)
+        self._fire_companion_event("buddy_enabled", {"enabled": self._buddy_enabled})
+
+    def is_buddy_enabled(self) -> bool:
+        """Return whether Buddy/Companion behavior is enabled."""
+        return bool(self._buddy_enabled)
+
+    def set_companion_muted(self, muted: bool) -> None:
+        """Mute or unmute the companion for this agent instance."""
+        self._companion_muted = bool(muted)
+        state = self._get_companion_render_state()
+        state.set_muted(bool(muted))
+        self._fire_companion_event("companion_muted", {"muted": bool(muted)})
+
+    def is_companion_muted(self) -> bool:
+        """Return whether the companion is muted for this agent instance."""
+        return bool(self._companion_muted)
+
+    def get_companion(self) -> Any:
+        """Return the currently hatched companion, if any."""
+        from .buddy import companion_user_id, get_companion
+
+        return get_companion(companion_user_id())
+
+    def hatch_companion(
+        self,
+        *,
+        name: str | None = None,
+        species: str | None = None,
+    ) -> Any:
+        """Hatch a companion for the current host user."""
+        from .buddy import companion_user_id, hatch_companion
+
+        companion = hatch_companion(companion_user_id(), name=name)
+        if species is not None and str(species).strip() and str(species).strip() != companion.species:
+            raise ValueError("species override is not supported by the current companion runtime")
+        self._get_companion_render_state()
+        self._fire_companion_event("companion_hatched", {"companion": asdict(companion)})
+        return companion
+
+    def pet_companion(self) -> dict[str, Any]:
+        """Record a companion pet interaction and update render state."""
+        from .buddy import NurtureEngine
+
+        nurture = NurtureEngine.load()
+        nurture.record_pet()
+        self._get_companion_render_state().set_pet()
+        payload = {"pet_count": nurture.pet_count, "last_note": nurture.last_note}
+        self._fire_companion_event("companion_pet", payload)
+        return payload
+
+    def get_companion_nurture_stats(self) -> dict[str, Any]:
+        """Return persisted nurture stats for the current companion."""
+        from .buddy import NurtureEngine
+
+        return asdict(NurtureEngine.load())
+
+    def get_companion_intro_attachment(self) -> list[dict[str, str]]:
+        """Return the companion intro attachment payload for host inspection."""
+        from .buddy import get_companion_intro_attachment
+
+        return get_companion_intro_attachment(
+            self._messages,
+            buddy_enabled=self._buddy_enabled,
+            companion_muted=self._companion_muted,
+        )
+
+    def _get_companion_render_state(self) -> Any:
+        from .buddy import CompanionRenderState
+
+        if self._companion_render_state is None:
+            self._companion_render_state = CompanionRenderState(
+                muted=bool(self._companion_muted),
+            )
+        return self._companion_render_state
+
+    def get_companion_render_payload(self, *, columns: int = 120) -> dict[str, Any]:
+        """Return a host-friendly companion render payload."""
+        from .buddy import companion_reserved_columns, render_companion
+
+        companion = self.get_companion()
+        if companion is None:
+            return {
+                "enabled": bool(self._buddy_enabled),
+                "muted": bool(self._companion_muted),
+                "companion": None,
+                "rendered": "",
+                "reserved_columns": 0,
+            }
+
+        state = self._get_companion_render_state()
+        state.set_muted(bool(self._companion_muted))
+        rendered = render_companion(companion, state, columns=columns)
+        reserved = companion_reserved_columns(
+            companion,
+            columns,
+            speaking=bool(getattr(state, "reaction", None)),
+            muted=bool(self._companion_muted),
+        )
+        return {
+            "enabled": bool(self._buddy_enabled),
+            "muted": bool(self._companion_muted),
+            "companion": asdict(companion),
+            "rendered": rendered,
+            "reserved_columns": reserved,
+            "reaction": getattr(state, "reaction", None),
+            "pet_until": float(getattr(state, "pet_until", 0.0) or 0.0),
+        }
+
+    def on_companion_event(
+        self,
+        callback: Callable[[dict[str, Any]], Any],
+    ) -> Callable[[], None]:
+        """Register a listener for companion lifecycle events."""
+        self._companion_event_listeners.append(callback)
+
+        def unsubscribe() -> None:
+            try:
+                self._companion_event_listeners.remove(callback)
+            except ValueError:
+                pass
+
+        return unsubscribe
+
+    def _fire_companion_event(self, event_type: str, payload: dict[str, Any]) -> None:
+        event = {"event_type": event_type, **payload}
+        for cb in list(self._companion_event_listeners):
+            try:
+                result = cb(event)
+                if asyncio.iscoroutine(result):
+                    asyncio.ensure_future(result)
+            except Exception:
+                logger.debug("Companion listener error", exc_info=True)
+
     def set_runtime_stores(
         self,
         *,
@@ -1884,7 +2347,7 @@ class Agent:
             )
 
             if gate.cron_enabled:
-                store = TaskStore()
+                store = self._get_kairos_task_store()
                 tasks = store.load()
                 if gate.dream_enabled and not any(t.name == "nightly_dream" for t in tasks):
                     create_cron_task(store, **create_dream_cron_task())
