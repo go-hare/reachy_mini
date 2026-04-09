@@ -1,0 +1,106 @@
+{
+  "summary": {
+    "total": 3,
+    "passed": 1,
+    "failed": 2,
+    "generated_at": "2026-04-09T09:53:18",
+    "base_url": "https://api.digitflow.cfd/v1",
+    "model": "gpt-5.4"
+  },
+  "results": {
+    "bridge_pending_roundtrip": {
+      "ok": false,
+      "error": "TimeoutError: timed out"
+    },
+    "multi_worker_team": {
+      "ok": true,
+      "spawn_a": {
+        "status": "teammate_spawned",
+        "prompt": "Reply with exactly WORKER_A_BOOT_OK",
+        "teammate_id": "worker-a@deep-team",
+        "agent_id": "worker-a@deep-team",
+        "agent_type": "general-purpose",
+        "name": "worker-a",
+        "team_name": ""
+      },
+      "spawn_b": {
+        "status": "teammate_spawned",
+        "prompt": "Reply with exactly WORKER_B_BOOT_OK",
+        "teammate_id": "worker-b@deep-team",
+        "agent_id": "worker-b@deep-team",
+        "agent_type": "general-purpose",
+        "name": "worker-b",
+        "team_name": ""
+      },
+      "boot_notes": [
+        "{\"type\":\"idle\",\"agent\":\"worker-b\",\"reason\":\"available\",\"summary\":\"WORKER_B_BOOT_OK\",\"task_id\":\"worker-b@deep-team\"}",
+        "{\"type\":\"idle\",\"agent\":\"worker-a\",\"reason\":\"available\",\"summary\":\"WORKER_A_BOOT_OK\",\"task_id\":\"worker-a@deep-team\"}"
+      ],
+      "direct_notes": [
+        "{\"type\":\"idle\",\"agent\":\"worker-a\",\"reason\":\"available\",\"summary\":\"DIRECT_A_OK\",\"task_id\":\"worker-a@deep-team\"}",
+        "{\"type\":\"idle\",\"agent\":\"worker-b\",\"reason\":\"available\",\"summary\":\"DIRECT_B_OK\",\"task_id\":\"worker-b@deep-team\"}"
+      ],
+      "task_notes": [
+        "{\"type\":\"idle\",\"agent\":\"worker-a\",\"reason\":\"available\",\"summary\":\"TEAM_TASK_A_OK\\n\\nSummary: Finished task A. Token: TEAM_TASK_A_OK\",\"task_id\":\"1\",\"task_status\":\"resolved\"}",
+        "{\"type\":\"idle\",\"agent\":\"worker-b\",\"reason\":\"available\",\"summary\":\"Completed task B. Token: TEAM_TASK_B_OK\",\"task_id\":\"2\",\"task_status\":\"resolved\"}",
+        "{\"type\":\"idle\",\"agent\":\"worker-b\",\"reason\":\"available\",\"summary\":\"Completed task C after confirming prior dependencies were resolved. Token: TEAM_TASK_C_OK\",\"task_id\":\"3\",\"task_status\":\"resolved\"}"
+      ],
+      "task3_started_early": false,
+      "teammates": [
+        {
+          "agent_id": "worker-a@deep-team",
+          "messages_processed": 3,
+          "status": "shutdown",
+          "current_task": ""
+        },
+        {
+          "agent_id": "worker-b@deep-team",
+          "messages_processed": 4,
+          "status": "shutdown",
+          "current_task": ""
+        }
+      ]
+    },
+    "kairos_long_loop": {
+      "ok": false,
+      "activated": true,
+      "tick_before": 0,
+      "tick_active": 0,
+      "paused_before": 0,
+      "paused_after": 0,
+      "resumed_after": 0,
+      "cron_task_seen": false,
+      "cron_task_snapshot": null,
+      "dream_ok": true,
+      "dream_status": "complete",
+      "kairos_state": {
+        "active": true,
+        "mode": "assistant",
+        "forced": false,
+        "trusted": true,
+        "paused": false,
+        "sleeping": true,
+        "context_blocked": false,
+        "brief_enabled": false,
+        "user_msg_opt_in": false,
+        "tick_count": 0,
+        "last_tick_ts": 0.0,
+        "last_wake_ts": 1775699582.2051346,
+        "channels": [],
+        "allowed_channel_plugins": [],
+        "command_queue_size": 0,
+        "proactive_active": true,
+        "cron_running": true,
+        "gate_config": {
+          "kairos_enabled": true,
+          "brief_enabled": false,
+          "proactive_enabled": true,
+          "cron_enabled": true,
+          "cron_durable": true,
+          "channels_enabled": false,
+          "dream_enabled": true
+        }
+      }
+    }
+  }
+}

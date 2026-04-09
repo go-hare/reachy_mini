@@ -1,0 +1,2 @@
+{"role": "user", "content": "You must call HostEcho with token LIVE_PENDING_OK. After the tool result arrives, reply with exactly ROUNDTRIP_OK:LIVE_PENDING_OK and nothing else.", "turn_id": "turn-1775700129112", "created_at": "2026-04-09T10:02:09.112918+08:00"}
+{"role": "assistant", "content": "ROUNDTRIP_OK:LIVE_PENDING_OK", "turn_id": "turn-1775700129112", "created_at": "2026-04-09T10:02:09.113680+08:00"}

@@ -1,0 +1,2 @@
+{"ts": 1775698169.1953518, "role": "user", "content": "Reply with exactly LIVE_SUBAGENT_OK", "metadata": {"event": "prompt", "agent_id": "subagent_cc536704"}}
+{"ts": 1775698171.7676766, "role": "assistant", "content": "LIVE_SUBAGENT_OK", "metadata": {"event": "completion", "agent_id": "subagent_cc536704"}}

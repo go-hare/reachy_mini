@@ -1,0 +1,165 @@
+{
+  "summary": {
+    "total": 12,
+    "passed": 8,
+    "failed": 4,
+    "generated_at": "2026-04-09T11:16:35"
+  },
+  "results": {
+    "file_tools": {
+      "ok": true
+    },
+    "shell_repl_tools": {
+      "ok": true,
+      "bash": "TOOL_BASH_OK",
+      "pwsh": "TOOL_PWSH_OK",
+      "repl": "TOOL_REPL_OK"
+    },
+    "notebook_tool": {
+      "ok": false
+    },
+    "config_tool": {
+      "ok": true
+    },
+    "web_tools": {
+      "ok": true,
+      "search_excerpt": "**Official site**\nOpenAI … We believe our research will eventually lead to artificial general intelligence, a system that can solve human-level problems. Buildi"
+    },
+    "user_delivery_tools": {
+      "ok": true,
+      "inbox": {
+        "file_deliveries": [
+          {
+            "type": "send_user_file",
+            "ts": 1775704594.5038004,
+            "conversation_id": "deliver",
+            "source_path": "D:\\work\\py\\reachy_mini\\src\\ccmini\\.ccmini\\manual_feature_checks\\tool_surface_smoke_20260409_111631\\delivery\\artifact.txt",
+            "byte_length": 13,
+            "content_sha256": "9938be87d35f2a7a2b80237e8dc71806b209aaea8252f12c1b12949f61d40476",
+            "caption": "artifact"
+          }
+        ],
+        "push_notifications": [
+          {
+            "type": "push_notification",
+            "ts": 1775533102.0753386,
+            "conversation_id": "4e79a97e23434085",
+            "title": "live-kairos",
+            "body": "push smoke",
+            "priority": "high"
+          },
+          {
+            "type": "push_notification",
+            "ts": 1775534324.6993353,
+            "conversation_id": "821331dbeced4447",
+            "title": "live-kairos",
+            "body": "push smoke",
+            "priority": "high"
+          },
+          {
+            "type": "push_notification",
+            "ts": 1775534590.6155934,
+            "conversation_id": "b78bd2b220c74330",
+            "title": "live-kairos",
+            "body": "push smoke",
+            "priority": "high"
+          },
+          {
+            "type": "push_notification",
+            "ts": 1775537528.2457187,
+            "conversation_id": "01f43a5b6d404a7f",
+            "title": "live-kairos",
+            "body": "push smoke",
+            "priority": "high"
+          },
+          {
+            "type": "push_notification",
+            "ts": 1775539557.8033743,
+            "conversation_id": "063712fccefa481d",
+            "title": "live-kairos",
+            "body": "push smoke",
+            "priority": "high"
+          },
+          {
+            "type": "push_notification",
+            "ts": 1775696606.1443205,
+            "conversation_id": "085fa1485bce4539",
+            "title": "live-kairos",
+            "body": "push smoke",
+            "priority": "high"
+          },
+          {
+            "type": "push_notification",
+            "ts": 1775698193.2130752,
+            "conversation_id": "live-kairos",
+            "title": "Live smoke",
+            "body": "Kairos push smoke",
+            "priority": "high"
+          },
+          {
+            "type": "push_notification",
+            "ts": 1775698485.8501363,
+            "conversation_id": "live-kairos",
+            "title": "Live smoke",
+            "body": "Kairos push smoke",
+            "priority": "high"
+          },
+          {
+            "type": "push_notification",
+            "ts": 1775698749.7303324,
+            "conversation_id": "live-kairos",
+            "title": "Live smoke",
+            "body": "Kairos push smoke",
+            "priority": "high"
+          },
+          {
+            "type": "push_notification",
+            "ts": 1775704594.504332,
+            "conversation_id": "deliver",
+            "title": "push",
+            "body": "PUSH_OK",
+            "priority": "high"
+          }
+        ],
+        "subscribe_pr": [
+          {
+            "type": "subscribe_pr",
+            "ts": 1775704594.5045779,
+            "conversation_id": "deliver",
+            "repository": "openai/openai-python",
+            "events": [
+              "pull_request"
+            ]
+          }
+        ]
+      }
+    },
+    "search_workflow_tools": {
+      "ok": true,
+      "workflow": "Workflow 'wf': success (0ms)\n  [+] one (StructuredOutput): succeeded [0ms]\n      Result: {   \"data\": \"Structured output provided successfully\",   \"structured_output\": {     \"data\": {       \"token\": \"WF_OK\"     }   } }"
+    },
+    "sleep_tool": {
+      "ok": true,
+      "result": "Slept for 0.3s. Woke because: system. Pending commands: 0."
+    },
+    "remote_trigger_tool": {
+      "ok": false,
+      "error": "RuntimeError: Active transport does not support send_message"
+    },
+    "worktree_tools": {
+      "ok": false,
+      "enter": "Created worktree at D:\\work\\py\\reachy_mini\\src\\ccmini\\.ccmini\\manual_feature_checks\\tool_surface_smoke_20260409_111631\\gitrepo\\.git/mini-agent-worktrees\\smoke-70bc1fbd on branch smoke. Session is now working in the worktree. Use ExitWorktree to leave.",
+      "exit": "Exited and removed worktree at D:\\work\\py\\reachy_mini\\src\\ccmini\\.ccmini\\manual_feature_checks\\tool_surface_smoke_20260409_111631\\gitrepo\\.git/mini-agent-worktrees\\smoke-70bc1fbd. Session is back in D:\\work\\py\\reachy_mini\\src\\ccmini\\.ccmini\\manual_feature_checks\\tool_surface_smoke_20260409_111631\\gitrepo."
+    },
+    "peers_and_team_tools": {
+      "ok": false,
+      "error": "JSONDecodeError: Expecting value: line 1 column 1 (char 0)"
+    },
+    "lsp_and_mcp_tools": {
+      "ok": true,
+      "lsp": "Error: 'file' is required for workspace_symbols (used to detect language server)",
+      "mcp_list": "Error: MCP manager not available",
+      "mcp_read": "Error: MCP manager not available"
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "id": "1",
+  "subject": "Return LIVE_TEAM_TASK_OK",
+  "description": "Claim and finish this team task",
+  "status": "completed",
+  "owner": "worker-one",
+  "blocks": [],
+  "blockedBy": []
+}

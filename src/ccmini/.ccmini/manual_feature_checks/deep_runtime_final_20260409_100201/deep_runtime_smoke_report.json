@@ -1,0 +1,129 @@
+{
+  "summary": {
+    "total": 3,
+    "passed": 3,
+    "failed": 0,
+    "generated_at": "2026-04-09T10:03:30",
+    "base_url": "https://api.digitflow.cfd/v1",
+    "model": "gpt-5.4"
+  },
+  "results": {
+    "bridge_pending_roundtrip": {
+      "ok": true,
+      "session_id": "309737a7bc244634",
+      "event_types": [
+        "request_start",
+        "thinking",
+        "prompt_suggestion",
+        "speculation",
+        "thinking",
+        "tool_call",
+        "usage",
+        "pending_tool_call",
+        "prompt_suggestion",
+        "speculation",
+        "request_start",
+        "thinking",
+        "thinking",
+        "text",
+        "text",
+        "text",
+        "text",
+        "text",
+        "text",
+        "text",
+        "text",
+        "usage",
+        "completion"
+      ],
+      "completion_text": "ROUNDTRIP_OK:LIVE_PENDING_OK"
+    },
+    "multi_worker_team": {
+      "ok": true,
+      "teammates": [
+        {
+          "agent_id": "worker-a@deep-team",
+          "messages_processed": 4,
+          "status": "shutdown"
+        },
+        {
+          "agent_id": "worker-b@deep-team",
+          "messages_processed": 3,
+          "status": "shutdown"
+        }
+      ],
+      "task3_started_early": false
+    },
+    "kairos_long_loop": {
+      "ok": true,
+      "loop_tick_before": 0,
+      "loop_tick_active": 2,
+      "pause_before": 2,
+      "pause_after": 2,
+      "resumed_after": 4,
+      "cron_snapshot": {
+        "id": "af1i9bp6r",
+        "type": "local_agent",
+        "status": "completed",
+        "description": "kairos-cron",
+        "outputFile": "D:\\work\\py\\reachy_mini\\src\\ccmini\\.ccmini\\manual_feature_checks\\deep_runtime_final_20260409_100201\\home\\task_outputs\\af1i9bp6r.md",
+        "transcriptFile": "D:\\work\\py\\reachy_mini\\src\\ccmini\\.ccmini\\manual_feature_checks\\deep_runtime_final_20260409_100201\\home\\task_transcripts\\af1i9bp6r.jsonl",
+        "startTime": 1775700149024,
+        "endTime": 1775700151141,
+        "updatedAt": 1775700151141,
+        "toolUseId": "",
+        "result": "KAIROS_CRON_WAKE_OK",
+        "error": "",
+        "resumeCount": 0,
+        "canResume": true,
+        "promptPreview": "Reply with exactly KAIROS_CRON_WAKE_OK",
+        "model": "",
+        "profile": "",
+        "workerName": "kairos-cron",
+        "teamName": "",
+        "backendType": "",
+        "isolation": "",
+        "agentType": "",
+        "subagentType": "",
+        "metadata": {
+          "promptPreview": "Reply with exactly KAIROS_CRON_WAKE_OK",
+          "profile": "",
+          "model": "",
+          "workerName": "kairos-cron",
+          "canResume": true,
+          "resumeCount": 0
+        }
+      },
+      "dream_status": "complete",
+      "public_state": {
+        "active": true,
+        "mode": "assistant",
+        "forced": false,
+        "trusted": true,
+        "paused": false,
+        "sleeping": true,
+        "context_blocked": false,
+        "brief_enabled": false,
+        "user_msg_opt_in": false,
+        "tick_count": 0,
+        "last_tick_ts": 0.0,
+        "last_wake_ts": 0.0,
+        "channels": [],
+        "allowed_channel_plugins": [],
+        "command_queue_size": 0,
+        "proactive_active": true,
+        "cron_running": true,
+        "gate_config": {
+          "kairos_enabled": true,
+          "brief_enabled": false,
+          "proactive_enabled": true,
+          "cron_enabled": true,
+          "cron_durable": true,
+          "channels_enabled": false,
+          "dream_enabled": true
+        }
+      },
+      "public_tick_mismatch": true
+    }
+  }
+}

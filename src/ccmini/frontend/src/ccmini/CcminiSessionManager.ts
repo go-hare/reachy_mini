@@ -70,7 +70,9 @@ export class CcminiSessionManager {
     }
 
     await new Promise<void>((resolve, reject) => {
-      const wsUrl = this.toWebSocketUrl(this.config.baseUrl)
+      const wsUrl = this.toWebSocketUrl(
+        this.config.websocketUrl ?? this.config.baseUrl,
+      )
       const ws = new WebSocket(wsUrl)
       this.ws = ws
 
@@ -317,16 +319,16 @@ export class CcminiSessionManager {
     }
   }
 
-  private toWebSocketUrl(baseUrl: string): string {
-    if (baseUrl.startsWith('ws://') || baseUrl.startsWith('wss://')) {
-      return baseUrl
+  private toWebSocketUrl(url: string): string {
+    if (url.startsWith('ws://') || url.startsWith('wss://')) {
+      return url
     }
-    if (baseUrl.startsWith('http://')) {
-      return `ws://${baseUrl.slice('http://'.length)}`
+    if (url.startsWith('http://')) {
+      return `ws://${url.slice('http://'.length)}`
     }
-    if (baseUrl.startsWith('https://')) {
-      return `wss://${baseUrl.slice('https://'.length)}`
+    if (url.startsWith('https://')) {
+      return `wss://${url.slice('https://'.length)}`
     }
-    return `ws://${baseUrl}`
+    return `ws://${url}`
   }
 }

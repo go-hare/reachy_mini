@@ -87,6 +87,11 @@ def build_tick_message(*, local_time: str | None = None) -> dict[str, Any]:
     now = local_time or time.strftime("%Y-%m-%d %H:%M:%S %Z")
     _state.metrics.tick_count += 1
     _state.metrics.last_tick_ts = time.time()
+    _mutate_state(
+        tick_count=_state.metrics.tick_count,
+        last_tick_ts=_state.metrics.last_tick_ts,
+        sleeping=False,
+    )
     return {
         "role": "user",
         "content": f"<{TICK_TAG}>{now}</{TICK_TAG}>",

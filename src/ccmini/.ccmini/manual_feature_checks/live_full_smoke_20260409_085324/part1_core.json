@@ -1,0 +1,56 @@
+{
+  "summary": {
+    "part": "core",
+    "base_url": "https://api.digitflow.cfd/v1",
+    "model": "gpt-5.4",
+    "total": 7,
+    "passed": 6,
+    "failed": 1,
+    "generated_at": "2026-04-09T08:55:13.097321"
+  },
+  "results": {
+    "query_context": {
+      "reply1": "LIVE_QUERY_OK",
+      "reply2": "LIVE_QUERY_OK",
+      "ok": true,
+      "duration_sec": 5.282
+    },
+    "tool_flow": {
+      "reply": "LIVE_TOOL_OK",
+      "ok": true,
+      "duration_sec": 4.037
+    },
+    "buddy_and_memory": {
+      "memory_path": "C:\\Users\\ADMINI~1\\AppData\\Local\\Temp\\ccmini_live_part1_lvw36vrn\\home\\session_memory\\6d8ad2c64be04c37\\session_notes.md",
+      "status": "Smoke — robot (epic), unmuted\npersonality: curious and supportive\npets recorded: 1",
+      "ok": true,
+      "duration_sec": 21.033
+    },
+    "todo_and_plan_mode": {
+      "todo_result": "Todo list updated: 2 created. Total: 2 (pending=0, in_progress=1, completed=1)",
+      "plan_excerpt": "Plan mode complete. Here is the plan for user approval:\n\n## Implementation Plan\n\n### Summary\nReview current project.\n\n### Approach\nInspect key files, derive module layout, then sum",
+      "ok": true,
+      "duration_sec": 0.124
+    },
+    "task_tools": {
+      "task_id": "1",
+      "listed_count": 1,
+      "ok": true,
+      "duration_sec": 0.128
+    },
+    "subagent_parallel": {
+      "parallel_replies": [
+        "LIVE_POOL_ONE_OK",
+        "LIVE_POOL_TWO_OK"
+      ],
+      "ok": true,
+      "duration_sec": 3.873
+    },
+    "background_subagent": {
+      "ok": false,
+      "error": "final_status='completed' result_text=\"Error: cannot access local variable 'remote_agent' where it is not associated with a value\"",
+      "traceback": "Traceback (most recent call last):\n  File \"<stdin>\", line 89, in run_case\n  File \"<stdin>\", line 201, in case_background_subagent\nAssertionError: final_status='completed' result_text=\"Error: cannot access local variable 'remote_agent' where it is not associated with a value\"\n",
+      "duration_sec": 0.371
+    }
+  }
+}

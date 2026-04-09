@@ -1,0 +1,2 @@
+{"ts": 1775698173.9544065, "task_id": "aluf4coim", "role": "user", "content": "Reply with exactly LIVE_BG_OK", "metadata": {"event": "spawn", "name": "live-bg", "task_type": "local_agent", "profile": ""}}
+{"ts": 1775698176.5671637, "task_id": "aluf4coim", "role": "assistant", "content": "Context received. How can I help?", "metadata": {"event": "completion"}}

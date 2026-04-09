@@ -30,7 +30,7 @@ from ..messages import (
 from ..profiles import RuntimeProfile
 from ..prompts import SystemPrompt
 from ..providers import BaseProvider, ProviderConfig
-from ..tool import Tool
+from ..tool import ClientTool, Tool, ToolResult, ToolUseContext, find_tool_by_name
 from .api import BridgeAPI
 from .core import BridgeConfig, BridgeServer
 from .net_utils import build_connect_url
@@ -209,6 +209,7 @@ class _ExecutorBridgeAPI(BridgeAPI):
         self._host = host
         super().__init__(
             on_query=self._host._handle_query,
+            on_tool_call=self._host._handle_tool_call,
             on_submit_tool_results=self._host._handle_submit_tool_results,
         )
 
@@ -734,6 +735,77 @@ class RemoteExecutorHost:
             name=f"remote-executor-submit-{session_id}",
         )
         return "accepted"
+
+    async def _handle_tool_call(
+        self,
+        session_id: str,
+        tool_name: str,
+        tool_input: dict[str, Any],
+    ) -> str:
+        state = await self._ensure_started(session_id)
+        if state.active_query is not None and not state.active_query.done():
+            return "busy"
+
+        async with state.lock:
+            tool = find_tool_by_name(state.agent.tools, tool_name)
+            if tool is None:
+                raise RuntimeError(f"Unknown tool: {tool_name}")
+            if isinstance(tool, ClientTool):
+                raise RuntimeError(
+                    f"Tool {tool_name} requires client-side execution and cannot run over RemoteTrigger."
+                )
+
+            context = self._build_tool_context(session_id, state.agent)
+            raw_result = await tool.execute(
+                context=context,
+                **(tool_input if isinstance(tool_input, dict) else {}),
+            )
+            if isinstance(raw_result, ToolResult):
+                output_text = self._stringify_tool_output(raw_result.output)
+                if raw_result.context_modifier is not None:
+                    context = raw_result.context_modifier(context)
+                if raw_result.behavior in {"error", "deny"}:
+                    raise RuntimeError(output_text or f"{tool_name} returned {raw_result.behavior}")
+                return output_text
+            return self._stringify_tool_output(raw_result)
+
+    def _build_tool_context(self, session_id: str, agent: Agent) -> ToolUseContext:
+        system_prompt = ""
+        renderer = getattr(agent, "_system_prompt", None)
+        if renderer is not None and hasattr(renderer, "render"):
+            try:
+                system_prompt = renderer.render()
+            except Exception:
+                system_prompt = ""
+        return ToolUseContext(
+            conversation_id=session_id,
+            agent_id=agent._agent_id,
+            messages=list(agent.messages),
+            system_prompt=system_prompt,
+            options={"tools": list(agent.tools)},
+            extras={
+                "agent": agent,
+                "messages": list(agent.messages),
+                "system_prompt": system_prompt,
+                "attachment_collector": getattr(agent, "_attachment_collector", None),
+                "summary_provider": getattr(agent, "_summary_provider", None),
+                "fallback_config": getattr(agent, "_fallback_config", None),
+                "session_memory_content": agent._get_session_memory_content(),
+                "working_directory": agent.working_directory,
+                "query_source": "remote_trigger",
+            },
+        )
+
+    @staticmethod
+    def _stringify_tool_output(value: Any) -> str:
+        if isinstance(value, str):
+            return value
+        if isinstance(value, list):
+            return tool_result_content_to_text(value)
+        try:
+            return json.dumps(value, ensure_ascii=False)
+        except Exception:
+            return str(value)
 
     async def _run_query(
         self,

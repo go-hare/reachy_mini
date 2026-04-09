@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "updated_at": 1775698749.7298884,
+  "tasks": [
+    {
+      "id": "a6e8e178c1ff",
+      "name": "live-cron",
+      "cron_expr": "*/5 * * * *",
+      "prompt": "ping",
+      "task_type": "recurring",
+      "enabled": true,
+      "created_at": 1775698749.7293346,
+      "last_fired_at": 0.0,
+      "fire_count": 0,
+      "max_fires": 0,
+      "metadata": {}
+    }
+  ]
+}

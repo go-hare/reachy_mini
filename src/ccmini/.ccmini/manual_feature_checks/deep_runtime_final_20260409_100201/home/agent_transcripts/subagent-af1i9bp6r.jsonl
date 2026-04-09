@@ -1,0 +1,2 @@
+{"ts": 1775700149.0249078, "role": "user", "content": "Reply with exactly KAIROS_CRON_WAKE_OK", "metadata": {"event": "prompt", "agent_id": "af1i9bp6r"}}
+{"ts": 1775700151.1391628, "role": "assistant", "content": "KAIROS_CRON_WAKE_OK", "metadata": {"event": "completion", "agent_id": "af1i9bp6r"}}

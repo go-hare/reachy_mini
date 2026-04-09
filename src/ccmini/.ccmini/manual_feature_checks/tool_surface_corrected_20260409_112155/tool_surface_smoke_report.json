@@ -1,0 +1,53 @@
+{
+  "summary": {
+    "total": 14,
+    "passed": 13,
+    "failed": 1,
+    "generated_at": "2026-04-09T11:22:11"
+  },
+  "results": {
+    "file_tools": {
+      "ok": true
+    },
+    "shell_repl_tools": {
+      "ok": true
+    },
+    "notebook_tool": {
+      "ok": true
+    },
+    "config_tool": {
+      "ok": true
+    },
+    "web_tools": {
+      "ok": true
+    },
+    "user_delivery_tools": {
+      "ok": true
+    },
+    "search_workflow_tools": {
+      "ok": true
+    },
+    "sleep_tool": {
+      "ok": true
+    },
+    "remote_trigger_polling_tool": {
+      "ok": true
+    },
+    "remote_trigger_auto_mode": {
+      "ok": false,
+      "error": "RuntimeError: Active transport does not support send_message"
+    },
+    "worktree_tools": {
+      "ok": true
+    },
+    "peers_tool": {
+      "ok": true
+    },
+    "lsp_and_mcp_tools": {
+      "ok": true
+    },
+    "todo_task_cron_direct": {
+      "ok": true
+    }
+  }
+}

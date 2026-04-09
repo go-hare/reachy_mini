@@ -1,0 +1,8 @@
+{
+  "peer_id": "worker-one@live-team",
+  "pid": 43336,
+  "name": "worker-one",
+  "capabilities": [],
+  "started_at": "2026-04-09T09:29:36.686128",
+  "team_name": "live-team"
+}

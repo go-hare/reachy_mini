@@ -1,0 +1,45 @@
+{
+  "summary": {
+    "part": "team",
+    "total": 3,
+    "passed": 2,
+    "failed": 1,
+    "generated_at": "2026-04-09T09:01:32.793897"
+  },
+  "results": {
+    "coordinator_team_spawn": {
+      "ok": true,
+      "teammate_id": "worker-one@live-team",
+      "messages_processed": 1,
+      "mailbox": [
+        "{\"type\":\"idle\",\"agent\":\"worker-one\",\"reason\":\"available\",\"summary\":\"LIVE_TEAM_BOOT_OK\",\"task_id\":\"worker-one@live-team\"}"
+      ]
+    },
+    "team_task_auto_claim": {
+      "ok": false,
+      "task_id": "1",
+      "messages_processed": 1,
+      "mailbox": [],
+      "task_list": {
+        "tasks": [
+          {
+            "id": "1",
+            "subject": "Return LIVE_TEAM_TASK_OK",
+            "status": "pending",
+            "owner": null,
+            "blockedBy": []
+          }
+        ]
+      }
+    },
+    "team_send_message_and_task_stop": {
+      "ok": true,
+      "send_result": "Message sent to teammate 'worker-one' in team 'live-team'.",
+      "stop_result": "Shutdown sent to worker worker-one (worker-one@live-team).",
+      "mailbox": [
+        "{\"type\":\"idle\",\"agent\":\"worker-one\",\"reason\":\"available\",\"summary\":\"LIVE_TEAM_FOLLOWUP_OK\",\"task_id\":\"worker-one@live-team\"}"
+      ],
+      "messages_processed": 2
+    }
+  }
+}

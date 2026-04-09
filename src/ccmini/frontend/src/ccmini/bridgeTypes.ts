@@ -12,6 +12,7 @@ export type CcminiRemoteContent =
 
 export type CcminiConnectConfig = {
   baseUrl: string
+  websocketUrl?: string
   authToken: string
   sessionId: string
   mode?: CcminiTransportMode

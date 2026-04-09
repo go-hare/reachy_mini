@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "updated_at": 1775699987.9966807,
+  "tasks": [
+    {
+      "id": "850f05b18618",
+      "name": "nightly_dream",
+      "cron_expr": "0 3 * * *",
+      "prompt": "Run nightly memory consolidation.",
+      "task_type": "recurring",
+      "enabled": true,
+      "created_at": 1775699987.996607,
+      "last_fired_at": 0.0,
+      "fire_count": 0,
+      "max_fires": 0,
+      "metadata": {}
+    }
+  ]
+}

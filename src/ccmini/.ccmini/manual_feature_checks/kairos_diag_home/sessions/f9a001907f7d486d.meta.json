@@ -1,0 +1,17 @@
+{
+  "session_id": "f9a001907f7d486d",
+  "title": "",
+  "cwd": "D:\\work\\py\\reachy_mini\\src\\ccmini\\.ccmini\\manual_feature_checks\\kairos_diag_home\\workspace",
+  "tags": [],
+  "created_at": 1775699673.3615434,
+  "updated_at": 1775699677.411352,
+  "message_count": 4,
+  "total_tokens": 0,
+  "total_cost_usd": 0,
+  "model": "gpt-5.4",
+  "parent_session": "",
+  "last_stop_reason": "",
+  "turn_phase": "",
+  "pending_run_id": "",
+  "pending_tool_count": 0
+}

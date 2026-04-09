@@ -466,15 +466,15 @@ class BackgroundAgentRunner:
                 max_turns=max_turns,
                 model=model,
             )
-        if not getattr(remote_agent, "_messages", None):
-            seeded_messages = list(parent_messages or [])
-            if initial_messages:
-                seeded_messages.extend(initial_messages)
-            if seeded_messages:
-                remote_agent._messages = copy.deepcopy(seeded_messages)
-                runtime_context.context_messages = copy.deepcopy(seeded_messages)
-                with contextlib.suppress(Exception):
-                    remote_agent._persist_session_snapshot()
+            if not getattr(remote_agent, "_messages", None):
+                seeded_messages = list(parent_messages or [])
+                if initial_messages:
+                    seeded_messages.extend(initial_messages)
+                if seeded_messages:
+                    remote_agent._messages = copy.deepcopy(seeded_messages)
+                    runtime_context.context_messages = copy.deepcopy(seeded_messages)
+                    with contextlib.suppress(Exception):
+                        remote_agent._persist_session_snapshot()
             reply = ""
             error = ""
             if initial_messages:

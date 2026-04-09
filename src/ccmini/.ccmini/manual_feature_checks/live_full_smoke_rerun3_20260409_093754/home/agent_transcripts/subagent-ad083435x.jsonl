@@ -1,0 +1,2 @@
+{"ts": 1775698722.676596, "role": "user", "content": "Ignore any earlier context and reply with exactly LIVE_BG_OK", "metadata": {"event": "prompt", "agent_id": "ad083435x"}}
+{"ts": 1775698725.464615, "role": "assistant", "content": "Understood. I’ll ignore any earlier context and only use what’s in this conversation from here forward.", "metadata": {"event": "completion", "agent_id": "ad083435x"}}

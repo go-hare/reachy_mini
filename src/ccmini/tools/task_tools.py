@@ -401,9 +401,13 @@ def _sync_team_task_list(
     removed_task_id: str = "",
 ) -> None:
     extras = getattr(context, "extras", {}) or {}
-    team_name = str(extras.get("team_name", "") or "").strip()
     agent = extras.get("agent")
     team_tool = getattr(agent, "_team_create_tool", None) if agent is not None else None
+    team_name = (
+        str(extras.get("team_name", "") or "").strip()
+        or str(extras.get("active_team_name", "") or "").strip()
+        or str(getattr(team_tool, "_active_team_name", "") or "").strip()
+    )
     if not team_name or team_tool is None:
         return
 

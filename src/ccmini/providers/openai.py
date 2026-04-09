@@ -83,6 +83,7 @@ class OpenAIProvider(BaseProvider):
         self._config = config
         self._retry_config: RetryConfig = config.retry
         self._client: Any = None
+        self._force_stream_complete = False
 
     def _ensure_client(self) -> Any:
         if self._client is None:
@@ -268,6 +269,13 @@ class OpenAIProvider(BaseProvider):
         ):
             kwargs["reasoning_effort"] = reasoning_effort
 
+        if self._force_stream_complete:
+            return await self._complete_via_stream(
+                client,
+                kwargs,
+                query_source=query_source,
+            )
+
         async def _call() -> Any:
             return await client.chat.completions.create(**kwargs)
 
@@ -277,7 +285,11 @@ class OpenAIProvider(BaseProvider):
             query_source=query_source or "main",
             model=self._config.model,
         )
+        coerced = _coerce_nonstandard_openai_response(response)
+        if coerced is not None:
+            return coerced
         if _should_fallback_to_streaming_complete(response):
+            self._force_stream_complete = True
             logger.debug(
                 "OpenAI-compatible complete() returned empty content for %s; "
                 "retrying via streaming fallback",
@@ -475,12 +487,153 @@ def _from_openai_response(response: Any) -> Message:
 
 
 def _should_fallback_to_streaming_complete(response: Any) -> bool:
+    if isinstance(response, str):
+        return response.lstrip().startswith("data:")
+    if isinstance(response, dict):
+        choices = response.get("choices")
+        if not isinstance(choices, list) or not choices:
+            return True
+        choice = choices[0] if choices else {}
+        if not isinstance(choice, dict):
+            return True
+        message_payload = choice.get("message")
+        if not isinstance(message_payload, dict):
+            return True
+        return message_payload.get("content", None) is None and not message_payload.get("tool_calls", None)
     try:
         choice = response.choices[0]
         msg = choice.message
     except Exception:
         return False
     return getattr(msg, "content", None) is None and not getattr(msg, "tool_calls", None)
+
+
+def _coerce_nonstandard_openai_response(response: Any) -> Message | None:
+    if isinstance(response, Message):
+        return response
+    if isinstance(response, str):
+        stripped = response.strip()
+        if not stripped:
+            return assistant_message("")
+        if stripped.startswith("data:"):
+            return _message_from_openai_sse_response(stripped)
+        return assistant_message(stripped)
+    if isinstance(response, dict):
+        return _message_from_openai_dict(response)
+    return None
+
+
+def _message_from_openai_dict(payload: dict[str, Any]) -> Message | None:
+    choices = payload.get("choices")
+    if isinstance(choices, list) and choices:
+        choice = choices[0]
+        if isinstance(choice, dict):
+            message_payload = choice.get("message")
+            if isinstance(message_payload, dict):
+                return _message_from_openai_message_payload(message_payload)
+
+    for key in ("content", "text", "response"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return assistant_message(value.strip())
+    return None
+
+
+def _message_from_openai_sse_response(raw: str) -> Message | None:
+    text_parts: list[str] = []
+    pending_tool_calls: dict[int, dict[str, str]] = {}
+    for raw_line in raw.splitlines():
+        line = raw_line.strip()
+        if not line.startswith("data:"):
+            continue
+        payload_text = line[len("data:"):].strip()
+        if not payload_text or payload_text == "[DONE]":
+            continue
+        try:
+            payload = json.loads(payload_text)
+        except json.JSONDecodeError:
+            continue
+        choices = payload.get("choices")
+        if not isinstance(choices, list):
+            continue
+        for choice in choices:
+            if not isinstance(choice, dict):
+                continue
+            message_payload = choice.get("message")
+            if isinstance(message_payload, dict):
+                message = _message_from_openai_message_payload(message_payload)
+                if message is not None:
+                    return message
+                continue
+            delta = choice.get("delta")
+            if not isinstance(delta, dict):
+                continue
+            content = delta.get("content")
+            if isinstance(content, str) and content:
+                text_parts.append(content)
+            _accumulate_openai_tool_calls(pending_tool_calls, delta.get("tool_calls"))
+
+    return _message_from_openai_parts(text_parts, pending_tool_calls)
+
+
+def _message_from_openai_message_payload(message_payload: dict[str, Any]) -> Message | None:
+    text_parts: list[str] = []
+    content = message_payload.get("content")
+    if isinstance(content, str) and content:
+        text_parts.append(content)
+    pending_tool_calls: dict[int, dict[str, str]] = {}
+    _accumulate_openai_tool_calls(pending_tool_calls, message_payload.get("tool_calls"))
+    return _message_from_openai_parts(text_parts, pending_tool_calls)
+
+
+def _message_from_openai_parts(
+    text_parts: list[str],
+    pending_tool_calls: dict[int, dict[str, str]],
+) -> Message | None:
+    blocks: list[ContentBlock] = []
+    text = "".join(text_parts).strip()
+    if text:
+        blocks.append(TextBlock(text=text))
+    for index in sorted(pending_tool_calls):
+        entry = pending_tool_calls[index]
+        blocks.append(
+            ToolUseBlock(
+                id=entry["id"],
+                name=entry["name"],
+                input=_safe_parse_json(entry["arguments"]),
+            )
+        )
+    if not blocks:
+        return None
+    return assistant_message(blocks if len(blocks) > 1 else blocks[0].text if isinstance(blocks[0], TextBlock) else blocks)
+
+
+def _accumulate_openai_tool_calls(
+    pending_tool_calls: dict[int, dict[str, str]],
+    tool_calls: Any,
+) -> None:
+    if not isinstance(tool_calls, list):
+        return
+    for index, tool_call in enumerate(tool_calls):
+        if not isinstance(tool_call, dict):
+            continue
+        tc_index = int(tool_call.get("index", index) or index)
+        entry = pending_tool_calls.setdefault(
+            tc_index,
+            {"id": "", "name": "", "arguments": ""},
+        )
+        tc_id = tool_call.get("id")
+        if isinstance(tc_id, str) and tc_id:
+            entry["id"] = tc_id
+        function = tool_call.get("function")
+        if not isinstance(function, dict):
+            continue
+        name = function.get("name")
+        if isinstance(name, str) and name:
+            entry["name"] = name
+        arguments = function.get("arguments")
+        if isinstance(arguments, str) and arguments:
+            entry["arguments"] += arguments
 
 
 def _safe_parse_json(text: str) -> dict[str, Any]:

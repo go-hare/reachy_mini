@@ -1,0 +1,16 @@
+[
+  {
+    "from": "worker-one",
+    "text": "{\"type\":\"idle\",\"agent\":\"worker-one\",\"reason\":\"available\",\"summary\":\"LIVE_TEAM_BOOT_OK\",\"task_id\":\"worker-one@live-team\"}",
+    "timestamp": "2026-04-09T09:29:40.103492",
+    "read": true,
+    "type": "idle"
+  },
+  {
+    "from": "worker-one",
+    "text": "{\"type\":\"idle\",\"agent\":\"worker-one\",\"reason\":\"available\",\"summary\":\"LIVE_TEAM_TASK_OK\",\"task_id\":\"1\",\"task_status\":\"resolved\"}",
+    "timestamp": "2026-04-09T09:29:43.160886",
+    "read": true,
+    "type": "idle"
+  }
+]

@@ -1,0 +1,17 @@
+{
+  "session_id": "3e29078b105948d3",
+  "title": "",
+  "cwd": "D:\\work\\py\\reachy_mini\\src\\ccmini",
+  "tags": [],
+  "created_at": 1775698674.6425638,
+  "updated_at": 1775698680.8768036,
+  "message_count": 4,
+  "total_tokens": 735,
+  "total_cost_usd": 0.0,
+  "model": "gpt-5.4",
+  "parent_session": "",
+  "last_stop_reason": "stop",
+  "turn_phase": "completed",
+  "pending_run_id": "",
+  "pending_tool_count": 0
+}

@@ -1,0 +1,19 @@
+{
+  "session_id": "caa37ddcafe84022",
+  "start_time": 1775700121.8528168,
+  "total_cost_usd": 0.004089,
+  "total_requests": 2,
+  "total_input_tokens": 1058,
+  "total_output_tokens": 61,
+  "tool_calls": {
+    "HostEcho": 1
+  },
+  "model_usage": {
+    "gpt-5.4": {
+      "request_count": 2,
+      "input_tokens": 1058,
+      "output_tokens": 61,
+      "cost_usd": 0.004089
+    }
+  }
+}

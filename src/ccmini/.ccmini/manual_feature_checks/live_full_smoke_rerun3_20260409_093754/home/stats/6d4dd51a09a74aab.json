@@ -1,0 +1,19 @@
+{
+  "session_id": "6d4dd51a09a74aab",
+  "start_time": 1775698680.8788629,
+  "total_cost_usd": 0.002988,
+  "total_requests": 2,
+  "total_input_tokens": 796,
+  "total_output_tokens": 40,
+  "tool_calls": {
+    "EchoLive": 1
+  },
+  "model_usage": {
+    "gpt-5.4": {
+      "request_count": 2,
+      "input_tokens": 796,
+      "output_tokens": 40,
+      "cost_usd": 0.002988
+    }
+  }
+}

@@ -1,0 +1,2 @@
+{"ts": 1775698722.6761045, "task_id": "ad083435x", "role": "user", "content": "Ignore any earlier context and reply with exactly LIVE_BG_OK", "metadata": {"event": "spawn", "name": "live-bg", "task_type": "local_agent", "profile": ""}}
+{"ts": 1775698725.4650137, "task_id": "ad083435x", "role": "assistant", "content": "Understood. I’ll ignore any earlier context and only use what’s in this conversation from here forward.", "metadata": {"event": "completion"}}

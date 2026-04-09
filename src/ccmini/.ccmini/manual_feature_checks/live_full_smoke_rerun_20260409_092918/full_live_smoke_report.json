@@ -1,0 +1,74 @@
+{
+  "summary": {
+    "total": 11,
+    "passed": 7,
+    "failed": 4,
+    "generated_at": "2026-04-09T09:29:53",
+    "base_url": "https://api.digitflow.cfd/v1",
+    "model": "gpt-5.4"
+  },
+  "results": {
+    "query_context": {
+      "ok": true,
+      "first": "LIVE_QUERY_OK",
+      "second": "LIVE_QUERY_OK"
+    },
+    "tool_flow": {
+      "ok": true,
+      "reply": "LIVE_TOOL_OK"
+    },
+    "buddy_and_session_memory": {
+      "ok": false,
+      "error": "AttributeError: 'Agent' object has no attribute 'get_nurture_status'"
+    },
+    "todo_and_plan_mode": {
+      "ok": true,
+      "enter": "Entered plan mode. You should now focus on exploring the codebase and designing an implementation approach.\n\nIn plan mode:\n1. Thoroughly explore the codebase to understand existing patterns\n2. Identify similar features and architectural approaches\n3. Consider multiple approaches and their trade-offs\n4. Use AskUserQuestion if you need to clarify the approach\n5. Design a concrete implementation strategy\n6. When ready, use ExitPlanMode to present your plan for approval\n\nDO NOT write or edit any files yet. This is a read-only exploration and planning phase.",
+      "todo": "Todo list updated: 3 created. Total: 3 (pending=1, in_progress=1, completed=1)",
+      "exit": "Plan mode complete. Here is the plan for user approval:\n\n## Implementation Plan\n\n### Summary\nLive smoke plan\n\n### Approach\n1. Read\n2. Inspect\n3. Summarize\n\n### Files to Modify\n['none']\n\n### Verificati"
+    },
+    "task_tools": {
+      "ok": true,
+      "task_id": "1"
+    },
+    "subagent_parallel": {
+      "ok": true,
+      "reply": "LIVE_SUBAGENT_OK",
+      "parallel": [
+        "LIVE_PARALLEL_A",
+        "LIVE_PARALLEL_B"
+      ]
+    },
+    "background_subagent": {
+      "ok": false,
+      "task_id": "aluf4coim",
+      "reply": "Context received. How can I help?",
+      "error": "",
+      "status": "running"
+    },
+    "team_and_coordinator": {
+      "ok": false,
+      "error": "TypeError: SendMessageTool.__init__() got an unexpected keyword argument 'background_runner'"
+    },
+    "hooks_and_permissions": {
+      "ok": true,
+      "hook_blocking": true,
+      "plan_decision": "deny",
+      "accept_decision": "deny",
+      "auto_safe": "allow",
+      "auto_danger": "deny"
+    },
+    "bridge_remote": {
+      "ok": false,
+      "reply": "accepted",
+      "session_id": "6888d02ca474478c"
+    },
+    "kairos": {
+      "ok": true,
+      "reply": "LIVE_KAIROS_OK",
+      "cron_id": "bb44fdbf24d7",
+      "cron_count": 1,
+      "push_ok": true
+    }
+  }
+}

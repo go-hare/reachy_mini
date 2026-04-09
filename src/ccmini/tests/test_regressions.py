@@ -26,7 +26,7 @@ import ccmini.services.prompt_suggestion as prompt_suggestion_module
 import ccmini.tools.plan_mode as plan_mode_module
 from ccmini.agent import Agent, AgentConfig, ConversationRecovery, ToolProfile
 from ccmini.auth import load_auth_state
-from ccmini.bridge import BridgeConfig, BridgeServer, RemoteExecutorHost, create_remote_executor_host
+from ccmini.bridge import BridgeClient, BridgeConfig, BridgeServer, RemoteExecutorHost, create_remote_executor_host
 from ccmini.config import CLIConfig, load_config, load_profile, sync_remote_config
 from ccmini.commands import SlashCommand
 from ccmini.commands.types import Command, CommandSource, CommandType
@@ -76,6 +76,7 @@ from ccmini.tools.list_peers import _get_sessions_dir
 from ccmini.tools.bash import BashTool
 from ccmini.tools.file_read import FileReadTool
 from ccmini.tools.file_write import FileWriteTool
+from ccmini.tools.remote_trigger import RemoteTriggerTool
 from ccmini.tools.send_message import SendMessageTool
 from ccmini.tools.task_tools import TaskBoard, TaskCreateTool, TaskGetTool, TaskListTool, TaskOutputTool, TaskUpdateTool
 from ccmini.tools.team import TeamCreateTool, TaskStopTool
@@ -233,6 +234,69 @@ def test_send_message_bridge_reads_ccmini_environment_variables(
     assert len(seen) == 1
     assert getattr(seen[0], "base_url") == "http://127.0.0.1:7779"
     assert getattr(seen[0], "auth_token") == "secret"
+
+
+def test_remote_trigger_auto_mode_http_supports_query_and_event_polling(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _prepare_environment(monkeypatch, tmp_path)
+
+    async def fake_send_message(self: BridgeClient, message: object) -> object:
+        del self, message
+        return SimpleNamespace(
+            type=SimpleNamespace(value="result"),
+            payload={"ok": True},
+            sequence_num=7,
+        )
+
+    async def fake_poll_events(self: BridgeClient, *, limit: int = 100) -> list[dict[str, object]]:
+        del self
+        return [{"sequence_num": limit, "payload": {"event_type": "completion"}}]
+
+    monkeypatch.setattr(BridgeClient, "send_message", fake_send_message)
+    monkeypatch.setattr(BridgeClient, "poll_events", fake_poll_events)
+
+    tool = RemoteTriggerTool()
+
+    query_payload = json.loads(
+        asyncio.run(
+            tool.execute(
+                context=_ToolContext(),
+                action="query",
+                base_url="http://127.0.0.1:7779",
+                auth_token="secret",
+                session_id="remote-session",
+                text="ping",
+            )
+        )
+    )
+    events_payload = json.loads(
+        asyncio.run(
+            tool.execute(
+                context=_ToolContext(),
+                action="events",
+                base_url="http://127.0.0.1:7779",
+                auth_token="secret",
+                session_id="remote-session",
+                limit=5,
+            )
+        )
+    )
+
+    assert query_payload == {
+        "type": "result",
+        "payload": {"ok": True},
+        "sequence_num": 7,
+    }
+    assert events_payload == {
+        "events": [
+            {
+                "sequence_num": 5,
+                "payload": {"event_type": "completion"},
+            }
+        ]
+    }
 
 
 def test_agent_tool_background_launch_returns_task_id_alias() -> None:
@@ -1634,6 +1698,40 @@ def test_remote_background_task_seeds_initial_messages_and_releases_runtime(
     assert task_id.startswith("r")
 
 
+def test_local_background_task_with_initial_messages_uses_run_subagent(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _prepare_environment(monkeypatch, tmp_path)
+    seen: dict[str, object] = {}
+
+    async def fake_run_subagent(**kwargs: object) -> str:
+        seen.update(kwargs)
+        return "LOCAL_OK"
+
+    monkeypatch.setattr(background_module, "run_subagent", fake_run_subagent)
+
+    async def run() -> object | None:
+        runner = background_module.BackgroundAgentRunner(
+            provider=_DummyProvider(),
+            task_manager=TaskManager(),
+        )
+        runner.spawn(
+            name="local-worker",
+            prompt="say hello",
+            task_type=TaskType.LOCAL_AGENT,
+            initial_messages=[user_message("seeded context")],
+        )
+        return await runner.wait_completion(timeout=0.1)
+
+    result = asyncio.run(run())
+
+    assert result is not None
+    assert getattr(result, "reply", "") == "LOCAL_OK"
+    assert seen["user_text"] == "say hello"
+    assert len(seen["initial_messages"]) == 1
+
+
 def test_create_remote_executor_host_passes_agent_config() -> None:
     seen: dict[str, object] = {}
 
@@ -1854,6 +1952,49 @@ def test_task_update_persists_status_and_description(tmp_path: Path) -> None:
     assert fetched["task"]["status"] == "in_progress"
     assert fetched["task"]["description"] == "Tracing hook execution deeply"
     assert listed["tasks"][0]["status"] == "in_progress"
+
+
+def test_task_create_syncs_team_task_list_from_active_team_tool(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _prepare_environment(monkeypatch, tmp_path)
+    board = TaskBoard()
+    team = Team(provider=_DummyProvider(), config=TeamConfig(team_name="coord-team"))
+    parent_agent = SimpleNamespace(
+        _team_create_tool=SimpleNamespace(
+            _active_team_name="coord-team",
+            get_team=lambda team_name: team if team_name == "coord-team" else None,
+        )
+    )
+    create_tool = TaskCreateTool(board)
+    context = ToolUseContext(
+        conversation_id="conv-1",
+        agent_id="team-lead@coord-team",
+        extras={"agent": parent_agent},
+    )
+
+    created = json.loads(
+        asyncio.run(
+            create_tool.execute(
+                context=context,
+                subject="Review runtime",
+                description="Inspect coordinator behavior",
+            )
+        )
+    )
+
+    assert created["task"]["id"] == "1"
+    assert team.task_list.list_all() == [
+        {
+            "id": "1",
+            "subject": "Review runtime",
+            "description": "Inspect coordinator behavior",
+            "status": "pending",
+            "owner": "",
+            "blocked_by": [],
+        }
+    ]
 
 
 def test_task_output_accepts_agent_id_alias(tmp_path: Path) -> None:
@@ -3765,6 +3906,38 @@ def test_agent_kairos_host_api_controls_runtime(
     assert isinstance(inbox, dict)
     assert state_before_stop["active"] is True
     assert state_before_stop["command_queue_size"] >= 2
+
+
+def test_agent_kairos_public_state_tracks_proactive_ticks(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _prepare_environment(monkeypatch, tmp_path)
+
+    async def run() -> tuple[int, float]:
+        import ccmini.kairos.proactive as proactive_runtime
+
+        agent = Agent(
+            provider=ProviderConfig(type="mock", model="mock-model"),
+            system_prompt="You are helpful.",
+        )
+        await agent.activate_kairos(
+            mode="assistant",
+            trust_accepted=True,
+            gate_config={
+                "kairos_enabled": True,
+                "proactive_enabled": True,
+            },
+        )
+        proactive_runtime.build_tick_message()
+        state = agent.get_kairos_state()
+        await agent.deactivate_kairos()
+        return int(state["tick_count"]), float(state["last_tick_ts"])
+
+    tick_count, last_tick_ts = asyncio.run(run())
+
+    assert tick_count >= 1
+    assert last_tick_ts > 0
 
 
 def test_agent_buddy_host_api_controls_companion(

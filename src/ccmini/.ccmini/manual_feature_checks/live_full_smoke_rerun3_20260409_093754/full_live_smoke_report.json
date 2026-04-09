@@ -1,0 +1,87 @@
+{
+  "summary": {
+    "total": 11,
+    "passed": 11,
+    "failed": 0,
+    "generated_at": "2026-04-09T09:39:09",
+    "base_url": "https://api.digitflow.cfd/v1",
+    "model": "gpt-5.4"
+  },
+  "results": {
+    "query_context": {
+      "ok": true,
+      "first": "LIVE_QUERY_OK",
+      "second": "LIVE_QUERY_OK"
+    },
+    "tool_flow": {
+      "ok": true,
+      "reply": "LIVE_TOOL_OK"
+    },
+    "buddy_and_session_memory": {
+      "ok": true,
+      "companion": "LiveBuddy",
+      "pet_count": 1,
+      "memory_path": "D:\\work\\py\\reachy_mini\\src\\ccmini\\.ccmini\\manual_feature_checks\\live_full_smoke_rerun3_20260409_093754\\home\\session_memory\\live-memory\\session_notes.md"
+    },
+    "todo_and_plan_mode": {
+      "ok": true
+    },
+    "task_tools": {
+      "ok": true,
+      "task_id": "1"
+    },
+    "subagent_parallel": {
+      "ok": true,
+      "reply": "LIVE_SUBAGENT_OK",
+      "parallel": [
+        "LIVE_PARALLEL_A",
+        "LIVE_PARALLEL_B"
+      ]
+    },
+    "background_subagent": {
+      "ok": true,
+      "task_id": "ad083435x",
+      "status": "completed",
+      "error": "",
+      "output_excerpt": "# Task ad083435x\n\n- name: live-bg\n- status: completed\n- transcript: D:\\work\\py\\reachy_mini\\src\\ccmini\\.ccmini\\manual_feature_checks\\live_full_smoke_rerun3_20260409_093754\\home\\task_transcripts\\ad08343",
+      "exact_match": true
+    },
+    "team_and_coordinator": {
+      "ok": true,
+      "spawn": {
+        "status": "teammate_spawned",
+        "prompt": "Reply with exactly LIVE_TEAM_BOOT_OK",
+        "teammate_id": "worker-one@live-team",
+        "agent_id": "worker-one@live-team",
+        "agent_type": "general-purpose",
+        "name": "worker-one",
+        "team_name": ""
+      },
+      "boot_mail": [
+        "{\"type\":\"idle\",\"agent\":\"worker-one\",\"reason\":\"available\",\"summary\":\"LIVE_TEAM_BOOT_OK\",\"task_id\":\"worker-one@live-team\"}"
+      ],
+      "messages_processed": 3,
+      "claimed_status": "in_progress",
+      "claimed_owner": "worker-one",
+      "task_mail": [
+        "{\"type\":\"idle\",\"agent\":\"worker-one\",\"reason\":\"available\",\"summary\":\"LIVE_TEAM_TASK_OK\",\"task_id\":\"1\",\"task_status\":\"resolved\"}"
+      ],
+      "send_result": "Message sent to teammate 'worker-one' in team 'live-team'.",
+      "follow_mail": [
+        "{\"type\":\"idle\",\"agent\":\"worker-one\",\"reason\":\"available\",\"summary\":\"LIVE_TEAM_FOLLOWUP_OK\",\"task_id\":\"worker-one@live-team\"}"
+      ],
+      "stop_result": "Shutdown sent to worker worker-one (worker-one@live-team)."
+    },
+    "hooks_and_permissions": {
+      "ok": true
+    },
+    "bridge_remote": {
+      "ok": true,
+      "accepted": "accepted",
+      "reply": "LIVE_BRIDGE_OK"
+    },
+    "kairos": {
+      "ok": true
+    }
+  }
+}

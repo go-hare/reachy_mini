@@ -1,7 +1,7 @@
 import * as React from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import chalk from 'chalk'
-import { Ansi, Box, Text, useInput, useStdin, useStdout, useTerminalFocus } from '../ink.js'
+import { Ansi, Box, Text, useInput, useStdin, useStdout } from '../ink.js'
 import { stringWidth } from '../ink/stringWidth.js'
 import { CCMINI_REPL_HELP } from '../ccmini/ccminiCommands.js'
 import {
@@ -24,7 +24,10 @@ import {
   type CcminiToolResultInput,
 } from '../ccmini/bridgeTypes.js'
 import { CcminiSessionManager } from '../ccmini/CcminiSessionManager.js'
-import { BuddyCompanion } from '../ccmini/BuddyCompanion.js'
+import {
+  BuddyCompanion,
+  getBuddyReservedColumns,
+} from '../ccmini/BuddyCompanion.js'
 import { applyCcminiBridgeEvent } from '../ccmini/ccminiMessageAdapter.js'
 import { saveConfiguredTheme } from '../ccmini/loadCcminiConfig.js'
 import {
@@ -714,6 +717,37 @@ function PanelFrame({
   )
 }
 
+function ConsoleSection({
+  title,
+  subtitle,
+  themeSetting,
+  children,
+  titleColor,
+  marginTop = 1,
+}: {
+  title: string
+  subtitle?: string
+  themeSetting: ThemeSetting
+  children: React.ReactNode
+  titleColor?: string
+  marginTop?: number
+}): React.ReactNode {
+  return (
+    <Box marginTop={marginTop}>
+      <PanelFrame
+        title={title}
+        subtitle={subtitle}
+        themeSetting={themeSetting}
+        titleColor={titleColor}
+      >
+        <Box flexDirection="column" paddingX={1}>
+          {children}
+        </Box>
+      </PanelFrame>
+    </Box>
+  )
+}
+
 function ClawdMascot({
   themeSetting,
 }: {
@@ -768,13 +802,27 @@ function WelcomeFeedSection({
   const visibleLines = lines.length > 0 ? lines : ['No recent activity']
 
   return (
-    <Box flexDirection="column" width={width}>
+    <Box
+      flexDirection="column"
+      width={width}
+      borderStyle="round"
+      borderColor={getFrameBorderColor(themeSetting)}
+      paddingX={1}
+      paddingY={0}
+    >
       <Text bold>{applyForeground(title, theme.claude)}</Text>
-      {visibleLines.map((line, index) => (
-        <Text key={index} wrap="wrap">
-          {line}
-        </Text>
-      ))}
+      <Box flexDirection="column" marginTop={1}>
+        {visibleLines.map((line, index) => (
+          <Box key={index} flexDirection="row">
+            <Box minWidth={3}>
+              <Text dimColor>{`${index + 1}.`}</Text>
+            </Box>
+            <Box flexDirection="column" flexGrow={1} flexShrink={1}>
+              <Text wrap="wrap">{line}</Text>
+            </Box>
+          </Box>
+        ))}
+      </Box>
     </Box>
   )
 }
@@ -794,10 +842,12 @@ function WelcomeDashboard({
   donorCommandCount: number
   recentActivityLines: string[]
 }): React.ReactNode {
+  const theme = getThemeTokens(themeSetting)
   const compact = columns < 96
   const leftWidth = compact ? undefined : 28
   const rightWidth = compact ? Math.max(36, columns - 8) : Math.max(42, columns - 42)
   const statusLine = getConnectionStatusHeadline(connectionStatus)
+  const statusColor = getConnectionStatusColor(connectionStatus, themeSetting)
   const modelLine = `ccmini bridge · ${statusLine.toLowerCase()}`
   const tips = [
     'Run /help to inspect available interaction shortcuts.',
@@ -830,12 +880,23 @@ function WelcomeDashboard({
           justifyContent="flex-start"
         >
           <Text bold>Welcome back!</Text>
+          <Text color={statusColor}>{`● ${statusLine}`}</Text>
+          <Text dimColor>{modelLine}</Text>
           <Box marginTop={1} marginBottom={1}>
             <ClawdMascot themeSetting={themeSetting} />
           </Box>
-          <Text dimColor>{modelLine}</Text>
-          <Text dimColor>{formatConnectionTarget(baseUrl)}</Text>
-          <Text dimColor>{`${donorCommandCount} donor commands indexed`}</Text>
+          <Box flexDirection="column">
+            <Text dimColor>{`target · ${formatConnectionTarget(baseUrl)}`}</Text>
+            <Text dimColor>{`catalog · ${donorCommandCount} donor commands indexed`}</Text>
+            <Text dimColor>{`theme · ${getThemeLabel(themeSetting)}`}</Text>
+          </Box>
+          <Box marginTop={1}>
+            <Text color={theme.permission}>
+              {connectionStatus === 'connected'
+                ? 'Ready for prompts, slash commands, and follow-ups.'
+                : 'Bridge is syncing. You can inspect UI state while it warms up.'}
+            </Text>
+          </Box>
         </Box>
 
         {compact ? null : (
@@ -890,17 +951,7 @@ function CompactStatusBar({
   const theme = getThemeTokens(themeSetting)
 
   return (
-    <Box
-      borderTop
-      borderBottom={false}
-      borderLeft={false}
-      borderRight={false}
-      borderStyle="single"
-      borderTopColor={getFrameBorderColor(themeSetting)}
-      paddingLeft={1}
-      marginBottom={1}
-      width="100%"
-    >
+    <Box paddingLeft={1} marginBottom={1} width="100%">
       <Text wrap="wrap">
         {applyForeground('ccmini frontend', theme.claude)}
         <Text dimColor>
@@ -1101,13 +1152,44 @@ function summarizeAskUserQuestionAnswer(
 
 function MessageResponseFlow({
   children,
+  accentColor,
+  dimResponse = true,
 }: {
   children: React.ReactNode
+  accentColor?: string
+  dimResponse?: boolean
 }): React.ReactNode {
   return (
     <Box flexDirection="row" width="100%">
-      <Box minWidth={4}>
-        <Text dimColor>{'  ⎿  '}</Text>
+      <Box minWidth={6} flexShrink={0}>
+        <Text color={accentColor} dimColor={dimResponse}>
+          {'  ⎿  '}
+        </Text>
+      </Box>
+      <Box flexDirection="column" flexGrow={1} flexShrink={1}>
+        {children}
+      </Box>
+    </Box>
+  )
+}
+
+function MessageDotFlow({
+  children,
+  accentColor,
+  dimDot = false,
+  marginTop = 0,
+}: {
+  children: React.ReactNode
+  accentColor?: string
+  dimDot?: boolean
+  marginTop?: number
+}): React.ReactNode {
+  return (
+    <Box flexDirection="row" width="100%" marginTop={marginTop}>
+      <Box minWidth={2} flexShrink={0}>
+        <Text color={accentColor} dimColor={dimDot}>
+          {'●'}
+        </Text>
       </Box>
       <Box flexDirection="column" flexGrow={1} flexShrink={1}>
         {children}
@@ -1119,20 +1201,20 @@ function MessageResponseFlow({
 function AssistantFlow({
   lines,
   width,
+  themeSetting,
 }: {
   lines: string[]
   width: number
+  themeSetting: ThemeSetting
 }): React.ReactNode {
+  const theme = getThemeTokens(themeSetting)
   const content = trimMessageLines(lines, 8).join('\n')
   return (
-    <Box flexDirection="row" width="100%" alignItems="flex-start">
-      <Box minWidth={2}>
-        <Text>{'●'}</Text>
-      </Box>
+    <MessageDotFlow accentColor={theme.claude}>
       <Box flexDirection="column" width={width}>
         <Text wrap="wrap">{content}</Text>
       </Box>
-    </Box>
+    </MessageDotFlow>
   )
 }
 
@@ -1152,19 +1234,28 @@ function SystemFlow({
   width: number
 }): React.ReactNode {
   return (
-    <Box flexDirection="row" marginTop={addMargin ? 1 : 0} width="100%">
+    <Box width="100%">
       {dot ? (
-        <Box minWidth={2}>
-          <Text color={color} dimColor={dimColor}>
-            {'●'}
-          </Text>
-        </Box>
-      ) : null}
-      <Box flexDirection="column" width={width}>
-        <Text color={color} dimColor={dimColor} wrap="wrap">
-          {content.trim()}
-        </Text>
-      </Box>
+        <MessageDotFlow
+          accentColor={color}
+          dimDot={dimColor}
+          marginTop={addMargin ? 1 : 0}
+        >
+          <Box flexDirection="column" width={width}>
+            <Text color={color} dimColor={dimColor} wrap="wrap">
+              {content.trim()}
+            </Text>
+          </Box>
+        </MessageDotFlow>
+      ) : (
+        <MessageResponseFlow accentColor={color} dimResponse={dimColor}>
+          <Box flexDirection="column" width={width}>
+            <Text color={color} dimColor={dimColor} wrap="wrap">
+              {content.trim()}
+            </Text>
+          </Box>
+        </MessageResponseFlow>
+      )}
     </Box>
   )
 }
@@ -1183,28 +1274,18 @@ function UserPromptFlow({
   const theme = getThemeTokens(themeSetting)
   const lines = content.split('\n')
   return (
-    <Box
-      flexDirection="column"
-      marginTop={addMargin ? 1 : 0}
-      paddingRight={1}
-      width="100%"
-    >
-      {lines.map((line, index) => (
-        <Text key={index} wrap="truncate-end">
-          {applyBackground(
-            `${index === 0 ? `${DONOR_POINTER} ` : '  '}${line || ' '}${' '.repeat(
-              Math.max(
-                0,
-                width -
-                  stringWidth(
-                    `${index === 0 ? `${DONOR_POINTER} ` : '  '}${line || ' '}`,
-                  ),
-              ),
-            )}`,
-            theme.userMessageBackground,
-          )}
-        </Text>
-      ))}
+    <Box marginTop={addMargin ? 1 : 0} width="100%">
+      <Box
+        flexDirection="column"
+        paddingRight={1}
+        backgroundColor={theme.userMessageBackground}
+      >
+        {lines.map((line, index) => (
+          <Text key={index} wrap="wrap">
+            {`${index === 0 ? `${DONOR_POINTER} ` : '  '}${line || ' '}`}
+          </Text>
+        ))}
+      </Box>
     </Box>
   )
 }
@@ -1223,10 +1304,7 @@ function ToolUseFlow({
   const bodyLines = getToolUseBodyLines(toolName, toolInput)
 
   return (
-    <Box flexDirection="row" width="100%" alignItems="flex-start">
-      <Box minWidth={2}>
-        <Text color={accentColor}>{'●'}</Text>
-      </Box>
+    <MessageDotFlow accentColor={accentColor}>
       <Box flexDirection="column" width={width}>
         <Text color={accentColor} wrap="wrap">
           {title}
@@ -1244,7 +1322,7 @@ function ToolUseFlow({
           ))
         ) : null}
       </Box>
-    </Box>
+    </MessageDotFlow>
   )
 }
 
@@ -1265,9 +1343,17 @@ function ToolResultFlow({
     toolInput,
     isError,
   })
+  const accentColor = isError
+    ? 'red'
+    : toolName
+      ? getToolAccentColor(toolName)
+      : undefined
 
   return (
-    <MessageResponseFlow>
+    <MessageResponseFlow
+      accentColor={accentColor}
+      dimResponse={!accentColor}
+    >
       <Box flexDirection="column">
         {presentation.header ? (
           <Text
@@ -1301,7 +1387,9 @@ function ToolProgressFlow({
   toolName?: string
 }): React.ReactNode {
   return (
-    <MessageResponseFlow>
+    <MessageResponseFlow
+      accentColor={toolName ? getToolAccentColor(toolName) : undefined}
+    >
       <Box flexDirection="column">
         {getPreviewLines(content, 4, true).map((line, index) => (
           <Text key={`${toolName ?? 'tool'}-progress-${index}`} dimColor wrap="wrap">
@@ -1324,16 +1412,13 @@ function CollapsedReadSearchFlow({
 
   return (
     <Box flexDirection="column" width="100%">
-      <Box flexDirection="row" width="100%" alignItems="flex-start">
-        <Box minWidth={2}>
-          <Text dimColor={!entry.isActive}>{'●'}</Text>
-        </Box>
+      <MessageDotFlow dimDot={!entry.isActive}>
         <Box flexDirection="column" width={width}>
           <Text dimColor={!entry.isActive} wrap="wrap">
             {summary}
           </Text>
         </Box>
-      </Box>
+      </MessageDotFlow>
       {entry.isActive && entry.hint ? (
         <MessageResponseFlow>
           <Text dimColor wrap="wrap">
@@ -2728,18 +2813,12 @@ function TaskPlannerPanel({
           </Text>
           <Box marginLeft={2}>
             <Text dimColor wrap="wrap">
-              {planState.detail}
+            {truncateInlineText(
+              planState.detail || 'Planner state is available in the transcript.',
+              Math.max(28, width),
+            )}
             </Text>
           </Box>
-          {planState.mode === 'ready'
-            ? planState.planLines.slice(0, 6).map((line, index) => (
-                <Box key={`todo-plan-line-${index}`} marginLeft={2}>
-                  <Text dimColor wrap="wrap">
-                    {line}
-                  </Text>
-                </Box>
-              ))
-            : null}
         </Box>
       ) : null}
       <Box flexDirection="column" marginTop={1}>
@@ -2962,18 +3041,12 @@ function TaskBoardPanel({
           </Text>
           <Box marginLeft={2}>
             <Text dimColor wrap="wrap">
-              {planState.detail}
+            {truncateInlineText(
+              planState.detail || 'Planner state is available in the transcript.',
+              Math.max(28, width),
+            )}
             </Text>
           </Box>
-          {planState.mode === 'ready'
-            ? planState.planLines.slice(0, 6).map((line, index) => (
-                <Box key={`plan-line-${index}`} marginLeft={2}>
-                  <Text dimColor wrap="wrap">
-                    {line}
-                  </Text>
-                </Box>
-              ))
-            : null}
         </Box>
       ) : null}
       <Box flexDirection="column" marginTop={1}>
@@ -3071,7 +3144,7 @@ function TaskNotificationCard({
   const detail = notification.result || notification.reason || ''
 
   return (
-    <MessageResponseFlow>
+    <MessageResponseFlow accentColor={statusColor} dimResponse={false}>
       <Box flexDirection="column">
         <Text color={statusColor} wrap="wrap">
           {truncateInlineText(
@@ -3770,42 +3843,127 @@ function renderInputLine(inputValue: string, cursorOffset: number): React.ReactN
 }
 
 function MainInputLine({
+  promptPrefix = `${DONOR_POINTER} `,
+  dimPrefix = false,
   inputValue,
   renderedValue,
   cursorLine,
   cursorColumn,
 }: {
+  promptPrefix?: string
+  dimPrefix?: boolean
   inputValue: string
   renderedValue: string
   cursorLine: number
   cursorColumn: number
 }): React.ReactNode {
-  const isTerminalFocused = useTerminalFocus()
+  const prefixWidth = stringWidth(promptPrefix)
   const cursorRef = useDeclaredCursor({
     line: cursorLine,
-    column: cursorColumn,
-    active: isTerminalFocused,
+    column: cursorColumn + prefixWidth,
+    active: true,
   })
 
   return (
-    <Box ref={cursorRef} flexGrow={1} flexShrink={1}>
-      {inputValue.length === 0 ? (
-        renderInputLine(inputValue, 0)
-      ) : (
-        <Text wrap="truncate-end">
+    <Box ref={cursorRef} flexDirection="row" flexGrow={1} flexShrink={1}>
+      <Text dimColor={dimPrefix}>{promptPrefix}</Text>
+      <Text wrap="truncate-end">
+        {inputValue.length === 0 ? (
+          renderInputLine(inputValue, 0)
+        ) : (
           <Ansi>{renderedValue}</Ansi>
-        </Text>
-      )}
+        )}
+      </Text>
     </Box>
   )
 }
 
-function PromptFooter({
+function ComposerPanel({
   themeSetting,
+  columns,
+  isLoading,
+  inputValue,
+  renderedValue,
+  cursorLine,
+  cursorColumn,
+  connectionStatus,
+  baseUrl,
+  showPromptSuggestionHint,
+  promptSuggestionText,
+  showSpeculationHint,
+  speculationHint,
+  teamSummaryLine,
 }: {
   themeSetting: ThemeSetting
+  columns: number
+  isLoading: boolean
+  inputValue: string
+  renderedValue: string
+  cursorLine: number
+  cursorColumn: number
+  connectionStatus: CcminiConnectionStatus
+  baseUrl: string
+  showPromptSuggestionHint: boolean
+  promptSuggestionText: string
+  showSpeculationHint: boolean
+  speculationHint: string
+  teamSummaryLine: string
 }): React.ReactNode {
-  return null
+  const theme = getThemeTokens(themeSetting)
+  const hasSignals =
+    showPromptSuggestionHint || showSpeculationHint || Boolean(teamSummaryLine)
+
+  return (
+    <Box marginTop={1}>
+      <PanelFrame
+        title="Composer"
+        subtitle={isLoading ? 'working live' : 'ready'}
+        themeSetting={themeSetting}
+      >
+        <Box flexDirection="column" paddingX={1}>
+          <MainInputLine
+            promptPrefix={`${DONOR_POINTER} `}
+            dimPrefix={isLoading}
+            inputValue={inputValue}
+            renderedValue={renderedValue}
+            cursorLine={cursorLine}
+            cursorColumn={cursorColumn}
+          />
+
+          <Box marginTop={1} flexDirection="column">
+            <Text dimColor wrap="wrap">
+              {getConnectionStatusDetail(connectionStatus, baseUrl)}
+            </Text>
+            <Text dimColor wrap="wrap">
+              {`Enter sends · / opens commands · /help shows shortcuts · theme ${getThemeLabel(
+                themeSetting,
+              )}`}
+            </Text>
+            {showPromptSuggestionHint ? (
+              <Text dimColor wrap="wrap">
+                {`hint · Tab accepts: ${applyForeground(promptSuggestionText, theme.claude)}`}
+              </Text>
+            ) : null}
+            {showSpeculationHint ? (
+              <Text dimColor wrap="wrap">
+                {`prefetch · ${speculationHint}`}
+              </Text>
+            ) : null}
+            {teamSummaryLine ? (
+              <Text dimColor wrap="wrap">
+                {`team · ${teamSummaryLine}`}
+              </Text>
+            ) : null}
+            {!hasSignals ? (
+              <Text dimColor wrap="wrap">
+                hint · Tab accepts suggestions. Prefetch and team status will show here.
+              </Text>
+            ) : null}
+          </Box>
+        </Box>
+      </PanelFrame>
+    </Box>
+  )
 }
 
 function PromptHelpMenu({
@@ -3921,26 +4079,32 @@ function ThinkingFlow({
   thinking,
   isRedacted,
   verbose,
+  themeSetting,
 }: {
   thinking: string
   isRedacted: boolean
   verbose: boolean
+  themeSetting: ThemeSetting
 }): React.ReactNode {
+  const theme = getThemeTokens(themeSetting)
+
   return (
-    <Box flexDirection="column" width="100%">
-      {isRedacted ? (
-        <AssistantRedactedThinkingMessage />
-      ) : (
-        <AssistantThinkingMessage
-          param={{
-            type: 'thinking',
-            thinking,
-          }}
-          isTranscriptMode={false}
-          verbose={verbose}
-        />
-      )}
-    </Box>
+    <MessageDotFlow accentColor={theme.claude}>
+      <Box flexDirection="column" width="100%">
+        {isRedacted ? (
+          <AssistantRedactedThinkingMessage />
+        ) : (
+          <AssistantThinkingMessage
+            param={{
+              type: 'thinking',
+              thinking,
+            }}
+            isTranscriptMode={false}
+            verbose={verbose}
+          />
+        )}
+      </Box>
+    </MessageDotFlow>
   )
 }
 
@@ -3956,8 +4120,10 @@ function WorkingStatusFlow({
   const theme = getThemeTokens(themeSetting)
 
   return (
-    <Box flexDirection="column" marginTop={1}>
-      <Text>{applyForeground(`${verb}...`, theme.claude)}</Text>
+    <Box marginTop={1} flexDirection="column">
+      <MessageDotFlow accentColor={theme.claude}>
+        <Text>{applyForeground(`${verb}...`, theme.claude)}</Text>
+      </MessageDotFlow>
       {tip ? (
         <MessageResponseFlow>
           <Text dimColor wrap="wrap">
@@ -4045,14 +4211,15 @@ function CcminiInboxPanel({
   themeSetting: ThemeSetting
 }): React.ReactNode {
   if (error && lines.length === 0) {
-    return (
-      <Box marginBottom={1}>
-        <PanelFrame title="Recent activity" themeSetting={themeSetting}>
-          <Box paddingX={1}>
-            <Text dimColor>inbox: {error}</Text>
-          </Box>
-        </PanelFrame>
-      </Box>
+  return (
+    <ConsoleSection
+      title="Inbox"
+      subtitle="recent activity"
+      themeSetting={themeSetting}
+      marginTop={0}
+    >
+      <Text dimColor>inbox: {error}</Text>
+    </ConsoleSection>
     )
   }
 
@@ -4061,22 +4228,23 @@ function CcminiInboxPanel({
   }
 
   return (
-    <Box flexDirection="column" marginBottom={1}>
-      <PanelFrame title="Recent activity" themeSetting={themeSetting}>
-        <Box flexDirection="column" paddingX={1}>
-          {error ? (
-            <Text color="red" wrap="wrap">
-              {error}
-            </Text>
-          ) : null}
-          {lines.map((line, index) => (
-            <Text key={index} dimColor wrap="wrap">
-              {line}
-            </Text>
-          ))}
-        </Box>
-      </PanelFrame>
-    </Box>
+    <ConsoleSection
+      title="Inbox"
+      subtitle="recent activity"
+      themeSetting={themeSetting}
+      marginTop={0}
+    >
+      {error ? (
+        <Text color="red" wrap="wrap">
+          {error}
+        </Text>
+      ) : null}
+      {lines.map((line, index) => (
+        <Text key={index} dimColor wrap="wrap">
+          {line}
+        </Text>
+      ))}
+    </ConsoleSection>
   )
 }
 
@@ -4410,14 +4578,20 @@ function CcminiAskUserQuestionEditor({
       : undefined
 
   return (
-    <Box marginTop={1}>
-      <PanelFrame
-        title="Question"
-        subtitle={stepLabel}
-        themeSetting={themeSetting}
-        titleColor={theme.permission}
-      >
-        <Box flexDirection="column" paddingX={1}>
+    <ConsoleSection
+      title="Question Flow"
+      subtitle={stepLabel ?? 'interactive'}
+      themeSetting={themeSetting}
+      titleColor={theme.permission}
+    >
+      <Box flexDirection="column">
+        <Text dimColor wrap="wrap">
+          {`Tool ${call.toolName || 'AskUserQuestion'} is requesting structured input before the run can continue.`}
+        </Text>
+        <Text dimColor wrap="wrap">
+          {`Question set ${answeredCount}/${questions.length} answered`}
+        </Text>
+        <Box marginTop={1} flexDirection="column">
           {questions.length > 1 ? (
             <Box marginBottom={1} flexDirection="row" flexWrap="wrap">
               <Text color={currentQuestionIndex === 0 ? theme.subtle : undefined}>
@@ -4588,9 +4762,10 @@ function CcminiAskUserQuestionEditor({
               {textMode ? (
                 <Box flexDirection="column" marginTop={1}>
                   <Text dimColor>Type something.</Text>
-                  <Box marginTop={1} flexDirection="row">
-                    <Text dimColor>{applyForeground(`${DONOR_POINTER} `, theme.subtle)}</Text>
+                  <Box marginTop={1}>
                     <MainInputLine
+                      promptPrefix={`${DONOR_POINTER} `}
+                      dimPrefix
                       inputValue={textValue}
                       renderedValue={textInputState.renderedValue}
                       cursorLine={textInputState.cursorLine}
@@ -4615,8 +4790,8 @@ function CcminiAskUserQuestionEditor({
             </React.Fragment>
           )}
         </Box>
-      </PanelFrame>
-    </Box>
+      </Box>
+    </ConsoleSection>
   )
 }
 
@@ -4636,25 +4811,21 @@ function CcminiPendingToolRequestPanel({
   const theme = getThemeTokens(themeSetting)
 
   return (
-    <Box marginTop={1}>
-      <PanelFrame
-        title="Continuation queue"
-        subtitle={toolName}
-        themeSetting={themeSetting}
-        titleColor={theme.warning}
-      >
-        <Box flexDirection="column" paddingX={1}>
-          <Text wrap="wrap">{description}</Text>
-          <Text dimColor>{`Run: ${runId}`}</Text>
-          <Text dimColor>
-            The remote executor is waiting for client-side tool results.
-          </Text>
-          {callCount > 1 ? (
-            <Text dimColor>{callCount} tool results are waiting to be submitted.</Text>
-          ) : null}
-        </Box>
-      </PanelFrame>
-    </Box>
+    <ConsoleSection
+      title="Continuation Queue"
+      subtitle={toolName}
+      themeSetting={themeSetting}
+      titleColor={theme.warning}
+    >
+      <Text wrap="wrap">{description}</Text>
+      <Text dimColor>{`Run: ${runId}`}</Text>
+      <Text dimColor>
+        The remote executor is waiting for client-side tool results.
+      </Text>
+      {callCount > 1 ? (
+        <Text dimColor>{callCount} tool results are waiting to be submitted.</Text>
+      ) : null}
+    </ConsoleSection>
   )
 }
 
@@ -4909,57 +5080,61 @@ function CcminiToolResultEditor({
   }
 
   return (
-    <Box marginTop={1}>
-      <PanelFrame
-        title={calls.length === 1 ? 'Tool result' : 'Tool results'}
-        subtitle={`${completedCount}/${calls.length} ready`}
-        themeSetting={themeSetting}
-      >
-        <Box flexDirection="column" paddingX={1}>
-          <Text dimColor>{`Run ${runId} is waiting for client-side tool results.`}</Text>
+    <ConsoleSection
+      title={calls.length === 1 ? 'Tool Result' : 'Tool Results'}
+      subtitle={`${completedCount}/${calls.length} ready`}
+      themeSetting={themeSetting}
+    >
+      <Box flexDirection="column">
+        <Text dimColor>{`Run ${runId} is waiting for client-side tool results.`}</Text>
 
-          {calls.length > 1 ? (
-            <Box flexDirection="column" marginTop={1}>
-              {calls.map((call, index) => {
-                const status = savedResults[index]
-                  ? 'ready'
-                  : drafts[index]
-                    ? 'draft'
-                    : 'pending'
-                return (
-                  <Text key={call.toolUseId} bold={index === activeIndex}>
-                    {index === activeIndex ? DONOR_POINTER : ' '} {call.toolName} [{status}]
-                  </Text>
-                )
-              })}
-            </Box>
-          ) : null}
-
+        {calls.length > 1 ? (
           <Box flexDirection="column" marginTop={1}>
-            <Text>{`Tool: ${activeCall.toolName}`}</Text>
-            <Text dimColor>{`Tool use: ${activeCall.toolUseId}`}</Text>
-            {summarizeToolCall(activeCall).map((line, index) => (
-              <Text key={`${activeCall.toolUseId}-${index}`} dimColor={index > 0} wrap="wrap">
-                {line}
-              </Text>
-            ))}
+            {calls.map((call, index) => {
+              const status = savedResults[index]
+                ? 'ready'
+                : drafts[index]
+                  ? 'draft'
+                  : 'pending'
+              return (
+                <Text key={call.toolUseId} bold={index === activeIndex}>
+                  {index === activeIndex ? DONOR_POINTER : ' '} {call.toolName} [{status}]
+                </Text>
+              )
+            })}
           </Box>
+        ) : null}
 
-          <Text dimColor wrap="wrap">
-            Enter saves this result. Shift+Enter inserts a newline. Prefix with{' '}
-            <Text bold>error:</Text>{' '}to submit an error result. Esc cancels.
-          </Text>
-
-          <Box flexDirection="row" marginTop={1}>
-            <Text>
-              {DONOR_POINTER}
-              {' '}
+        <Box flexDirection="column" marginTop={1}>
+          <Text>{`Tool: ${activeCall.toolName}`}</Text>
+          <Text dimColor>{`Tool use: ${activeCall.toolUseId}`}</Text>
+          {summarizeToolCall(activeCall).map((line, index) => (
+            <Text key={`${activeCall.toolUseId}-${index}`} dimColor={index > 0} wrap="wrap">
+              {line}
             </Text>
-            {renderInputLine(drafts[activeIndex] ?? '', cursorOffset)}
-          </Box>
+          ))}
         </Box>
-      </PanelFrame>
-    </Box>
+
+        <Text dimColor wrap="wrap">
+          Enter saves this result. Shift+Enter inserts a newline. Prefix with{' '}
+          <Text bold>error:</Text>{' '}to submit an error result. Esc cancels.
+        </Text>
+
+        <Box
+          flexDirection="row"
+          marginTop={1}
+          borderStyle="round"
+          borderColor={getFrameBorderColor(themeSetting)}
+          paddingX={1}
+        >
+          <Text>
+            {DONOR_POINTER}
+            {' '}
+          </Text>
+          {renderInputLine(drafts[activeIndex] ?? '', cursorOffset)}
+        </Box>
+      </Box>
+    </ConsoleSection>
   )
 }
 
@@ -5008,12 +5183,9 @@ export function CcminiRepl({
   const inputValueRef = useRef(inputValue)
   const cursorOffsetRef = useRef(cursorOffset)
   const { stdout } = useStdout()
-  const rows = stdout.rows ?? 24
 
   const pendingCcminiCalls = pendingCcminiToolRequest?.calls ?? []
   const firstPendingCcminiToolCall = pendingCcminiCalls[0]
-  const transcriptHeight = Math.max(10, rows - 18)
-  const visibleMessageCount = Math.max(4, Math.floor(transcriptHeight / 4))
   const activeThemeSetting = previewThemeSetting ?? themeSetting
   const inboxSummary = useCcminiInboxSummary(
     ccminiConnectConfig.baseUrl,
@@ -5203,6 +5375,8 @@ export function CcminiRepl({
   )
 
   useEffect(() => {
+    let disposed = false
+
     setConnectionStatus('connecting')
     setPendingCcminiToolRequest(null)
     setPromptSuggestion(EMPTY_PROMPT_SUGGESTION_STATE)
@@ -5210,6 +5384,9 @@ export function CcminiRepl({
 
     const manager = new CcminiSessionManager(ccminiConnectConfig, {
       onConnected: () => {
+        if (disposed) {
+          return
+        }
         setConnectionStatus('connected')
         setPendingCcminiToolRequest(null)
         setMessages(prev =>
@@ -5221,13 +5398,29 @@ export function CcminiRepl({
         )
       },
       onDisconnected: () => {
+        if (disposed) {
+          return
+        }
+        const lostDuringActiveTurn = wasLoadingRef.current
         setConnectionStatus('disconnected')
         setPendingCcminiToolRequest(null)
         setPromptSuggestion(EMPTY_PROMPT_SUGGESTION_STATE)
         setSpeculation(IDLE_SPECULATION_STATE)
         setIsLoading(false)
+        if (lostDuringActiveTurn) {
+          setMessages(prev =>
+            appendSystemMessageOnce(
+              prev,
+              'ccmini transport disconnected before completion; the final assistant reply may be missing.',
+              'warning',
+            ),
+          )
+        }
       },
       onError: error => {
+        if (disposed) {
+          return
+        }
         setConnectionStatus('disconnected')
         setPendingCcminiToolRequest(null)
         setPromptSuggestion(EMPTY_PROMPT_SUGGESTION_STATE)
@@ -5236,6 +5429,13 @@ export function CcminiRepl({
         setMessages(prev => appendSystemMessageOnce(prev, error.message, 'error'))
       },
       onEvent: event => {
+        if (disposed) {
+          return
+        }
+        setConnectionStatus(prev =>
+          prev === 'connected' ? prev : 'connected',
+        )
+
         const maybeRefreshTasksStore = (): void => {
           if (event.type !== 'stream_event') {
             return
@@ -5348,6 +5548,9 @@ export function CcminiRepl({
 
     managerRef.current = manager
     void manager.connect().catch(error => {
+      if (disposed) {
+        return
+      }
       setConnectionStatus('disconnected')
       setPendingCcminiToolRequest(null)
       setPromptSuggestion(EMPTY_PROMPT_SUGGESTION_STATE)
@@ -5363,6 +5566,7 @@ export function CcminiRepl({
     })
 
     return () => {
+      disposed = true
       setConnectionStatus('disconnected')
       setPendingCcminiToolRequest(null)
       setPromptSuggestion(EMPTY_PROMPT_SUGGESTION_STATE)
@@ -5504,6 +5708,26 @@ export function CcminiRepl({
     }
   }, [applyMainInputState, sendMessage, submitLocalCommand])
 
+  const columns = stdout.columns ?? 100
+  const showVisiblePromptHelp =
+    showPromptHelp || trimmedInputValue === '/help'
+  const showVisibleThemePicker =
+    showThemePicker || trimmedInputValue === '/theme'
+  const showVisibleCommandCatalog =
+    !showVisibleThemePicker &&
+    trimmedInputValue !== '/help' &&
+    (
+      showCommandCatalog ||
+      donorCommandQuery !== null
+    )
+  const footerBuddyReservedColumns =
+    messages.length > 0 &&
+    !showVisibleThemePicker &&
+    !showVisibleCommandCatalog &&
+    !pendingCcminiToolRequest
+      ? getBuddyReservedColumns(columns)
+      : 0
+
   const textInputState = useTextInput({
     value: inputValue,
     onChange: setMainInputValue,
@@ -5522,7 +5746,8 @@ export function CcminiRepl({
     cursorChar: ' ',
     invert: value => chalk.inverse(value),
     themeText: value => value,
-    columns: Math.max(8, (stdout.columns ?? 100) - 4),
+    // Account for panel borders, inner padding, and the leading prompt marker.
+    columns: Math.max(8, columns - 10 - footerBuddyReservedColumns),
     disableEscapeDoublePress:
       showCommandCatalog || showThemePicker || showPromptHelp,
     externalOffset: cursorOffset,
@@ -5715,9 +5940,8 @@ export function CcminiRepl({
             message.message.type === 'system' &&
             firstLine.startsWith('ccmini transport connected:')
           )
-        })
-        .slice(-visibleMessageCount),
-    [showFullThinking, visibleMessageCount, renderedMessages],
+        }),
+    [showFullThinking, renderedMessages],
   )
   const recentTaskNotifications = useMemo(
     () =>
@@ -5776,26 +6000,12 @@ export function CcminiRepl({
   )
 
   const showWelcome = visibleMessages.length === 0
-  const columns = stdout.columns ?? 100
   const messageWidth = Math.max(20, columns - 10)
-  const userMessageWidth = Math.max(20, columns - 2)
-  const inputWidth = Math.max(8, columns - 4)
+  const conversationWidth = Math.max(20, columns - 16)
   const recentActivityLines = useMemo(
     () => getRecentActivityPreview(messages, inboxSummary.lines),
     [inboxSummary.lines, messages],
   )
-  const showVisiblePromptHelp =
-    showPromptHelp || trimmedInputValue === '/help'
-  const showVisibleThemePicker =
-    showThemePicker || trimmedInputValue === '/theme'
-  const showVisibleCommandCatalog =
-    !showVisibleThemePicker &&
-    trimmedInputValue !== '/help' &&
-    (
-      showCommandCatalog ||
-      donorCommandQuery !== null
-    )
-  const themeTokens = getThemeTokens(activeThemeSetting)
   const showPromptSuggestionHint =
     !showVisibleThemePicker &&
     !showVisibleCommandCatalog &&
@@ -5816,6 +6026,13 @@ export function CcminiRepl({
     !showVisibleThemePicker &&
     !showVisibleCommandCatalog &&
     !pendingCcminiToolRequest
+  const inlineBuddyReservedColumns = showBuddyCompanion
+    ? footerBuddyReservedColumns
+    : 0
+  const showInlineBuddyCompanion = inlineBuddyReservedColumns > 0
+  const composerPanelColumns = showInlineBuddyCompanion
+    ? Math.max(36, columns - inlineBuddyReservedColumns)
+    : columns
   const showMultiAgentPanels =
     !showWelcome &&
     !showVisibleThemePicker &&
@@ -5825,6 +6042,18 @@ export function CcminiRepl({
       tasksV2.backgroundTasks.length > 0 ||
       tasksV2.team.members.length > 0
     )
+  const resumableBackgroundTaskCount = tasksV2.backgroundTasks.filter(
+    task => task.canResume,
+  ).length
+  const teamSummaryLine = [
+    tasksV2.team.name ? `team ${tasksV2.team.name}` : '',
+    tasksV2.team.activeCount ? `${tasksV2.team.activeCount} active` : '',
+    resumableBackgroundTaskCount > 0
+      ? `${resumableBackgroundTaskCount} follow-up ready`
+      : '',
+  ]
+    .filter(Boolean)
+    .join(' · ')
   const taskPanelMode =
     !showWelcome &&
     !showVisibleThemePicker &&
@@ -5862,222 +6091,222 @@ export function CcminiRepl({
         />
       )}
 
-      {showWelcome ? (
-        <React.Fragment />
-      ) : (
+      {showWelcome ? null : (
         <Box flexDirection="column" marginTop={1}>
-          {showMultiAgentPanels ? (
-            <React.Fragment>
-              {recentTaskNotifications.length > 0 ? (
-                <Box flexDirection="column">
-                  {recentTaskNotifications.map(({ key, notification }) => (
-                    <TaskNotificationCard
-                      key={`task-note-${key}`}
-                      notification={notification}
-                      themeSetting={activeThemeSetting}
-                      width={messageWidth}
-                    />
-                  ))}
-                </Box>
-              ) : null}
-              {tasksV2.backgroundTasks.length > 0 ? (
-                <BackgroundAgentsPanel
-                  tasks={tasksV2.backgroundTasks}
-                  themeSetting={activeThemeSetting}
-                  width={messageWidth}
-                />
-              ) : null}
-              {tasksV2.team.members.length > 0 ? (
-                <TeamStatusPanel
-                  team={tasksV2.team}
-                  themeSetting={activeThemeSetting}
-                  width={messageWidth}
-                />
-              ) : null}
-            </React.Fragment>
-          ) : null}
-          {taskPanelMode === 'tasks_v2' ? (
-            <TaskBoardPanel
-              tasks={tasksV2.tasks}
-              planState={effectivePlanPanelState}
-              themeSetting={activeThemeSetting}
-              width={messageWidth}
-            />
-          ) : taskPanelMode === 'todo' ? (
-            <TaskPlannerPanel
-              tasks={plannerTasks}
-              planState={effectivePlanPanelState}
-              themeSetting={activeThemeSetting}
-              width={messageWidth}
-            />
-          ) : null}
-          {displayEntries.map((entry, index) => {
-            const previousEntry = index > 0 ? displayEntries[index - 1] : null
-            const isPromotedTaskNotification =
-              showMultiAgentPanels &&
-              entry.kind === 'message' &&
-              promotedTaskNotificationKeys.has(entry.item.key)
-
-            if (isPromotedTaskNotification) {
-              return null
-            }
-
-            return (
-              <Box
-                key={entry.kind === 'message' ? entry.item.key : entry.key}
-                flexDirection="column"
-                marginTop={
-                  index === 0
-                    ? 0
-                    : entry.kind === 'message' &&
-                        previousEntry?.kind === 'message' &&
-                        shouldCollapseMessageGap(
-                          previousEntry.item.message,
-                          entry.item.message,
-                        )
-                      ? 0
-                      : 1
-                }
-              >
-              {entry.kind === 'collapsed_read_search' ? (
-                <CollapsedReadSearchFlow
-                  entry={entry}
-                  width={messageWidth}
-                />
-              ) : entry.kind === 'message' &&
-                (() => {
-                  const notification = parseTaskNotificationXml(
-                    getMessageRawText(entry.item.message),
-                  )
-                  return notification
-                })() ? (
-                <TaskNotificationCard
-                  notification={
-                    parseTaskNotificationXml(getMessageRawText(entry.item.message))!
-                  }
-                  themeSetting={activeThemeSetting}
-                  width={messageWidth}
-                />
-              ) : entry.item.message.type === 'user' ? (
-                (() => {
-                  const message = entry.item
-                  const toolResult = getUserToolResultBlock(message.message)
-                  if (toolResult) {
-                    const toolUse = toolUseLookup.get(toolResult.tool_use_id ?? '')
-                    return (
-                      <ToolResultFlow
-                        rawResult={
-                          message.message.toolUseResult ?? toolResult.content
-                        }
-                        toolName={toolUse?.name}
-                        toolInput={toolUse?.input}
-                        isError={Boolean(toolResult.is_error)}
-                      />
-                    )
-                  }
-
-                  return (
-                    <UserPromptFlow
-                      content={trimMessageLines(message.lines, 8).join('\n')}
-                      addMargin={false}
-                      themeSetting={activeThemeSetting}
-                      width={userMessageWidth}
-                    />
-                  )
-                })()
-              ) : entry.item.message.type === 'thinking' ? (
-                <ThinkingFlow
-                  thinking={String(
-                    (
-                      entry.item.message as MessageType & {
-                        thinking?: string
-                      }
-                    ).thinking ?? '',
-                  )}
-                  isRedacted={Boolean(
-                    (
-                      entry.item.message as MessageType & {
-                        isRedacted?: boolean
-                      }
-                    ).isRedacted,
-                  )}
-                  verbose={showFullThinking}
-                />
-              ) : entry.item.message.type === 'assistant' ? (
-                (() => {
-                  const message = entry.item
-                  const toolUse = getAssistantToolUseBlock(message.message)
-                  if (toolUse) {
-                    return (
-                      <ToolUseFlow
-                        toolName={toolUse.name ?? 'unknown'}
-                        toolInput={toolUse.input}
+            {showMultiAgentPanels ? (
+              <React.Fragment>
+                {recentTaskNotifications.length > 0 ? (
+                  <Box flexDirection="column">
+                    {recentTaskNotifications.map(({ key, notification }) => (
+                      <TaskNotificationCard
+                        key={`task-note-${key}`}
+                        notification={notification}
+                        themeSetting={activeThemeSetting}
                         width={messageWidth}
                       />
-                    )
-                  }
+                    ))}
+                  </Box>
+                ) : null}
+                {tasksV2.backgroundTasks.length > 0 ? (
+                  <BackgroundAgentsPanel
+                    tasks={tasksV2.backgroundTasks}
+                    themeSetting={activeThemeSetting}
+                    width={messageWidth}
+                  />
+                ) : null}
+                {tasksV2.team.members.length > 0 ? (
+                  <TeamStatusPanel
+                    team={tasksV2.team}
+                    themeSetting={activeThemeSetting}
+                    width={messageWidth}
+                  />
+                ) : null}
+              </React.Fragment>
+            ) : null}
+            {taskPanelMode === 'tasks_v2' ? (
+              <TaskBoardPanel
+                tasks={tasksV2.tasks}
+                planState={effectivePlanPanelState}
+                themeSetting={activeThemeSetting}
+                width={messageWidth}
+              />
+            ) : taskPanelMode === 'todo' ? (
+              <TaskPlannerPanel
+                tasks={plannerTasks}
+                planState={effectivePlanPanelState}
+                themeSetting={activeThemeSetting}
+                width={messageWidth}
+              />
+            ) : null}
+            {displayEntries.map((entry, index) => {
+              const previousEntry = index > 0 ? displayEntries[index - 1] : null
+              const isPromotedTaskNotification =
+                showMultiAgentPanels &&
+                entry.kind === 'message' &&
+                promotedTaskNotificationKeys.has(entry.item.key)
 
-                  return (
-                    <AssistantFlow
-                      lines={message.lines}
-                      width={messageWidth}
+              if (isPromotedTaskNotification) {
+                return null
+              }
+
+              return (
+                <Box
+                  key={entry.kind === 'message' ? entry.item.key : entry.key}
+                  flexDirection="column"
+                  marginTop={
+                    index === 0
+                      ? 0
+                      : entry.kind === 'message' &&
+                          previousEntry?.kind === 'message' &&
+                          shouldCollapseMessageGap(
+                            previousEntry.item.message,
+                            entry.item.message,
+                          )
+                        ? 0
+                        : 1
+                  }
+                >
+                {entry.kind === 'collapsed_read_search' ? (
+                  <CollapsedReadSearchFlow
+                    entry={entry}
+                    width={conversationWidth}
+                  />
+                ) : entry.kind === 'message' &&
+                  (() => {
+                    const notification = parseTaskNotificationXml(
+                      getMessageRawText(entry.item.message),
+                    )
+                    return notification
+                  })() ? (
+                  <TaskNotificationCard
+                    notification={
+                      parseTaskNotificationXml(getMessageRawText(entry.item.message))!
+                    }
+                    themeSetting={activeThemeSetting}
+                    width={messageWidth}
+                  />
+                ) : entry.item.message.type === 'user' ? (
+                  (() => {
+                    const message = entry.item
+                    const toolResult = getUserToolResultBlock(message.message)
+                    if (toolResult) {
+                      const toolUse = toolUseLookup.get(toolResult.tool_use_id ?? '')
+                      return (
+                        <ToolResultFlow
+                          rawResult={
+                            message.message.toolUseResult ?? toolResult.content
+                          }
+                          toolName={toolUse?.name}
+                          toolInput={toolUse?.input}
+                          isError={Boolean(toolResult.is_error)}
+                        />
+                      )
+                    }
+
+                    return (
+                      <UserPromptFlow
+                        content={trimMessageLines(message.lines, 8).join('\n')}
+                        addMargin={false}
+                        themeSetting={activeThemeSetting}
+                        width={conversationWidth}
+                      />
+                    )
+                  })()
+                ) : entry.item.message.type === 'thinking' ? (
+                  <ThinkingFlow
+                    thinking={String(
+                      (
+                        entry.item.message as MessageType & {
+                          thinking?: string
+                        }
+                      ).thinking ?? '',
+                    )}
+                    isRedacted={Boolean(
+                      (
+                        entry.item.message as MessageType & {
+                          isRedacted?: boolean
+                        }
+                      ).isRedacted,
+                    )}
+                    verbose={showFullThinking}
+                    themeSetting={activeThemeSetting}
+                  />
+                ) : entry.item.message.type === 'assistant' ? (
+                  (() => {
+                    const message = entry.item
+                    const toolUse = getAssistantToolUseBlock(message.message)
+                    if (toolUse) {
+                      return (
+                        <ToolUseFlow
+                          toolName={toolUse.name ?? 'unknown'}
+                          toolInput={toolUse.input}
+                          width={conversationWidth}
+                        />
+                      )
+                    }
+
+                    return (
+                      <AssistantFlow
+                        lines={message.lines}
+                        width={conversationWidth}
+                        themeSetting={activeThemeSetting}
+                      />
+                    )
+                  })()
+                ) : entry.item.message.type === 'progress' ? (
+                  <ToolProgressFlow
+                    content={trimMessageLines(entry.item.lines, 4).join('\n')}
+                    toolName={getProgressPayload(entry.item.message)?.toolName}
+                  />
+                ) : entry.item.message.type === 'system' ? (
+                  entry.item.message.level === 'info' ? (
+                    <MessageResponseFlow>
+                      <Text dimColor wrap="wrap">
+                        {trimMessageLines(entry.item.lines, 8).join('\n')}
+                      </Text>
+                    </MessageResponseFlow>
+                  ) : (
+                    <SystemFlow
+                      content={trimMessageLines(entry.item.lines, 8).join('\n')}
+                      addMargin={false}
+                      dot
+                      color={entry.item.message.level === 'error' ? 'red' : 'yellow'}
+                      dimColor={false}
+                      width={conversationWidth}
                     />
                   )
-                })()
-              ) : entry.item.message.type === 'progress' ? (
-                <ToolProgressFlow
-                  content={trimMessageLines(entry.item.lines, 4).join('\n')}
-                  toolName={getProgressPayload(entry.item.message)?.toolName}
-                />
-              ) : entry.item.message.type === 'system' ? (
-                entry.item.message.level === 'info' ? (
+                ) : (
                   <MessageResponseFlow>
                     <Text dimColor wrap="wrap">
                       {trimMessageLines(entry.item.lines, 8).join('\n')}
                     </Text>
                   </MessageResponseFlow>
-                ) : (
-                  <SystemFlow
-                    content={trimMessageLines(entry.item.lines, 8).join('\n')}
-                    addMargin={false}
-                    dot
-                    color={entry.item.message.level === 'error' ? 'red' : 'yellow'}
-                    dimColor={false}
-                    width={messageWidth}
-                  />
-                )
-              ) : (
-                <MessageResponseFlow>
-                  <Text dimColor wrap="wrap">
-                    {trimMessageLines(entry.item.lines, 8).join('\n')}
-                  </Text>
-                </MessageResponseFlow>
-              )}
-              </Box>
-            )
-          })}
+                )}
+                </Box>
+              )
+            })}
+
+            {isLoading && !pendingCcminiToolRequest ? (
+              <WorkingStatusFlow
+                verb={spinnerVerb}
+                tip={spinnerTip}
+                themeSetting={activeThemeSetting}
+              />
+            ) : null}
+
+            {pendingCcminiToolRequest &&
+            firstPendingCcminiToolCall &&
+            !showAskUserQuestionEditor ? (
+              <CcminiPendingToolRequestPanel
+                runId={pendingCcminiToolRequest.runId}
+                toolName={firstPendingCcminiToolCall.toolName}
+                description={firstPendingCcminiToolCall.description}
+                callCount={pendingCcminiCalls.length}
+                themeSetting={activeThemeSetting}
+              />
+            ) : null}
         </Box>
       )}
-
-      {isLoading && !pendingCcminiToolRequest ? (
-        <WorkingStatusFlow
-          verb={spinnerVerb}
-          tip={spinnerTip}
-          themeSetting={activeThemeSetting}
-        />
-      ) : null}
-
-      {pendingCcminiToolRequest &&
-      firstPendingCcminiToolCall &&
-      !showAskUserQuestionEditor ? (
-        <CcminiPendingToolRequestPanel
-          runId={pendingCcminiToolRequest.runId}
-          toolName={firstPendingCcminiToolCall.toolName}
-          description={firstPendingCcminiToolCall.description}
-          callCount={pendingCcminiCalls.length}
-          themeSetting={activeThemeSetting}
-        />
-      ) : null}
 
       {showVisibleThemePicker ? (
         <ThemePickerPanel
@@ -6098,53 +6327,51 @@ export function CcminiRepl({
 
       {!pendingCcminiToolRequest ? (
         <React.Fragment>
-          <Box marginTop={1} flexDirection="row">
-            <Text dimColor={isLoading}>{applyForeground(`${DONOR_POINTER} `, themeTokens.subtle)}</Text>
-            <MainInputLine
-              inputValue={inputValue}
-              renderedValue={textInputState.renderedValue}
-              cursorLine={textInputState.cursorLine}
-              cursorColumn={textInputState.cursorColumn}
-            />
+          <Box
+            flexDirection={showInlineBuddyCompanion ? 'row' : 'column'}
+            width="100%"
+            alignItems={showInlineBuddyCompanion ? 'flex-end' : undefined}
+          >
+            <Box
+              width={showInlineBuddyCompanion ? composerPanelColumns : '100%'}
+              flexGrow={1}
+              flexShrink={1}
+            >
+              <ComposerPanel
+                themeSetting={activeThemeSetting}
+                columns={composerPanelColumns}
+                isLoading={isLoading}
+                inputValue={inputValue}
+                renderedValue={textInputState.renderedValue}
+                cursorLine={textInputState.cursorLine}
+                cursorColumn={textInputState.cursorColumn}
+                connectionStatus={connectionStatus}
+                baseUrl={ccminiConnectConfig.baseUrl}
+                showPromptSuggestionHint={showPromptSuggestionHint}
+                promptSuggestionText={promptSuggestion.text}
+                showSpeculationHint={showSpeculationHint}
+                speculationHint={speculationHint}
+                teamSummaryLine={teamSummaryLine}
+              />
+            </Box>
+            {showInlineBuddyCompanion ? (
+              <BuddyCompanion
+                themeSetting={activeThemeSetting}
+                columns={columns}
+              />
+            ) : null}
           </Box>
-          {showPromptSuggestionHint ? (
-            <Box marginLeft={2}>
-              <Text dimColor>
-                Tab accepts suggestion: {applyForeground(promptSuggestion.text, themeTokens.claude)}
-              </Text>
-            </Box>
-          ) : null}
-          {showSpeculationHint ? (
-            <Box marginLeft={2}>
-              <Text dimColor>{speculationHint}</Text>
-            </Box>
-          ) : null}
-          {tasksV2.team.members.length > 0 || tasksV2.backgroundTasks.length > 0 ? (
-            <Box marginLeft={2}>
-              <Text dimColor>
-                {[
-                  tasksV2.team.name ? `team ${tasksV2.team.name}` : '',
-                  tasksV2.team.activeCount ? `${tasksV2.team.activeCount} active` : '',
-                  tasksV2.backgroundTasks.filter(task => task.canResume).length > 0
-                    ? `${tasksV2.backgroundTasks.filter(task => task.canResume).length} follow-up ready`
-                    : '',
-                ]
-                  .filter(Boolean)
-                  .join(' · ')}
-              </Text>
-            </Box>
-          ) : null}
           {showVisibleThemePicker
             ? null
             : showVisibleCommandCatalog
               ? null
               : showVisiblePromptHelp
                 ? <PromptHelpMenu themeSetting={activeThemeSetting} columns={columns} />
-                : <PromptFooter themeSetting={activeThemeSetting} />}
+                : null}
         </React.Fragment>
       ) : null}
 
-      {showBuddyCompanion ? (
+      {showBuddyCompanion && !showInlineBuddyCompanion ? (
         <Box width="100%" justifyContent="flex-end">
           <BuddyCompanion
             themeSetting={activeThemeSetting}

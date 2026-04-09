@@ -34,7 +34,9 @@ def create_bridge_transport(options: BridgeTransportOptions) -> Any:
         if parsed.scheme in {"ws", "wss"}:
             mode = "ws"
         else:
-            mode = "sse"
+            # Auto mode must preserve request/response and replay support for
+            # query/tool_call/events on plain HTTP endpoints.
+            mode = "polling"
 
     if mode == "ws":
         ws_url = options.base_url

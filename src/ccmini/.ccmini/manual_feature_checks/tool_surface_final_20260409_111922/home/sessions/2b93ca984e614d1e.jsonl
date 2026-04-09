@@ -1,0 +1,1 @@
+{"role": "user", "uuid": "11dd74d67a864189b042b78c8247c8a1", "timestamp": 1775704766.1461225, "type": "user", "content": "Reply exactly REMOTE_TRIGGER_OK", "metadata": {"source": "tool-surface", "bridge_origin": true, "skip_slash_commands": true, "conversation_id": "18636114364745cc", "turn_id": "84be66b4874d4df1"}}

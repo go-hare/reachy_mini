@@ -1,0 +1,80 @@
+{
+  "summary": {
+    "generated_at": "2026-04-09T10:00:31",
+    "base_url": "https://api.digitflow.cfd/v1",
+    "model": "gpt-5.4"
+  },
+  "result": {
+    "ok": true,
+    "activated": true,
+    "tick_before": 0,
+    "tick_active": 2,
+    "pause_before": 2,
+    "pause_after": 2,
+    "resumed_after": 4,
+    "cron_snapshot": {
+      "id": "adc9dr35r",
+      "type": "local_agent",
+      "status": "completed",
+      "description": "kairos-cron",
+      "outputFile": "D:\\work\\py\\reachy_mini\\src\\ccmini\\.ccmini\\manual_feature_checks\\kairos_long_loop_rerun_20260409_095947\\home\\task_outputs\\adc9dr35r.md",
+      "transcriptFile": "D:\\work\\py\\reachy_mini\\src\\ccmini\\.ccmini\\manual_feature_checks\\kairos_long_loop_rerun_20260409_095947\\home\\task_transcripts\\adc9dr35r.jsonl",
+      "startTime": 1775699990420,
+      "endTime": 1775699994227,
+      "updatedAt": 1775699994227,
+      "toolUseId": "",
+      "result": "KAIROS_CRON_WAKE_OK",
+      "error": "",
+      "resumeCount": 0,
+      "canResume": true,
+      "promptPreview": "Reply with exactly KAIROS_CRON_WAKE_OK",
+      "model": "",
+      "profile": "",
+      "workerName": "kairos-cron",
+      "teamName": "",
+      "backendType": "",
+      "isolation": "",
+      "agentType": "",
+      "subagentType": "",
+      "metadata": {
+        "promptPreview": "Reply with exactly KAIROS_CRON_WAKE_OK",
+        "profile": "",
+        "model": "",
+        "workerName": "kairos-cron",
+        "canResume": true,
+        "resumeCount": 0
+      }
+    },
+    "dream_ok": true,
+    "dream_status": "complete",
+    "public_state": {
+      "active": true,
+      "mode": "assistant",
+      "forced": false,
+      "trusted": true,
+      "paused": false,
+      "sleeping": false,
+      "context_blocked": false,
+      "brief_enabled": false,
+      "user_msg_opt_in": false,
+      "tick_count": 0,
+      "last_tick_ts": 0.0,
+      "last_wake_ts": 0.0,
+      "channels": [],
+      "allowed_channel_plugins": [],
+      "command_queue_size": 0,
+      "proactive_active": true,
+      "cron_running": true,
+      "gate_config": {
+        "kairos_enabled": true,
+        "brief_enabled": false,
+        "proactive_enabled": true,
+        "cron_enabled": true,
+        "cron_durable": true,
+        "channels_enabled": false,
+        "dream_enabled": true
+      }
+    },
+    "public_tick_mismatch": true
+  }
+}

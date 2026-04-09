@@ -1,0 +1,18 @@
+{
+  "summary": {
+    "part": "kairos",
+    "total": 1,
+    "passed": 1,
+    "failed": 0,
+    "generated_at": "2026-04-09T09:03:26.902560"
+  },
+  "results": {
+    "kairos": {
+      "ok": true,
+      "reply": "LIVE_KAIROS_OK",
+      "cron_id": "adbd499b185e",
+      "push_title": "live-kairos",
+      "duration_sec": 5.535
+    }
+  }
+}

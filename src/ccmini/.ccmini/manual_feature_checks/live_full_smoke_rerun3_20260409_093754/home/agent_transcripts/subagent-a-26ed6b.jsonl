@@ -1,0 +1,2 @@
+{"ts": 1775698720.3236823, "role": "user", "content": "Reply with exactly LIVE_PARALLEL_A", "metadata": {"event": "prompt", "agent_id": "a-26ed6b"}}
+{"ts": 1775698722.1518502, "role": "assistant", "content": "LIVE_PARALLEL_A", "metadata": {"event": "completion", "agent_id": "a-26ed6b"}}

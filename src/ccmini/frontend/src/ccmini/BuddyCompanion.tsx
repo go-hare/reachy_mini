@@ -4,6 +4,7 @@ import { readFileSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 import { Box, Text, useAnimationFrame } from '../ink.js'
+import { stringWidth } from '../ink/stringWidth.js'
 import { getThemeTokens } from './themePalette.js'
 import type { ThemeSetting } from './themeTypes.js'
 
@@ -21,6 +22,7 @@ type BuddyDisplayState = {
 
 const MIN_COLS_FOR_FULL_SPRITE = 100
 const BUDDY_TICK_MS = 500
+const SPRITE_PADDING_X = 2
 const IDLE_SEQUENCE = [0, 0, 0, 0, 1, 0, 0, 0, -1, 0, 0, 2, 0, 0, 0] as const
 const RABBIT_FRAMES = [
   [
@@ -43,6 +45,9 @@ const RABBIT_FRAMES = [
   ],
 ] as const
 const NARROW_RABBIT_FRAMES = ['(◉..◉)', '(|..◉)', '(◉..-)', '(◉..◉)'] as const
+const FULL_SPRITE_WIDTH = Math.max(
+  ...RABBIT_FRAMES.flatMap(frame => frame.map(line => stringWidth(line))),
+)
 
 function readBuddyConfig(path: string): BuddyConfig {
   try {
@@ -74,6 +79,16 @@ function loadBuddyDisplayState(): BuddyDisplayState | null {
       : 'Buddy'
 
   return { name }
+}
+
+export function getBuddyReservedColumns(columns: number): number {
+  const buddy = loadBuddyDisplayState()
+  if (!buddy || columns < MIN_COLS_FOR_FULL_SPRITE) {
+    return 0
+  }
+
+  const labelWidth = stringWidth(buddy.name)
+  return Math.max(FULL_SPRITE_WIDTH, labelWidth) + SPRITE_PADDING_X + 2
 }
 
 export function BuddyCompanion({

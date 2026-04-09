@@ -1,0 +1,17 @@
+{
+  "session_id": "77fbba8e9cc34883",
+  "title": "",
+  "cwd": "D:\\work\\py\\reachy_mini\\src\\ccmini\\.ccmini\\manual_feature_checks\\deep_live_smoke_20260409_095047\\kairos_workspace",
+  "tags": [],
+  "created_at": 1775699507.3888347,
+  "updated_at": 1775699512.4937952,
+  "message_count": 3,
+  "total_tokens": 0,
+  "total_cost_usd": 0,
+  "model": "gpt-5.4",
+  "parent_session": "",
+  "last_stop_reason": "",
+  "turn_phase": "",
+  "pending_run_id": "",
+  "pending_tool_count": 0
+}
