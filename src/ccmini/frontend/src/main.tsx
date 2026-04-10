@@ -9,6 +9,7 @@ import {
   startEmbeddedCcminiHost,
 } from './ccmini/startEmbeddedCcminiHost.js'
 import { CcminiRepl } from './screens/CcminiRepl.js'
+import { isFullscreenEnvEnabled } from './utils/fullscreen.js'
 
 type ParsedArgs = {
   serverUrl?: string
@@ -116,14 +117,22 @@ async function main(): Promise<void> {
       embeddedHost?.kill()
     })
 
+    const repl = (
+      <CcminiRepl
+        ccminiConnectConfig={ccminiConnectConfig}
+        initialThemeSetting={configured.themeSetting}
+        onExit={handleExit}
+      />
+    )
+
     app = await render(
-      <AlternateScreen mouseTracking={false}>
-        <CcminiRepl
-          ccminiConnectConfig={ccminiConnectConfig}
-          initialThemeSetting={configured.themeSetting}
-          onExit={handleExit}
-        />
-      </AlternateScreen>,
+      isFullscreenEnvEnabled()
+        ? (
+            <AlternateScreen mouseTracking={false}>
+              {repl}
+            </AlternateScreen>
+          )
+        : repl,
     )
   } catch (error) {
     embeddedHost?.kill()
