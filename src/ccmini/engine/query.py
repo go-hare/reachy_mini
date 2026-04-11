@@ -101,7 +101,7 @@ class QueryParams:
     agent: "Agent | None" = None
     conversation_id: str = ""
     agent_id: str = ""
-    max_turns: int = 20
+    max_turns: int | None = None
     compact_threshold: int = 100_000
     compact_config: CompactConfig | None = None
     compact_tracker: CompactTracker | None = None

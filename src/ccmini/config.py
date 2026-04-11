@@ -51,7 +51,7 @@ class CLIConfig:
     ccmini_port: int = 7779
     ccmini_auth_token: str = ""
     max_tokens: int = 8192
-    max_turns: int = 50
+    max_turns: int | None = None
     system_prompt: str = ""  # empty → use build_default_prompt()
 
     session_dir: str = ""
@@ -141,6 +141,14 @@ def save_global_config(updates: dict[str, Any]) -> Path:
     return path
 
 
+def _initial_config_payload(cfg: CLIConfig) -> dict[str, Any]:
+    """Build the initial on-disk config template for new installs."""
+    payload: dict[str, Any] = {}
+    for item in fields(CLIConfig):
+        payload[item.name] = getattr(cfg, item.name)
+    return payload
+
+
 def _ensure_global_config_exists(defaults: CLIConfig | None = None) -> Path:
     """Create the global config file with defaults if it is missing."""
     cfg = defaults or CLIConfig()
@@ -149,20 +157,7 @@ def _ensure_global_config_exists(defaults: CLIConfig | None = None) -> Path:
     if path.exists():
         return path
 
-    data = {
-        "provider": cfg.provider,
-        "model": cfg.model,
-        "api_key": cfg.api_key,
-        "base_url": cfg.base_url,
-        "ccmini_host": cfg.ccmini_host,
-        "ccmini_port": cfg.ccmini_port,
-        "ccmini_auth_token": cfg.ccmini_auth_token,
-        "max_tokens": cfg.max_tokens,
-        "max_turns": cfg.max_turns,
-        "output_style": cfg.output_style,
-        "prompt_suggestion_enabled": cfg.prompt_suggestion_enabled,
-        "speculation_enabled": cfg.speculation_enabled,
-    }
+    data = _initial_config_payload(cfg)
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     return path
 
@@ -304,8 +299,9 @@ def validate_config(cfg: CLIConfig) -> list[ValidationError]:
     elif cfg.max_tokens > 1_000_000:
         errors.append(ValidationError("max_tokens", "suspiciously large (>1M)"))
 
-    if not isinstance(cfg.max_turns, int) or cfg.max_turns < 1:
-        errors.append(ValidationError("max_turns", "must be a positive integer"))
+    if cfg.max_turns is not None:
+        if not isinstance(cfg.max_turns, int) or cfg.max_turns < 1:
+            errors.append(ValidationError("max_turns", "must be null or a positive integer"))
 
     if not isinstance(cfg.bash_timeout, int) or cfg.bash_timeout < 0:
         errors.append(ValidationError("bash_timeout", "must be a non-negative integer"))

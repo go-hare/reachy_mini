@@ -124,25 +124,53 @@ function updateStreamingAssistant(
 function finalizeAssistant(
   messages: MessageType[],
   text: string,
-): MessageType[] {
+): {
+  messages: MessageType[]
+  hasAssistantContent: boolean
+} {
   const next = [...messages]
+  const normalizedText = text.trim()
   for (let index = next.length - 1; index >= 0; index -= 1) {
     const candidate = next[index]
     if (candidate?.type === 'assistant' && candidate.isVirtual) {
+      const existingContent =
+        typeof candidate.message?.content === 'string'
+          ? candidate.message.content
+          : ''
+      const finalContent = normalizedText || existingContent
+      if (!finalContent.trim()) {
+        next.splice(index, 1)
+        return {
+          messages: next,
+          hasAssistantContent: false,
+        }
+      }
       next[index] = {
         ...candidate,
         message: {
           ...(candidate.message ?? {}),
           role: 'assistant',
-          content: text,
+          content: finalContent,
         },
         isVirtual: false,
       }
-      return next
+      return {
+        messages: next,
+        hasAssistantContent: true,
+      }
+    }
+  }
+  if (!normalizedText) {
+    return {
+      messages: next,
+      hasAssistantContent: false,
     }
   }
   next.push(createCcminiAssistantMessage({ content: text }))
-  return next
+  return {
+    messages: next,
+    hasAssistantContent: true,
+  }
 }
 
 function appendThinkingMessage(
@@ -267,8 +295,13 @@ export function applyCcminiBridgeEvent(
         ]
       }
       return updateStreamingAssistant(prev, String(payload.text ?? ''))
-    case 'completion':
-      return finalizeAssistant(prev, String(payload.text ?? ''))
+    case 'completion': {
+      const finalized = finalizeAssistant(
+        endThinkingMessage(prev),
+        String(payload.text ?? ''),
+      )
+      return finalized.messages
+    }
     case 'error':
     case 'executor_error':
       return [

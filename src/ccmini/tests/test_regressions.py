@@ -52,6 +52,8 @@ from ccmini.messages import (
     system_message,
     user_message,
 )
+from ccmini.memory.store import JsonlMemoryStore
+from ccmini.memory.types import LongTermRecord, MemoryCandidate, MemoryPatch
 from ccmini.permissions import BashCommandAnalyzer, PermissionChecker, PermissionConfig, PermissionMode, RiskLevel
 from ccmini.delegation.multi_agent import AgentTool
 from ccmini.delegation.builtin_agents import WORKER_AGENT
@@ -183,6 +185,17 @@ def test_load_config_applies_remote_overlay(
 
     assert cfg.provider == "mock"
     assert cfg.model == "remote-model"
+
+
+def test_load_config_defaults_max_turns_to_none(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _prepare_environment(monkeypatch, tmp_path)
+
+    cfg = load_config()
+
+    assert cfg.max_turns is None
 
 
 def test_load_config_reads_ccmini_environment_variables(
@@ -1756,7 +1769,7 @@ def test_create_remote_executor_host_passes_agent_config() -> None:
     assert seen["config"].max_turns == 77
 
 
-def test_frontend_host_passes_cli_max_turns_to_remote_executor_host(
+def test_frontend_host_does_not_apply_config_max_turns_to_main_interactive_host(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     seen: dict[str, object] = {}
@@ -1797,6 +1810,7 @@ def test_frontend_host_passes_cli_max_turns_to_remote_executor_host(
             model=None,
             api_key=None,
             base_url=None,
+            max_turns=None,
             system_prompt=None,
             profile="coding_assistant",
         ),
@@ -1818,7 +1832,73 @@ def test_frontend_host_passes_cli_max_turns_to_remote_executor_host(
 
     assert asyncio.run(frontend_host_module._run()) == 0
     assert isinstance(seen.get("config"), AgentConfig)
-    assert seen["config"].max_turns == 77
+    assert seen["config"].max_turns is None
+
+
+def test_frontend_host_passes_explicit_max_turns_to_remote_executor_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, object] = {}
+
+    cfg = CLIConfig(
+        provider="mock",
+        model="mock-model",
+        max_turns=77,
+        ccmini_host="127.0.0.1",
+        ccmini_port=7779,
+    )
+
+    class _ImmediateEvent:
+        def set(self) -> None:
+            return None
+
+        async def wait(self) -> None:
+            return None
+
+    class _FakeHost:
+        def __init__(self) -> None:
+            self.config = BridgeConfig(enabled=True, host="127.0.0.1", port=7779, auth_token="")
+
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        frontend_host_module,
+        "_parse_args",
+        lambda: SimpleNamespace(
+            host=None,
+            port=None,
+            auth_token=None,
+            provider=None,
+            model=None,
+            api_key=None,
+            base_url=None,
+            max_turns=12,
+            system_prompt=None,
+            profile="coding_assistant",
+        ),
+    )
+    monkeypatch.setattr(frontend_host_module, "load_config", lambda cli_overrides=None: cfg)
+    monkeypatch.setattr(frontend_host_module, "_port_is_available", lambda host, port: True)
+    monkeypatch.setattr(frontend_host_module.asyncio, "Event", _ImmediateEvent)
+    monkeypatch.setattr(frontend_host_module.signal, "signal", lambda *args, **kwargs: None)
+
+    def fake_create_remote_executor_host(**kwargs: object) -> _FakeHost:
+        seen.update(kwargs)
+        return _FakeHost()
+
+    monkeypatch.setattr(
+        frontend_host_module,
+        "create_remote_executor_host",
+        fake_create_remote_executor_host,
+    )
+
+    assert asyncio.run(frontend_host_module._run()) == 0
+    assert isinstance(seen.get("config"), AgentConfig)
+    assert seen["config"].max_turns == 12
 
 
 def test_frontend_host_port_probe_supports_ipv6(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -3746,6 +3826,46 @@ def test_publish_host_event_persists_and_emits_runtime_event(
     recent = agent._memory_store.recent_event_records(agent.conversation_id, 1)
     assert recent[0]["event_type"] == "sensor_summary"
     assert recent[0]["text"] == "battery=20%"
+
+
+def test_query_long_term_skips_irrelevant_memories_without_token_overlap(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    home = _prepare_environment(monkeypatch, tmp_path)
+    store = JsonlMemoryStore(
+        profile_root=home,
+        session_root=home / "sessions",
+        memory_root=home / "memory",
+    )
+    store.append_patch(
+        MemoryPatch(
+            long_term_append=[
+                LongTermRecord(
+                    record_id="mem-1",
+                    agent_id="agent",
+                    summary="memory regression seed",
+                    memory_candidates=[
+                        MemoryCandidate(
+                            memory_id="cand-1",
+                            memory_type="project",
+                            summary="请记住口令 amber-42，只回复 MEMORY_STORED",
+                            detail="reply=MEMORY_STORED",
+                            confidence=0.45,
+                            stability=0.35,
+                            tags=["请记住口令", "amber", "42", "只回复", "memory_stored"],
+                            metadata={"source": "consolidation_heuristic"},
+                        )
+                    ],
+                )
+            ]
+        )
+    )
+
+    assert store.query_long_term(query="hello", agent_id="agent", limit=5) == []
+    matched = store.query_long_term(query="amber", agent_id="agent", limit=5)
+    assert len(matched) == 1
+    assert matched[0]["summary"] == "请记住口令 amber-42，只回复 MEMORY_STORED"
 
 
 def test_submit_tool_results_accepts_host_tool_results_with_metadata_and_attachments(

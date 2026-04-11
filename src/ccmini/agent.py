@@ -144,7 +144,7 @@ class ToolProfile:
 @dataclass
 class AgentConfig:
     """Engine-level configuration."""
-    max_turns: int = 20
+    max_turns: int | None = None
     compact_threshold: int = 100_000
     idle_check_interval: float = 1.0
     kairos_gate_config: GateConfig | None = None

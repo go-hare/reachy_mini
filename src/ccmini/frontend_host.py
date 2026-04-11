@@ -60,6 +60,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--api-key", default=None, help="Override API key.")
     parser.add_argument("--base-url", default=None, help="Override provider base URL.")
     parser.add_argument(
+        "--max-turns",
+        type=int,
+        default=None,
+        help="Optional max agentic turns for the main interactive host. Defaults to unlimited.",
+    )
+    parser.add_argument(
         "--system-prompt",
         default=None,
         help="Override system prompt text. Defaults to ccmini config or build_default_prompt().",
@@ -144,7 +150,7 @@ async def _run() -> int:
         system_prompt=system_prompt,
         profile=args.profile,
         bridge_config=bridge_config,
-        config=AgentConfig(max_turns=cfg.max_turns),
+        config=AgentConfig(max_turns=args.max_turns),
     )
 
     stop_event = asyncio.Event()

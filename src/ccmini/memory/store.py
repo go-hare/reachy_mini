@@ -166,6 +166,8 @@ class JsonlMemoryStore:
     def query_long_term(self, query: str, agent_id: str, limit: int) -> list[dict[str, Any]]:
         rows: list[tuple[float, dict[str, Any]]] = []
         tokens = self._tokenize(query)
+        if not tokens:
+            return []
         for row in read_jsonl(self.long_term_path):
             if not self._matches_agent(row, agent_id):
                 continue
@@ -175,6 +177,8 @@ class JsonlMemoryStore:
                 payload = dict(candidate)
                 payload["record_summary"] = str(row.get("summary", "") or "")
                 score = self._score_candidate(payload, tokens)
+                if score <= 0:
+                    continue
                 rows.append((score, payload))
         rows.sort(key=lambda item: item[0], reverse=True)
         return [item for _, item in rows[:limit]]
@@ -273,13 +277,18 @@ class JsonlMemoryStore:
         return rows
 
     def _score_candidate(self, candidate: dict[str, Any], tokens: set[str]) -> float:
+        if not tokens:
+            return 0.0
         haystack = " ".join([
             str(candidate.get("summary", "") or ""),
             str(candidate.get("detail", "") or ""),
             " ".join(str(t).strip() for t in candidate.get("tags", []) or [] if str(t).strip()),
         ])
         candidate_tokens = self._tokenize(haystack)
-        overlap = 0.25 if not tokens else len(tokens & candidate_tokens) / max(1, len(tokens))
+        overlap_tokens = tokens & candidate_tokens
+        if not overlap_tokens:
+            return 0.0
+        overlap = len(overlap_tokens) / max(1, len(tokens))
         confidence = float(candidate.get("confidence", 0.0) or 0.0)
         stability = float(candidate.get("stability", 0.0) or 0.0)
         return (overlap * 0.6) + (confidence * 0.25) + (stability * 0.15)
