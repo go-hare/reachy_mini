@@ -1,4 +1,5 @@
 import type {
+  CcminiControlRequest,
   CcminiPendingToolRequest,
   CcminiPromptSuggestionState,
   CcminiSpeculationState,
@@ -59,6 +60,32 @@ export function getPendingToolRequestFromPayload(
   }
 }
 
+export function getControlRequestFromPayload(
+  payload: Record<string, unknown> | undefined,
+): CcminiControlRequest | null {
+  const requestId = String(payload?.request_id ?? '').trim()
+  const requestType = String(payload?.request_type ?? '').trim()
+  const toolName = String(payload?.tool_name ?? '').trim()
+
+  if (!requestId || !requestType) {
+    return null
+  }
+
+  return {
+    requestId,
+    requestType,
+    toolName,
+    toolInput:
+      typeof payload?.tool_input === 'object' && payload.tool_input !== null
+        ? (payload.tool_input as Record<string, unknown>)
+        : undefined,
+    permissionMode:
+      typeof payload?.permission_mode === 'string'
+        ? payload.permission_mode
+        : undefined,
+  }
+}
+
 export function removePendingToolCallById(
   pendingToolRequest: CcminiPendingToolRequest | null,
   toolUseId: string,
@@ -92,6 +119,7 @@ export function shouldClearPendingToolRequest(eventType: string): boolean {
 
 export function shouldStopLoadingForEvent(eventType: string): boolean {
   return (
+    eventType === 'control_request' ||
     eventType === 'pending_tool_call' ||
     shouldClearPendingToolRequest(eventType)
   )

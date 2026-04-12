@@ -1,4 +1,7 @@
 import React from 'react'
+import { readFileSync } from 'fs'
+import { homedir } from 'os'
+import { join } from 'path'
 import { Box, Text } from '../ink.js'
 import { applyForeground } from '../ccmini/ansiText.js'
 import { stringWidth } from '../ink/stringWidth.js'
@@ -13,6 +16,13 @@ type Props = {
   columns: number
   version: string
   recentActivityLines: string[]
+}
+
+type WelcomeConfig = {
+  model?: unknown
+  customApiEndpoint?: {
+    model?: unknown
+  }
 }
 
 const MAX_LEFT_WIDTH = 50
@@ -60,6 +70,17 @@ function truncatePath(path: string, maxLength: number): string {
   }
 
   return `${first}${separator}${ellipsis}${separator}${last}`
+}
+
+function getDisplayPath(path: string): string {
+  const home = homedir()
+  if (path === home) {
+    return '~'
+  }
+  if (path.startsWith(`${home}/`)) {
+    return `~${path.slice(home.length)}`
+  }
+  return path
 }
 
 function calculateOptimalLeftWidth(
@@ -110,6 +131,39 @@ function calculateFeedWidth(title: string, lines: string[]): number {
     maxWidth = Math.max(maxWidth, stringWidth(line))
   }
   return maxWidth
+}
+
+function readWelcomeConfig(path: string): WelcomeConfig {
+  try {
+    const content = readFileSync(path, 'utf8')
+    const parsed = JSON.parse(content) as unknown
+    if (!parsed || typeof parsed !== 'object') {
+      return {}
+    }
+    return parsed as WelcomeConfig
+  } catch {
+    return {}
+  }
+}
+
+function loadWelcomeModelLine(): string {
+  const merged = {
+    ...readWelcomeConfig(join(homedir(), '.mini_agent', 'config.json')),
+    ...readWelcomeConfig(join(homedir(), '.ccmini', 'config.json')),
+  }
+
+  const directModel =
+    typeof merged.model === 'string' && merged.model.trim().length > 0
+      ? merged.model.trim()
+      : ''
+  const nestedModel =
+    typeof merged.customApiEndpoint?.model === 'string' &&
+    merged.customApiEndpoint.model.trim().length > 0
+      ? merged.customApiEndpoint.model.trim()
+      : ''
+  const modelName = directModel || nestedModel || 'glm-5'
+
+  return `${modelName} · API Usage FREE!`
 }
 
 function ClawdMascot({
@@ -177,8 +231,8 @@ export function CcminiDonorWelcome({
 }: Props): React.ReactNode {
   const theme = getThemeTokens(themeSetting)
   const welcomeMessage = 'Welcome back!'
-  const modelLine = 'glm-5 · API Usage FREE!'
-  const cwdLine = truncatePath(process.cwd(), MAX_LEFT_WIDTH - 4)
+  const modelLine = loadWelcomeModelLine()
+  const cwdLine = truncatePath(getDisplayPath(process.cwd()), MAX_LEFT_WIDTH - 4)
   const optimalLeftWidth = calculateOptimalLeftWidth(
     welcomeMessage,
     cwdLine,
@@ -196,64 +250,72 @@ export function CcminiDonorWelcome({
   const feedWidth = Math.min(
     Math.max(
       calculateFeedWidth('Tips for getting started', tipsLines),
-      calculateFeedWidth('Recent activity', activityLines.length > 0 ? activityLines : ['No recent activity']),
+      calculateFeedWidth(
+        'Recent activity',
+        activityLines.length > 0 ? activityLines : ['No recent activity'],
+      ),
     ),
     rightWidth,
   )
 
   return (
-    <Box
-      flexDirection="column"
-      borderStyle="round"
-      borderColor={getFrameBorderColor(themeSetting)}
-      borderText={{
-        content: `${applyForeground(' Claude Code ', theme.claude)}${applyForeground(` v${version} `, theme.subtle)}`,
-        position: 'top',
-        align: 'start',
-        offset: 3,
-      }}
-      width="100%"
-    >
-      <Box flexDirection="row" paddingX={1} gap={1}>
-        <Box
-          flexDirection="column"
-          width={leftWidth}
-          justifyContent="space-between"
-          alignItems="center"
-          minHeight={9}
-        >
-          <Box marginTop={1}>
-            <Text bold>{welcomeMessage}</Text>
+    <Box flexDirection="column" width="100%">
+      <Box
+        flexDirection="column"
+        borderStyle="round"
+        borderColor={getFrameBorderColor(themeSetting)}
+        borderText={{
+          content: `${applyForeground(' Claude Code ', theme.claude)}${applyForeground(` v${version} `, theme.subtle)}`,
+          position: 'top',
+          align: 'start',
+          offset: 3,
+        }}
+        width="100%"
+      >
+        <Box flexDirection="row" paddingX={1} gap={1}>
+          <Box
+            flexDirection="column"
+            width={leftWidth}
+            justifyContent="space-between"
+            alignItems="center"
+            minHeight={9}
+          >
+            <Box marginTop={1}>
+              <Text bold>{welcomeMessage}</Text>
+            </Box>
+            <ClawdMascot themeSetting={themeSetting} />
+            <Box flexDirection="column" alignItems="center">
+              <Text dimColor>{modelLine}</Text>
+              <Text dimColor>{cwdLine}</Text>
+            </Box>
           </Box>
-          <ClawdMascot themeSetting={themeSetting} />
-          <Box flexDirection="column" alignItems="center">
-            <Text dimColor>{modelLine}</Text>
-            <Text dimColor>{cwdLine}</Text>
+          <Box
+            height="100%"
+            borderStyle="single"
+            borderColor={getFrameBorderColor(themeSetting)}
+            borderTop={false}
+            borderBottom={false}
+            borderLeft={false}
+          />
+          <Box flexDirection="column" width={feedWidth}>
+            <FeedBlock
+              title="Tips for getting started"
+              lines={tipsLines}
+              width={feedWidth}
+              themeSetting={themeSetting}
+            />
+            <Text color={theme.claude}>{'─'.repeat(feedWidth)}</Text>
+            <FeedBlock
+              title="Recent activity"
+              lines={activityLines}
+              width={feedWidth}
+              themeSetting={themeSetting}
+            />
           </Box>
         </Box>
-        <Box
-          height="100%"
-          borderStyle="single"
-          borderColor={getFrameBorderColor(themeSetting)}
-          borderTop={false}
-          borderBottom={false}
-          borderLeft={false}
-        />
-        <Box flexDirection="column" width={feedWidth}>
-          <FeedBlock
-            title="Tips for getting started"
-            lines={tipsLines}
-            width={feedWidth}
-            themeSetting={themeSetting}
-          />
-          <Text color={theme.claude}>{'─'.repeat(feedWidth)}</Text>
-          <FeedBlock
-            title="Recent activity"
-            lines={activityLines}
-            width={feedWidth}
-            themeSetting={themeSetting}
-          />
-        </Box>
+      </Box>
+      <Box paddingLeft={2} marginTop={1}>
+        <Text dimColor>{'☆ KiraKiraDokiDoki!'}</Text>
       </Box>
     </Box>
   )

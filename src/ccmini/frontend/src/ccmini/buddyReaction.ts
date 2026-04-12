@@ -127,6 +127,33 @@ function includesAny(text: string, keywords: readonly string[]): boolean {
   return keywords.some(keyword => text.includes(keyword))
 }
 
+function matchesNegativeKeyword(text: string): boolean {
+  return includesAny(text.toLowerCase(), [
+    '不行',
+    '失败',
+    '报错',
+    '错误',
+    'bug',
+    'error',
+    'wrong',
+    'broken',
+    'stuck',
+    'again',
+  ])
+}
+
+function matchesKeepGoingKeyword(text: string): boolean {
+  return includesAny(text.toLowerCase(), [
+    '继续',
+    '接着',
+    'go on',
+    'keep going',
+    'keep',
+    'carry on',
+    '继续做',
+  ])
+}
+
 function pickReaction(
   options: readonly string[],
   fingerprint: string,
@@ -149,25 +176,50 @@ function classifyReaction(
 ): readonly string[] {
   const combined = `${userText}\n${assistantText}`.toLowerCase()
 
-  if (includesAny(combined, ['buddy', '宠物', '兔子'])) {
-    return ['我在呢。', '收到，我继续盯着。', '小兔已在线。']
+  if (includesAny(combined, ['buddy', '/buddy'])) {
+    return [
+      'I am paying attention.',
+      'Buddy is listening.',
+      'Tiny penguin acknowledged.',
+    ]
   }
 
-  if (includesAny(combined, ['报错', '错误', 'error', '失败', '不行', 'bug'])) {
-    return ['别急，我陪你看。', '这次我们把它修顺。', '我还盯着这块。']
+  if (matchesNegativeKeyword(userText)) {
+    return [
+      'You have got this.',
+      'Okay, deep breath.',
+      'I am still cheering.',
+    ]
   }
 
-  if (includesAny(combined, ['布局', '前端', '消息区', '终端', 'ui', 'layout'])) {
-    return ['这块布局我也在看。', '消息流还可以再顺。', '我盯着终端这片呢。']
+  if (matchesKeepGoingKeyword(userText)) {
+    return ['Forward march.', 'Still with you.', 'Keep cooking.']
   }
 
   if (
-    includesAny(combined, ['完成', '修好', '好了', 'fixed', 'done', 'resolved'])
+    includesAny(combined, [
+      '完成',
+      '修好',
+      '好了',
+      'fixed',
+      'done',
+      'resolved',
+      'working',
+      'success',
+    ])
   ) {
-    return ['这下顺眼多了。', '好耶，又推进了一步。', '这一改终于对味了。']
+    return [
+      'That feels like progress.',
+      'Neat little win.',
+      'Happy penguin noises.',
+    ]
   }
 
-  return ['我在旁边看着。', '继续推进，我陪着。', '这轮输出我还盯着。']
+  return [
+    'Just vibing nearby.',
+    'Watching the terminal glow.',
+    'Tiny flippers crossed.',
+  ]
 }
 
 export function deriveBuddyReaction(

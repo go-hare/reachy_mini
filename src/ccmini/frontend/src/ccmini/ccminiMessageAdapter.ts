@@ -361,31 +361,20 @@ export function applyCcminiBridgeEvent(
           toolName: String(call.tool_name ?? 'unknown'),
           toolInput:
             typeof call.tool_input === 'object' && call.tool_input !== null
-              ? (call.tool_input as Record<string, unknown>)
+          ? (call.tool_input as Record<string, unknown>)
               : {},
         })
       }
-      return [
-        ...next,
-        createCcminiSystemMessage(
-          `Waiting for external tool results (${calls.length})`,
-          'info',
-        ),
-      ]
+      return next
     }
+    case 'control_request':
+      return prev
+    case 'control_request_resolved':
+      return prev
     case 'tool_use_summary':
-      return [
-        ...prev,
-        createCcminiSystemMessage(String(payload.summary ?? ''), 'info'),
-      ]
+      return prev
     case 'usage':
-      return [
-        ...prev,
-        createCcminiSystemMessage(
-          `Usage: in ${String(payload.input_tokens ?? 0)}, out ${String(payload.output_tokens ?? 0)}`,
-          'info',
-        ),
-      ]
+      return prev
     default:
       return prev
   }

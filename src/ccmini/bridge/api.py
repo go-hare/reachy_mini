@@ -72,12 +72,14 @@ class BridgeAPI:
         on_query: Any = None,
         on_tool_call: Any = None,
         on_submit_tool_results: Any = None,
+        on_control_response: Any = None,
     ) -> None:
         self._sessions: dict[str, SessionInfo] = {}
         self._signaling_logs: dict[str, list[SignalingMessage]] = {}
         self._on_query = on_query
         self._on_tool_call = on_tool_call
         self._on_submit_tool_results = on_submit_tool_results
+        self._on_control_response = on_control_response
 
     # ── Session management ──────────────────────────────────────────
 
@@ -146,6 +148,14 @@ class BridgeAPI:
                 session_id,
                 run_id,
                 results if isinstance(results, list) else [],
+                request_id=message.request_id,
+            )
+        if message.type is MessageType.CONTROL_RESPONSE:
+            response_id = str(message.payload.get("id", "")).strip()
+            return await self.handle_control_response(
+                session_id,
+                response_id,
+                message.payload,
                 request_id=message.request_id,
             )
         if message.type is MessageType.EVENTS:
@@ -291,6 +301,44 @@ class BridgeAPI:
             make_error(
                 session_id,
                 "No submit_tool_results handler registered",
+                request_id=request_id,
+            ),
+        )
+
+    async def handle_control_response(
+        self,
+        session_id: str,
+        response_id: str,
+        payload: dict[str, Any],
+        *,
+        request_id: str = "",
+    ) -> BridgeMessage:
+        """Forward a host-side control response back into the runtime."""
+        _validate_id(session_id, "session_id")
+
+        if self._on_control_response is not None:
+            try:
+                result = self._on_control_response(session_id, response_id, payload)
+                if asyncio.iscoroutine(result):
+                    result = await result
+                response = make_response(
+                    session_id,
+                    str(result),
+                    request_id=request_id,
+                )
+                return self._record_event(session_id, response)
+            except Exception as exc:
+                logger.error("Control response handler failed: %s", exc, exc_info=True)
+                return self._record_event(
+                    session_id,
+                    make_error(session_id, str(exc), request_id=request_id),
+                )
+
+        return self._record_event(
+            session_id,
+            make_error(
+                session_id,
+                "No control response handler registered",
                 request_id=request_id,
             ),
         )

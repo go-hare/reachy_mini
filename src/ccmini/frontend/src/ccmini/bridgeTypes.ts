@@ -23,6 +23,7 @@ export type CcminiBridgeMessageType =
   | 'query'
   | 'events'
   | 'response'
+  | 'control_response'
   | 'submit_tool_results'
   | 'error'
   | 'heartbeat'
@@ -62,6 +63,16 @@ export type CcminiPendingToolRequest = {
   calls: CcminiPendingToolCall[]
 }
 
+export type CcminiControlDecision = 'allow' | 'deny' | 'ask'
+
+export type CcminiControlRequest = {
+  requestId: string
+  requestType: string
+  toolName: string
+  toolInput?: Record<string, unknown>
+  permissionMode?: string
+}
+
 export type CcminiPromptSuggestionState = {
   text: string
   shownAt: number
@@ -99,6 +110,14 @@ export type CcminiTaskBoardTask = {
   blocks?: string[]
   blockedBy?: string[]
   metadata?: Record<string, unknown>
+}
+
+export type CcminiSendStatus = 'accepted' | 'busy' | 'error'
+
+export type CcminiSendResult = {
+  ok: boolean
+  status: CcminiSendStatus
+  message?: string
 }
 
 export type CcminiBackgroundTaskStatus =

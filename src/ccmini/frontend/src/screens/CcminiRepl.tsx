@@ -19,8 +19,10 @@ import {
   PromptHelpMenu,
   ThemePickerPanel,
 } from '../components/CcminiOverlayPanels.js'
+import { WorkingStatusFlow } from '../components/CcminiTranscriptFlows.js'
 import {
   CcminiAskUserQuestionEditor,
+  CcminiControlRequestEditor,
   CcminiToolResultEditor,
   isAskUserQuestionPendingTool,
   parseAskUserQuestions,
@@ -31,8 +33,10 @@ import { isFullscreenEnvEnabled } from '../utils/fullscreen.js'
 import { isEnvTruthy } from '../utils/envUtils.js'
 import {
   type CcminiConnectConfig,
+  type CcminiControlRequest,
   type CcminiPendingToolRequest,
   type CcminiPromptSuggestionState,
+  type CcminiRemoteContent,
   type CcminiSpeculationState,
 } from '../ccmini/bridgeTypes.js'
 import {
@@ -40,7 +44,9 @@ import {
   getBuddyReservedColumns,
 } from '../ccmini/BuddyCompanion.js'
 import { deriveBuddyReaction } from '../ccmini/buddyReaction.js'
-import { describeDonorCommand } from '../ccmini/donorCommandPresentation.js'
+import {
+  describeDonorCommand,
+} from '../ccmini/donorCommandPresentation.js'
 import {
   truncateInlineText,
 } from '../ccmini/toolRenderUtils.js'
@@ -48,6 +54,7 @@ import {
   useCcminiInboxSummary,
 } from '../ccmini/replMeta.js'
 import {
+  appendSystemMessageOnce,
   getMacroVersion,
   padLineToWidth,
   pickSpinnerVerb,
@@ -59,12 +66,18 @@ import {
 } from '../ccmini/replInputState.js'
 import type { ThemeSetting } from '../ccmini/themeTypes.js'
 import type { Message as MessageType } from '../types/message.js'
+import { createCcminiSystemMessage } from '../ccmini/messageUtils.js'
 
 type Props = {
   ccminiConnectConfig: CcminiConnectConfig
   initialMessages?: MessageType[]
   initialThemeSetting?: ThemeSetting
   onExit: () => void | Promise<void>
+}
+
+type QueuedCcminiSubmission = {
+  uuid: string
+  content: CcminiRemoteContent
 }
 
 const DEFAULT_INPUT_PLACEHOLDER = 'Describe a task or type / for commands'
@@ -89,6 +102,8 @@ const IDLE_SPECULATION_STATE: CcminiSpeculationState = {
     completedAt: 0,
   },
 }
+const QUEUED_SUBMISSION_NOTICE =
+  'Current turn is still running. Queued your message and will send it automatically.'
 
 export function CcminiRepl({
   ccminiConnectConfig,
@@ -106,12 +121,22 @@ export function CcminiRepl({
   const [buddyReaction, setBuddyReaction] = useState<string | null>(null)
   const [pendingCcminiToolRequest, setPendingCcminiToolRequest] =
     useState<CcminiPendingToolRequest | null>(null)
+  const [pendingControlRequest, setPendingControlRequest] =
+    useState<CcminiControlRequest | null>(null)
   const [promptSuggestion, setPromptSuggestion] =
     useState<CcminiPromptSuggestionState>(EMPTY_PROMPT_SUGGESTION_STATE)
   const [speculation, setSpeculation] =
     useState<CcminiSpeculationState>(IDLE_SPECULATION_STATE)
+  const [queuedSubmissions, setQueuedSubmissions] = useState<
+    QueuedCcminiSubmission[]
+  >([])
+  const [transportStatus, setTransportStatus] = useState<
+    'connecting' | 'connected' | 'disconnected'
+  >('connecting')
   const wasLoadingRef = useRef(false)
   const lastBuddyReactionFingerprintRef = useRef('')
+  const queueFlushInFlightRef = useRef<string | null>(null)
+  const isMountedRef = useRef(true)
   const recentImeCandidateRef = useRef<RecentImeCandidate>({
     text: '',
     at: 0,
@@ -160,6 +185,12 @@ export function CcminiRepl({
     inputValueRef.current = inputValue
     cursorOffsetRef.current = cursorOffset
   }, [cursorOffset, inputValue])
+
+  useEffect(() => {
+    return () => {
+      isMountedRef.current = false
+    }
+  }, [])
 
   useEffect(() => {
     if (isLoading && !wasLoadingRef.current) {
@@ -236,23 +267,115 @@ export function CcminiRepl({
     showCommandCatalog,
   })
 
-  const { sendMessage, submitToolResults } = useCcminiSessionBridge({
+  const { sendMessage, submitToolResults, submitControlResponse } = useCcminiSessionBridge({
     ccminiConnectConfig,
     emptyPromptSuggestionState: EMPTY_PROMPT_SUGGESTION_STATE,
     idleSpeculationState: IDLE_SPECULATION_STATE,
     wasLoadingRef,
     setIsLoading,
     setPendingCcminiToolRequest,
+    setPendingControlRequest,
     setPromptSuggestion,
     setSpeculation,
     setMessages,
+    setTransportStatus,
   })
+
+  const queueMessage = useCallback(
+    (content: CcminiRemoteContent, opts?: { uuid?: string }): void => {
+      const uuid = String(opts?.uuid ?? '').trim()
+      if (!uuid) {
+        return
+      }
+      setQueuedSubmissions(prev => {
+        if (prev.some(item => item.uuid === uuid)) {
+          return prev
+        }
+        return [
+          ...prev,
+          {
+            uuid,
+            content,
+          },
+        ]
+      })
+      setMessages(prev =>
+        appendSystemMessageOnce(prev, QUEUED_SUBMISSION_NOTICE, 'info'),
+      )
+    },
+    [setMessages],
+  )
+
+  useEffect(() => {
+    const nextSubmission = queuedSubmissions[0]
+    if (!nextSubmission) {
+      return
+    }
+    if (queueFlushInFlightRef.current) {
+      return
+    }
+    if (
+      transportStatus !== 'connected' ||
+      isLoading ||
+      pendingCcminiToolRequest ||
+      pendingControlRequest
+    ) {
+      return
+    }
+
+    queueFlushInFlightRef.current = nextSubmission.uuid
+    void (async () => {
+      const result = await sendMessage(nextSubmission.content, {
+        uuid: nextSubmission.uuid,
+      })
+
+      if (!isMountedRef.current) {
+        return
+      }
+
+      queueFlushInFlightRef.current = null
+
+      if (result.ok) {
+        setQueuedSubmissions(prev =>
+          prev[0]?.uuid === nextSubmission.uuid
+            ? prev.slice(1)
+            : prev.filter(item => item.uuid !== nextSubmission.uuid),
+        )
+        return
+      }
+
+      if (result.status === 'busy') {
+        return
+      }
+
+      setQueuedSubmissions(prev =>
+        prev.filter(item => item.uuid !== nextSubmission.uuid),
+      )
+      setMessages(prev => [
+        ...prev,
+        createCcminiSystemMessage(
+          `Queued message failed to send: ${result.message ?? 'Unknown error.'}`,
+          'error',
+        ),
+      ])
+    })()
+  }, [
+    isLoading,
+    pendingCcminiToolRequest,
+    pendingControlRequest,
+    queuedSubmissions,
+    sendMessage,
+    setMessages,
+    transportStatus,
+  ])
 
   const { submitInputValue } = useCcminiSubmitHandlers({
     applyMainInputState,
     openThemePicker,
     onExit,
     sendMessage,
+    queueMessage,
+    isTurnBusy: isLoading || queuedSubmissions.length > 0,
     recentImeCandidateRef,
     setShowPromptHelp,
     setShowCommandCatalog,
@@ -264,12 +387,14 @@ export function CcminiRepl({
     setIsLoading,
   })
 
+  const fullscreenMode = isFullscreenEnvEnabled()
   const columns = stdout.columns ?? 100
   const terminalRows = stdout.rows ?? 24
   const footerBuddyReservedColumns =
     !showVisibleThemePicker &&
     !showVisibleCommandCatalog &&
-    !pendingCcminiToolRequest
+    !pendingCcminiToolRequest &&
+    !pendingControlRequest
       ? getBuddyReservedColumns(columns)
       : 0
 
@@ -286,7 +411,7 @@ export function CcminiRepl({
     onHistoryDown: () => {},
     onHistoryReset: () => {},
     onClearInput: () => applyMainInputState('', 0),
-    focus: true,
+    focus: !pendingCcminiToolRequest && !pendingControlRequest,
     multiline: false,
     cursorChar: ' ',
     invert: value => (showVisualCursor ? chalk.inverse(value) : value),
@@ -302,7 +427,7 @@ export function CcminiRepl({
   useCcminiKeyboardController({
     inputValueRef,
     recentImeCandidateRef,
-    pendingToolRequestActive: Boolean(pendingCcminiToolRequest),
+    pendingToolRequestActive: Boolean(pendingCcminiToolRequest || pendingControlRequest),
     showThemePicker,
     showCommandCatalog,
     showPromptHelp,
@@ -345,7 +470,9 @@ export function CcminiRepl({
     inboxLines: inboxSummary.lines,
     showVisibleThemePicker,
     showVisibleCommandCatalog,
-    pendingToolRequestActive: Boolean(pendingCcminiToolRequest),
+    pendingToolRequestActive: Boolean(
+      pendingCcminiToolRequest || pendingControlRequest,
+    ),
     columns,
     pendingCallsLength: pendingCcminiCalls.length,
     isAskUserQuestionPending: isAskUserQuestionPendingTool(
@@ -353,7 +480,6 @@ export function CcminiRepl({
     ),
     askUserQuestionCount,
   })
-  const fullscreenMode = isFullscreenEnvEnabled()
 
   useEffect(() => {
     if (!fullscreenMode) {
@@ -391,59 +517,61 @@ export function CcminiRepl({
       width="100%"
       height={fullscreenMode ? terminalRows : undefined}
     >
-      {showWelcome ? (
-        <CcminiDonorWelcome
-          themeSetting={activeThemeSetting}
-          columns={columns}
-          version={getMacroVersion()}
-          recentActivityLines={recentActivityLines}
-        />
-      ) : null}
+      <CcminiDonorWelcome
+        themeSetting={activeThemeSetting}
+        columns={columns}
+        version={getMacroVersion()}
+        recentActivityLines={recentActivityLines}
+      />
 
-      {showWelcome ? (
-        fullscreenMode ? <Box flexGrow={1} /> : null
+      {fullscreenMode ? (
+        <ScrollBox
+          ref={scrollRef}
+          flexDirection="column"
+          flexGrow={1}
+          flexShrink={1}
+          width="100%"
+          marginTop={1}
+          stickyScroll
+        >
+          <CcminiTranscriptContent
+            visibleMessages={visibleMessages}
+            toolUseLookup={toolUseLookup}
+            conversationWidth={conversationWidth}
+            activeThemeSetting={activeThemeSetting}
+            showFullThinking={showFullThinking}
+            pendingToolRequest={pendingCcminiToolRequest}
+            firstPendingToolCall={firstPendingCcminiToolCall}
+            pendingCallCount={pendingCcminiCalls.length}
+            showAskUserQuestionEditor={showAskUserQuestionEditor}
+            isLoading={isLoading}
+            spinnerVerb={spinnerVerb}
+            showWorkingStatus={false}
+          />
+          <Box flexGrow={1} />
+          {isLoading && !pendingCcminiToolRequest ? (
+            <WorkingStatusFlow
+              verb={spinnerVerb}
+              themeSetting={activeThemeSetting}
+            />
+          ) : null}
+        </ScrollBox>
       ) : (
-        fullscreenMode ? (
-          <ScrollBox
-            ref={scrollRef}
-            flexDirection="column"
-            flexGrow={1}
-            flexShrink={1}
-            width="100%"
-            marginTop={1}
-            stickyScroll
-          >
-            <CcminiTranscriptContent
-              visibleMessages={visibleMessages}
-              toolUseLookup={toolUseLookup}
-              conversationWidth={conversationWidth}
-              activeThemeSetting={activeThemeSetting}
-              showFullThinking={showFullThinking}
-              pendingToolRequest={pendingCcminiToolRequest}
-              firstPendingToolCall={firstPendingCcminiToolCall}
-              pendingCallCount={pendingCcminiCalls.length}
-              showAskUserQuestionEditor={showAskUserQuestionEditor}
-              isLoading={isLoading}
-              spinnerVerb={spinnerVerb}
-            />
-          </ScrollBox>
-        ) : (
-          <Box flexDirection="column" width="100%" marginTop={1}>
-            <CcminiTranscriptContent
-              visibleMessages={visibleMessages}
-              toolUseLookup={toolUseLookup}
-              conversationWidth={conversationWidth}
-              activeThemeSetting={activeThemeSetting}
-              showFullThinking={showFullThinking}
-              pendingToolRequest={pendingCcminiToolRequest}
-              firstPendingToolCall={firstPendingCcminiToolCall}
-              pendingCallCount={pendingCcminiCalls.length}
-              showAskUserQuestionEditor={showAskUserQuestionEditor}
-              isLoading={isLoading}
-              spinnerVerb={spinnerVerb}
-            />
-          </Box>
-        )
+        <Box flexDirection="column" width="100%" marginTop={1}>
+          <CcminiTranscriptContent
+            visibleMessages={visibleMessages}
+            toolUseLookup={toolUseLookup}
+            conversationWidth={conversationWidth}
+            activeThemeSetting={activeThemeSetting}
+            showFullThinking={showFullThinking}
+            pendingToolRequest={pendingCcminiToolRequest}
+            firstPendingToolCall={firstPendingCcminiToolCall}
+            pendingCallCount={pendingCcminiCalls.length}
+            showAskUserQuestionEditor={showAskUserQuestionEditor}
+            isLoading={isLoading}
+            spinnerVerb={spinnerVerb}
+          />
+        </Box>
       )}
 
       {showVisibleThemePicker ? (
@@ -468,7 +596,7 @@ export function CcminiRepl({
         />
       ) : null}
 
-      {!pendingCcminiToolRequest ? (
+      {!pendingCcminiToolRequest && !pendingControlRequest ? (
         <React.Fragment>
           <Box
             flexDirection={showInlineBuddyCompanion ? 'row' : 'column'}
@@ -491,6 +619,9 @@ export function CcminiRepl({
                 padLineToWidth={padLineToWidth}
                 terminalFocused={isTerminalFocused}
                 showVisualCursor={showVisualCursor}
+                placeholderText=""
+                footerLeft='? for shortcuts'
+                footerRight='● high · /effort'
               />
             </Box>
             {showInlineBuddyCompanion ? (
@@ -526,7 +657,29 @@ export function CcminiRepl({
         </Box>
       ) : null}
 
-      {pendingCcminiToolRequest && showAskUserQuestionEditor && firstPendingCcminiToolCall ? (
+      {pendingControlRequest ? (
+        <CcminiControlRequestEditor
+          request={pendingControlRequest}
+          columns={columns}
+          onSubmit={async decision => {
+            const ok = await submitControlResponse(
+              pendingControlRequest.requestId,
+              decision,
+            )
+            if (ok) {
+              setPendingControlRequest(null)
+            }
+          }}
+          onAbort={() => {
+            void submitControlResponse(pendingControlRequest.requestId, 'deny')
+            setPendingControlRequest(null)
+          }}
+          themeSetting={activeThemeSetting}
+          truncateInlineText={truncateInlineText}
+        />
+      ) : null}
+
+      {pendingCcminiToolRequest && !pendingControlRequest && showAskUserQuestionEditor && firstPendingCcminiToolCall ? (
         <CcminiAskUserQuestionEditor
           key={pendingCcminiToolRequest.runId}
           call={firstPendingCcminiToolCall}
@@ -549,7 +702,7 @@ export function CcminiRepl({
         />
       ) : null}
 
-      {pendingCcminiToolRequest && !showAskUserQuestionEditor ? (
+      {pendingCcminiToolRequest && !pendingControlRequest && !showAskUserQuestionEditor ? (
         <CcminiToolResultEditor
           key={pendingCcminiToolRequest.runId}
           runId={pendingCcminiToolRequest.runId}

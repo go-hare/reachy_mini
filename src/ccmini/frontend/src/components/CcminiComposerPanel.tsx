@@ -6,6 +6,12 @@ import { useDeclaredCursor } from '../ink/hooks/use-declared-cursor.js'
 import { getThemeTokens } from '../ccmini/themePalette.js'
 import type { ThemeSetting } from '../ccmini/themeTypes.js'
 
+export type ComposerNoticeLine = {
+  text: string
+  color?: string
+  dimColor?: boolean
+}
+
 export function renderInputLineWithPlaceholder(
   inputValue: string,
   cursorOffset: number,
@@ -54,9 +60,9 @@ export function MainInputLine({
   renderedValue: string
   cursorLine: number
   cursorColumn: number
-  placeholderText?: string
   terminalFocused: boolean
   showVisualCursor: boolean
+  placeholderText?: string
 }): React.ReactNode {
   const prefixWidth = stringWidth(promptPrefix)
   const cursorRef = useDeclaredCursor({
@@ -104,6 +110,10 @@ export function ComposerPanel({
   padLineToWidth,
   terminalFocused,
   showVisualCursor,
+  placeholderText,
+  noticeLines = [],
+  footerLeft,
+  footerRight,
 }: {
   themeSetting: ThemeSetting
   columns: number
@@ -115,6 +125,10 @@ export function ComposerPanel({
   padLineToWidth: (left: string, right: string, width: number) => string
   terminalFocused: boolean
   showVisualCursor: boolean
+  placeholderText: string
+  noticeLines?: ComposerNoticeLine[]
+  footerLeft: string
+  footerRight: string
 }): React.ReactNode {
   const theme = getThemeTokens(themeSetting)
   const divider = '─'.repeat(Math.max(16, columns))
@@ -130,17 +144,31 @@ export function ComposerPanel({
           renderedValue={renderedValue}
           cursorLine={cursorLine}
           cursorColumn={cursorColumn}
-          placeholderText=""
+          placeholderText={placeholderText}
           terminalFocused={terminalFocused}
           showVisualCursor={showVisualCursor}
         />
+        {noticeLines.length > 0 ? (
+          <Box marginTop={1} flexDirection="column" width="100%">
+            {noticeLines.map((line, index) => (
+              <Text
+                key={`composer-notice-${index}`}
+                color={line.color}
+                dimColor={line.dimColor}
+                wrap="wrap"
+              >
+                {line.text}
+              </Text>
+            ))}
+          </Box>
+        ) : null}
       </Box>
       <Text dimColor>{applyForeground(divider, theme.claude)}</Text>
       <Box paddingLeft={1} width="100%">
         <Text dimColor wrap="truncate-end">
           {padLineToWidth(
-            '? for shortcuts',
-            '● high · /effort',
+            footerLeft,
+            footerRight,
             Math.max(24, columns - 2),
           )}
         </Text>

@@ -2,9 +2,12 @@ import type React from 'react'
 import { useCallback, useEffect, useRef } from 'react'
 import type {
   CcminiConnectConfig,
+  CcminiControlDecision,
+  CcminiControlRequest,
   CcminiPendingToolRequest,
   CcminiPromptSuggestionState,
   CcminiRemoteContent,
+  CcminiSendResult,
   CcminiSpeculationState,
   CcminiToolResultInput,
 } from '../ccmini/bridgeTypes.js'
@@ -12,7 +15,9 @@ import { CcminiSessionManager } from '../ccmini/CcminiSessionManager.js'
 import { applyCcminiBridgeEvent } from '../ccmini/ccminiMessageAdapter.js'
 import { createCcminiSystemMessage } from '../ccmini/messageUtils.js'
 import { appendSystemMessageOnce } from '../ccmini/replHelpers.js'
+import { requestCcminiTasksStoreRefresh } from '../ccmini/tasksStore.js'
 import {
+  getControlRequestFromPayload,
   getPendingToolRequestFromPayload,
   parsePromptSuggestionState,
   parseSpeculationState,
@@ -31,11 +36,17 @@ type UseCcminiSessionBridgeOptions = {
   setPendingCcminiToolRequest: React.Dispatch<
     React.SetStateAction<CcminiPendingToolRequest | null>
   >
+  setPendingControlRequest: React.Dispatch<
+    React.SetStateAction<CcminiControlRequest | null>
+  >
   setPromptSuggestion: React.Dispatch<
     React.SetStateAction<CcminiPromptSuggestionState>
   >
   setSpeculation: React.Dispatch<React.SetStateAction<CcminiSpeculationState>>
   setMessages: React.Dispatch<React.SetStateAction<MessageType[]>>
+  setTransportStatus: React.Dispatch<
+    React.SetStateAction<'connecting' | 'connected' | 'disconnected'>
+  >
 }
 
 export function useCcminiSessionBridge({
@@ -45,29 +56,37 @@ export function useCcminiSessionBridge({
   wasLoadingRef,
   setIsLoading,
   setPendingCcminiToolRequest,
+  setPendingControlRequest,
   setPromptSuggestion,
   setSpeculation,
   setMessages,
+  setTransportStatus,
 }: UseCcminiSessionBridgeOptions): {
   sendMessage: (
     content: CcminiRemoteContent,
     opts?: { uuid?: string },
-  ) => Promise<boolean>
+  ) => Promise<CcminiSendResult>
   submitToolResults: (
     runId: string,
     results: CcminiToolResultInput[],
+  ) => Promise<boolean>
+  submitControlResponse: (
+    requestId: string,
+    decision: CcminiControlDecision,
   ) => Promise<boolean>
 } {
   const managerRef = useRef<CcminiSessionManager | null>(null)
 
   const resetTransientState = useCallback((): void => {
     setPendingCcminiToolRequest(null)
+    setPendingControlRequest(null)
     setPromptSuggestion(emptyPromptSuggestionState)
     setSpeculation(idleSpeculationState)
   }, [
     emptyPromptSuggestionState,
     idleSpeculationState,
     setPendingCcminiToolRequest,
+    setPendingControlRequest,
     setPromptSuggestion,
     setSpeculation,
   ])
@@ -76,20 +95,29 @@ export function useCcminiSessionBridge({
     async (
       content: CcminiRemoteContent,
       opts?: { uuid?: string },
-    ): Promise<boolean> => {
+    ): Promise<CcminiSendResult> => {
       const manager = managerRef.current
       if (!manager) {
-        return false
+        return {
+          ok: false,
+          status: 'error',
+          message: 'ccmini transport is not ready yet.',
+        }
       }
       setIsLoading(true)
+      requestCcminiTasksStoreRefresh(ccminiConnectConfig, 0)
       try {
         return await manager.sendMessage(content, opts)
-      } catch {
+      } catch (error) {
         setIsLoading(false)
-        return false
+        return {
+          ok: false,
+          status: 'error',
+          message: error instanceof Error ? error.message : String(error),
+        }
       }
     },
-    [setIsLoading],
+    [ccminiConnectConfig, setIsLoading],
   )
 
   const submitToolResults = useCallback(
@@ -102,6 +130,7 @@ export function useCcminiSessionBridge({
         return false
       }
       setIsLoading(true)
+      requestCcminiTasksStoreRefresh(ccminiConnectConfig, 0)
       try {
         const ok = await manager.submitToolResults(runId, results)
         if (ok) {
@@ -124,20 +153,54 @@ export function useCcminiSessionBridge({
         return false
       }
     },
-    [setIsLoading, setMessages, setPendingCcminiToolRequest],
+    [ccminiConnectConfig, setIsLoading, setMessages, setPendingCcminiToolRequest],
+  )
+
+  const submitControlResponse = useCallback(
+    async (
+      requestId: string,
+      decision: CcminiControlDecision,
+    ): Promise<boolean> => {
+      const manager = managerRef.current
+      if (!manager) {
+        return false
+      }
+      try {
+        const ok = await manager.submitControlResponse(requestId, decision)
+        if (ok) {
+          setPendingControlRequest(prev =>
+            prev?.requestId === requestId ? null : prev,
+          )
+        }
+        return ok
+      } catch (error) {
+        setMessages(prev => [
+          ...prev,
+          createCcminiSystemMessage(
+            error instanceof Error ? error.message : String(error),
+            'error',
+          ),
+        ])
+        return false
+      }
+    },
+    [setMessages, setPendingControlRequest],
   )
 
   useEffect(() => {
     let disposed = false
 
     resetTransientState()
+    setTransportStatus('connecting')
 
     const manager = new CcminiSessionManager(ccminiConnectConfig, {
       onConnected: () => {
         if (disposed) {
           return
         }
+        setTransportStatus('connected')
         setPendingCcminiToolRequest(null)
+        requestCcminiTasksStoreRefresh(ccminiConnectConfig, 0)
         setMessages(prev =>
           appendSystemMessageOnce(
             prev,
@@ -152,6 +215,7 @@ export function useCcminiSessionBridge({
         }
         const lostDuringActiveTurn = wasLoadingRef.current
         resetTransientState()
+        setTransportStatus('disconnected')
         setIsLoading(false)
         if (lostDuringActiveTurn) {
           setMessages(prev =>
@@ -168,10 +232,12 @@ export function useCcminiSessionBridge({
           return
         }
         resetTransientState()
+        setTransportStatus('disconnected')
         setIsLoading(false)
         setMessages(prev => appendSystemMessageOnce(prev, error.message, 'error'))
       },
       onEvent: event => {
+        requestCcminiTasksStoreRefresh(ccminiConnectConfig)
         if (disposed || event.type !== 'stream_event') {
           if (!disposed) {
             setMessages(prev => applyCcminiBridgeEvent(event, prev))
@@ -191,6 +257,15 @@ export function useCcminiSessionBridge({
         if (eventType === 'pending_tool_call') {
           setPendingCcminiToolRequest(
             getPendingToolRequestFromPayload(event.payload),
+          )
+        } else if (eventType === 'control_request') {
+          setPendingControlRequest(
+            getControlRequestFromPayload(event.payload),
+          )
+        } else if (eventType === 'control_request_resolved') {
+          const resolvedId = String(event.payload?.request_id ?? '')
+          setPendingControlRequest(prev =>
+            prev?.requestId === resolvedId ? null : prev,
           )
         } else if (eventType === 'tool_result') {
           const toolUseId = String(event.payload?.tool_use_id ?? '')
@@ -215,6 +290,7 @@ export function useCcminiSessionBridge({
         return
       }
       resetTransientState()
+      setTransportStatus('disconnected')
       setIsLoading(false)
       setMessages(prev =>
         appendSystemMessageOnce(
@@ -228,6 +304,7 @@ export function useCcminiSessionBridge({
     return () => {
       disposed = true
       resetTransientState()
+      setTransportStatus('disconnected')
       manager.disconnect()
       managerRef.current = null
     }
@@ -237,13 +314,16 @@ export function useCcminiSessionBridge({
     setIsLoading,
     setMessages,
     setPendingCcminiToolRequest,
+    setPendingControlRequest,
     setPromptSuggestion,
     setSpeculation,
+    setTransportStatus,
     wasLoadingRef,
   ])
 
   return {
     sendMessage,
+    submitControlResponse,
     submitToolResults,
   }
 }

@@ -25,7 +25,10 @@ import {
 } from '../ccmini/toolRenderUtils.js'
 import type { ThemeSetting } from '../ccmini/themeTypes.js'
 import type { Message as MessageType } from '../types/message.js'
-import type { CcminiPendingToolCall, CcminiPendingToolRequest } from '../ccmini/bridgeTypes.js'
+import type {
+  CcminiPendingToolCall,
+  CcminiPendingToolRequest,
+} from '../ccmini/bridgeTypes.js'
 import type { RenderedTranscriptMessage } from '../hooks/useCcminiTranscriptViewModel.js'
 
 export function CcminiTranscriptContent({
@@ -40,6 +43,7 @@ export function CcminiTranscriptContent({
   showAskUserQuestionEditor,
   isLoading,
   spinnerVerb,
+  showWorkingStatus = true,
 }: {
   visibleMessages: RenderedTranscriptMessage[]
   toolUseLookup: Map<string, ToolUseLookupEntry>
@@ -52,6 +56,7 @@ export function CcminiTranscriptContent({
   showAskUserQuestionEditor: boolean
   isLoading: boolean
   spinnerVerb: string
+  showWorkingStatus?: boolean
 }): React.ReactNode {
   return (
     <React.Fragment>
@@ -150,14 +155,23 @@ export function CcminiTranscriptContent({
                 width={conversationWidth}
               />
             ) : (
-              <SystemFlow
-                content={entry.lines.join('\n').trimEnd()}
-                addMargin={false}
-                dot
-                color={entry.message.level === 'error' ? 'red' : 'yellow'}
-                dimColor={false}
-                width={conversationWidth}
-              />
+              (() => {
+                const content = entry.lines.join('\n').trimEnd()
+                const isApiError =
+                  entry.message.level === 'error' &&
+                  content.startsWith('API Error')
+
+                return (
+                  <SystemFlow
+                    content={content}
+                    addMargin={false}
+                    dot={!isApiError}
+                    color={entry.message.level === 'error' ? 'red' : 'yellow'}
+                    dimColor={false}
+                    width={conversationWidth}
+                  />
+                )
+              })()
             )
           ) : (
             <SystemFlow
@@ -182,7 +196,7 @@ export function CcminiTranscriptContent({
           themeSetting={activeThemeSetting}
         />
       ) : null}
-      {isLoading && !pendingToolRequest ? (
+      {showWorkingStatus && isLoading && !pendingToolRequest ? (
         <WorkingStatusFlow
           verb={spinnerVerb}
           themeSetting={activeThemeSetting}

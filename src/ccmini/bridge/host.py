@@ -9,8 +9,10 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
+from uuid import uuid4
 
 from ..agent import Agent, AgentConfig
+from ..config import load_config
 from ..messages import (
     CompletionEvent,
     ErrorEvent,
@@ -27,6 +29,7 @@ from ..messages import (
     UsageEvent,
     tool_result_content_to_text,
 )
+from ..permissions import PermissionDecision, PermissionMode, build_permission_checker
 from ..profiles import RuntimeProfile
 from ..prompts import SystemPrompt
 from ..providers import BaseProvider, ProviderConfig
@@ -202,6 +205,9 @@ class _ExecutorSessionState:
     active_query: asyncio.Task[None] | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     unsubscribe: Callable[[], None] | None = None
+    pending_control_requests: dict[str, asyncio.Future[dict[str, Any]]] = field(
+        default_factory=dict,
+    )
 
 
 class _ExecutorBridgeAPI(BridgeAPI):
@@ -211,6 +217,7 @@ class _ExecutorBridgeAPI(BridgeAPI):
             on_query=self._host._handle_query,
             on_tool_call=self._host._handle_tool_call,
             on_submit_tool_results=self._host._handle_submit_tool_results,
+            on_control_response=self._host._handle_control_response,
         )
 
     def create_session(self, metadata: dict[str, Any] | None = None) -> str:
@@ -329,6 +336,7 @@ class RemoteExecutorHost:
             state = _ExecutorSessionState(
                 agent=self._agent_factory(session_id),
             )
+            self._install_remote_permission_runtime(session_id, state)
             async def _forward_runtime_event(event: Any) -> None:
                 await self._publish_stream_event(
                     session_id,
@@ -340,6 +348,83 @@ class RemoteExecutorHost:
                 state.unsubscribe = register(_forward_runtime_event)
             self._sessions[session_id] = state
         return state
+
+    def _install_remote_permission_runtime(
+        self,
+        session_id: str,
+        state: _ExecutorSessionState,
+    ) -> None:
+        agent = state.agent
+        try:
+            cfg = load_config()
+            classifier_provider = (
+                agent.provider
+                if cfg.permission_mode == PermissionMode.AUTO.value
+                else None
+            )
+
+            async def _ask_callback(
+                tool_name: str,
+                tool_input: dict[str, Any],
+            ) -> PermissionDecision:
+                request_id = uuid4().hex[:12]
+                loop = asyncio.get_running_loop()
+                future: asyncio.Future[dict[str, Any]] = loop.create_future()
+                state.pending_control_requests[request_id] = future
+                await self._publish_stream_event(
+                    session_id,
+                    {
+                        "event_type": "control_request",
+                        "request_id": request_id,
+                        "request_type": "can_use_tool",
+                        "tool_name": tool_name,
+                        "tool_input": tool_input,
+                        "permission_mode": cfg.permission_mode,
+                    },
+                )
+                try:
+                    response = await asyncio.wait_for(future, timeout=300.0)
+                except asyncio.TimeoutError:
+                    state.pending_control_requests.pop(request_id, None)
+                    await self._publish_stream_event(
+                        session_id,
+                        {
+                            "event_type": "control_request_resolved",
+                            "request_id": request_id,
+                            "decision": PermissionDecision.DENY.value,
+                            "reason": "timeout",
+                        },
+                    )
+                    return PermissionDecision.DENY
+
+                state.pending_control_requests.pop(request_id, None)
+                decision_raw = str(
+                    response.get("decision", "")
+                    or ("allow" if response.get("allow") else "deny"),
+                ).strip().lower()
+                try:
+                    decision = PermissionDecision(decision_raw)
+                except Exception:
+                    decision = PermissionDecision.DENY
+                await self._publish_stream_event(
+                    session_id,
+                    {
+                        "event_type": "control_request_resolved",
+                        "request_id": request_id,
+                        "decision": decision.value,
+                    },
+                )
+                return decision
+
+            agent._permission_checker = build_permission_checker(
+                mode=cfg.permission_mode,
+                raw_rules=cfg.permission_rules,
+                classifier_provider=classifier_provider,
+                project_dir=agent.working_directory or "",
+                ask_callback=_ask_callback,
+            )
+        except Exception:
+            agent._permission_checker = None
 
     def _get_runtime_snapshot(self, session_id: str) -> dict[str, Any]:
         state = self._sessions.get(session_id)
@@ -736,6 +821,22 @@ class RemoteExecutorHost:
         )
         return "accepted"
 
+    async def _handle_control_response(
+        self,
+        session_id: str,
+        response_id: str,
+        payload: dict[str, Any],
+    ) -> str:
+        state = self._sessions.get(session_id)
+        if state is None:
+            raise RuntimeError(f"Unknown session: {session_id}")
+        future = state.pending_control_requests.get(response_id)
+        if future is None:
+            return "missing"
+        if not future.done():
+            future.set_result(dict(payload))
+        return "accepted"
+
     async def _handle_tool_call(
         self,
         session_id: str,
@@ -867,6 +968,10 @@ class RemoteExecutorHost:
         state = self._sessions.pop(session_id, None)
         if state is None:
             return
+        for future in state.pending_control_requests.values():
+            if not future.done():
+                future.cancel()
+        state.pending_control_requests.clear()
         if state.unsubscribe is not None:
             with contextlib.suppress(Exception):
                 state.unsubscribe()
@@ -878,6 +983,10 @@ class RemoteExecutorHost:
         state = self._sessions.pop(session_id, None)
         if state is None:
             return
+        for future in state.pending_control_requests.values():
+            if not future.done():
+                future.cancel()
+        state.pending_control_requests.clear()
         if state.unsubscribe is not None:
             with contextlib.suppress(Exception):
                 state.unsubscribe()

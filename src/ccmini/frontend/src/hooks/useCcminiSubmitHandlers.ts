@@ -3,6 +3,7 @@ import { useCallback } from 'react'
 import type {
   CcminiPromptSuggestionState,
   CcminiRemoteContent,
+  CcminiSendResult,
   CcminiSpeculationState,
 } from '../ccmini/bridgeTypes.js'
 import { findDonorCommand } from '../ccmini/donorCommandCatalog.js'
@@ -26,7 +27,12 @@ type UseCcminiSubmitHandlersOptions = {
   sendMessage: (
     content: CcminiRemoteContent,
     opts?: { uuid?: string },
-  ) => Promise<boolean>
+  ) => Promise<CcminiSendResult>
+  queueMessage: (
+    content: CcminiRemoteContent,
+    opts?: { uuid?: string },
+  ) => void
+  isTurnBusy: boolean
   recentImeCandidateRef: React.MutableRefObject<RecentImeCandidate>
   setShowPromptHelp: React.Dispatch<React.SetStateAction<boolean>>
   setShowCommandCatalog: React.Dispatch<React.SetStateAction<boolean>>
@@ -45,6 +51,8 @@ export function useCcminiSubmitHandlers({
   openThemePicker,
   onExit,
   sendMessage,
+  queueMessage,
+  isTurnBusy,
   recentImeCandidateRef,
   setShowPromptHelp,
   setShowCommandCatalog,
@@ -157,24 +165,40 @@ export function useCcminiSubmitHandlers({
         at: 0,
       }
 
-      const ok = await sendMessage(normalized, {
+      const sendOpts = {
         uuid: userMessage.uuid,
-      })
-      if (!ok) {
-        setMessages(prev => [
-          ...prev,
-          createCcminiSystemMessage(
-            'Failed to send message to ccmini bridge.',
-            'error',
-          ),
-        ])
-        setIsLoading(false)
       }
+
+      if (isTurnBusy) {
+        queueMessage(normalized, sendOpts)
+        return
+      }
+
+      const result = await sendMessage(normalized, sendOpts)
+      if (result.ok) {
+        return
+      }
+
+      if (result.status === 'busy') {
+        queueMessage(normalized, sendOpts)
+        return
+      }
+
+      setMessages(prev => [
+        ...prev,
+        createCcminiSystemMessage(
+          result.message ?? 'Failed to send message to ccmini bridge.',
+          'error',
+        ),
+      ])
+      setIsLoading(false)
     },
     [
       applyMainInputState,
       emptyPromptSuggestionState,
       idleSpeculationState,
+      isTurnBusy,
+      queueMessage,
       recentImeCandidateRef,
       sendMessage,
       setIsLoading,

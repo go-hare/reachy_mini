@@ -8,15 +8,28 @@ import {
   renderInputLineWithPlaceholder,
 } from './CcminiComposerPanel.js'
 import { ConsoleSection, getFrameBorderColor } from './CcminiSectionFrame.js'
-import type { CcminiPendingToolCall } from '../ccmini/bridgeTypes.js'
+import type {
+  CcminiControlRequest,
+  CcminiPendingToolCall,
+} from '../ccmini/bridgeTypes.js'
 import { applyBackground, applyForeground } from '../ccmini/ansiText.js'
 import { getThemeTokens } from '../ccmini/themePalette.js'
+import { stringifyUnknown } from '../ccmini/toolRenderUtils.js'
 import type { ThemeSetting } from '../ccmini/themeTypes.js'
 import { isEnvTruthy } from '../utils/envUtils.js'
 
 type SavedToolResult = {
   content: string
   isError: boolean
+}
+
+type ControlRequestEditorProps = {
+  request: CcminiControlRequest
+  columns: number
+  onSubmit: (decision: 'allow' | 'deny') => void | Promise<void>
+  onAbort: () => void
+  themeSetting: ThemeSetting
+  truncateInlineText: (value: string, maxLength?: number) => string
 }
 
 type AskUserQuestionOption = {
@@ -676,12 +689,15 @@ export function CcminiAskUserQuestionEditor({
 
   return (
     <ConsoleSection
-      title="Question Flow"
-      subtitle={stepLabel ?? 'interactive'}
+      title="Reply Required"
+      subtitle={stepLabel ?? 'final reply paused'}
       themeSetting={themeSetting}
       titleColor={theme.permission}
     >
       <Box flexDirection="column">
+        <Text color={theme.permission} wrap="wrap">
+          The assistant is waiting for your choice. The final reply will only appear after you answer or cancel this step.
+        </Text>
         <Text dimColor wrap="wrap">
           {`Tool ${call.toolName || 'AskUserQuestion'} is requesting structured input before the run can continue.`}
         </Text>
@@ -907,11 +923,14 @@ export function CcminiPendingToolRequestPanel({
 
   return (
     <ConsoleSection
-      title="Continuation Queue"
+      title="Reply Required"
       subtitle={toolName}
       themeSetting={themeSetting}
       titleColor={theme.warning}
     >
+      <Text color={theme.warning} wrap="wrap">
+        The assistant is paused on a client-side step. The final reply cannot continue until this result is submitted.
+      </Text>
       <Text wrap="wrap">{description}</Text>
       <Text dimColor>{`Run: ${runId}`}</Text>
       <Text dimColor>
@@ -920,6 +939,116 @@ export function CcminiPendingToolRequestPanel({
       {callCount > 1 ? (
         <Text dimColor>{callCount} tool results are waiting to be submitted.</Text>
       ) : null}
+    </ConsoleSection>
+  )
+}
+
+export function CcminiControlRequestEditor({
+  request,
+  columns,
+  onSubmit,
+  onAbort,
+  themeSetting,
+  truncateInlineText,
+}: ControlRequestEditorProps): React.ReactNode {
+  const theme = getThemeTokens(themeSetting)
+  const [selectedIndex, setSelectedIndex] = useState(0)
+  const summaryLines = request.toolInput
+    ? stringifyUnknown(request.toolInput)
+        .split('\n')
+        .map(line => line.trimEnd())
+        .filter(Boolean)
+        .slice(0, 8)
+    : []
+
+  useInput((input, key) => {
+    if (key.escape || (key.ctrl && input === 'c')) {
+      onAbort()
+      return
+    }
+
+    if (key.upArrow || key.leftArrow) {
+      setSelectedIndex(prev => (prev === 0 ? 1 : 0))
+      return
+    }
+    if (key.downArrow || key.rightArrow || key.tab) {
+      setSelectedIndex(prev => (prev === 0 ? 1 : 0))
+      return
+    }
+    if (!key.return) {
+      return
+    }
+    void onSubmit(selectedIndex === 0 ? 'allow' : 'deny')
+  })
+
+  return (
+    <ConsoleSection
+      title="Approval Required"
+      subtitle={request.toolName || request.requestType}
+      themeSetting={themeSetting}
+      titleColor={theme.warning}
+    >
+      <Box flexDirection="column">
+        <Text color={theme.warning} wrap="wrap">
+          The assistant needs your approval before it can continue and produce the final reply.
+        </Text>
+        <Text dimColor wrap="wrap">
+          {`Request type: ${request.requestType}`}
+        </Text>
+        <Text wrap="wrap">
+          {`Tool: ${request.toolName || 'unknown'}`}
+        </Text>
+        {request.permissionMode ? (
+          <Text dimColor wrap="wrap">
+            {`Permission mode: ${request.permissionMode}`}
+          </Text>
+        ) : null}
+        <Text dimColor wrap="wrap">
+          {`Request ID: ${request.requestId}`}
+        </Text>
+
+        {summaryLines.length > 0 ? (
+          <Box marginTop={1} flexDirection="column">
+            <Text bold>Tool input</Text>
+            {summaryLines.map((line, index) => (
+              <Text key={index} dimColor wrap="wrap">
+                {truncateInlineText(line, Math.max(24, columns - 16))}
+              </Text>
+            ))}
+          </Box>
+        ) : null}
+
+        <Box marginTop={1} flexDirection="column">
+          <Text wrap="wrap">
+            {selectedIndex === 0
+              ? applyBackground(
+                  applyForeground(`${DONOR_POINTER} Allow once`, theme.inverseText),
+                  theme.permission,
+                )
+              : '  Allow once'}
+          </Text>
+          <Text dimColor wrap="wrap">
+            Continue this request and let the tool run.
+          </Text>
+          <Text wrap="wrap">
+            {selectedIndex === 1
+              ? applyBackground(
+                  applyForeground(`${DONOR_POINTER} Deny`, theme.inverseText),
+                  theme.error,
+                )
+              : '  Deny'}
+          </Text>
+          <Text dimColor wrap="wrap">
+            Stop this tool call. The assistant will need another approach.
+          </Text>
+        </Box>
+
+        <Box marginTop={1}>
+          <Text dimColor italic>
+            Enter to choose · ↑/↓ to navigate · Esc to dismiss
+          </Text>
+        </Box>
+      </Box>
     </ConsoleSection>
   )
 }

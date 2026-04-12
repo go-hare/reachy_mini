@@ -1,8 +1,10 @@
 import {
+  type CcminiControlDecision,
   type CcminiBridgeEventRecord,
   type CcminiBridgeMessage,
   type CcminiConnectConfig,
   type CcminiRemoteContent,
+  type CcminiSendResult,
   type CcminiToolResultInput,
   createCcminiRequestId,
   decodeCcminiBridgeMessage,
@@ -39,11 +41,56 @@ function normalizeRemoteContent(content: CcminiRemoteContent): string {
     .join('\n\n')
 }
 
-function isAcceptedBridgeResponse(message: CcminiBridgeMessage): boolean {
+function getBridgeAckText(message: CcminiBridgeMessage): string {
   if (message.type !== 'response') {
-    return false
+    return ''
   }
-  return String(message.payload?.text ?? '').trim().toLowerCase() === 'accepted'
+  return String(message.payload?.text ?? '').trim()
+}
+
+function isAcceptedBridgeResponse(message: CcminiBridgeMessage): boolean {
+  return getBridgeAckText(message).toLowerCase() === 'accepted'
+}
+
+function describeBridgeFailure(message: CcminiBridgeMessage): string {
+  if (message.type === 'error') {
+    const errorText = String(
+      message.payload?.error ?? message.payload?.text ?? '',
+    ).trim()
+    return errorText || 'ccmini bridge returned an error.'
+  }
+
+  const responseText = getBridgeAckText(message)
+  if (responseText) {
+    return `ccmini bridge replied: ${responseText}`
+  }
+
+  return `Unexpected ccmini bridge response type: ${message.type}`
+}
+
+function interpretBridgeSendResult(
+  message: CcminiBridgeMessage,
+): CcminiSendResult {
+  const responseText = getBridgeAckText(message).toLowerCase()
+  if (responseText === 'accepted') {
+    return {
+      ok: true,
+      status: 'accepted',
+    }
+  }
+  if (responseText === 'busy') {
+    return {
+      ok: false,
+      status: 'busy',
+      message: 'ccmini bridge is busy; queued the message for automatic retry.',
+    }
+  }
+
+  return {
+    ok: false,
+    status: 'error',
+    message: describeBridgeFailure(message),
+  }
 }
 
 export class CcminiSessionManager {
@@ -133,7 +180,7 @@ export class CcminiSessionManager {
   async sendMessage(
     content: CcminiRemoteContent,
     _opts?: { uuid?: string },
-  ): Promise<boolean> {
+  ): Promise<CcminiSendResult> {
     const text = normalizeRemoteContent(content)
     const response = await this.sendBridgeMessage({
       type: 'query',
@@ -141,7 +188,7 @@ export class CcminiSessionManager {
       session_id: this.config.sessionId,
       request_id: createCcminiRequestId(),
     })
-    return isAcceptedBridgeResponse(response)
+    return interpretBridgeSendResult(response)
   }
 
   async submitToolResults(
@@ -153,6 +200,23 @@ export class CcminiSessionManager {
       payload: {
         run_id: runId,
         results,
+      },
+      session_id: this.config.sessionId,
+      request_id: createCcminiRequestId(),
+    })
+    return isAcceptedBridgeResponse(response)
+  }
+
+  async submitControlResponse(
+    requestId: string,
+    decision: CcminiControlDecision,
+  ): Promise<boolean> {
+    const response = await this.sendBridgeMessage({
+      type: 'control_response',
+      payload: {
+        id: requestId,
+        decision,
+        allow: decision === 'allow',
       },
       session_id: this.config.sessionId,
       request_id: createCcminiRequestId(),
@@ -251,8 +315,22 @@ export class CcminiSessionManager {
         body: encodeCcminiBridgeMessage(message),
       },
     )
-    const payload = (await response.json()) as CcminiBridgeMessage
-    return payload
+    const payload = await response.json() as
+      | CcminiBridgeMessage
+      | { error?: unknown }
+
+    if (!response.ok) {
+      const detail =
+        typeof payload === 'object' &&
+        payload !== null &&
+        'error' in payload &&
+        typeof payload.error === 'string'
+          ? payload.error
+          : `${response.status} ${response.statusText}`.trim()
+      throw new Error(`ccmini bridge request failed: ${detail}`)
+    }
+
+    return payload as CcminiBridgeMessage
   }
 
   private startPolling(): void {

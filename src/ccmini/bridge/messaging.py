@@ -27,6 +27,7 @@ class MessageType(enum.Enum):
 
     QUERY = "query"
     RESPONSE = "response"
+    CONTROL_RESPONSE = "control_response"
     TOOL_CALL = "tool_call"
     SUBMIT_TOOL_RESULTS = "submit_tool_results"
     TOOL_RESULT = "tool_result"
@@ -109,6 +110,7 @@ _REQUIRED_FIELDS = frozenset({"type"})
 _PAYLOAD_SCHEMAS: dict[MessageType, set[str]] = {
     MessageType.QUERY: {"text"},
     MessageType.RESPONSE: {"text"},
+    MessageType.CONTROL_RESPONSE: {"id"},
     MessageType.TOOL_CALL: {"tool_name", "tool_input"},
     MessageType.SUBMIT_TOOL_RESULTS: {"run_id", "results"},
     MessageType.TOOL_RESULT: {"tool_name", "result"},

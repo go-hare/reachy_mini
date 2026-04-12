@@ -1086,6 +1086,7 @@ def build_permission_checker(
     raw_rules: list[dict[str, str]] | None = None,
     classifier_provider: BaseProvider | None = None,
     project_dir: str | Any | None = None,
+    ask_callback: PermissionCallback | None = None,
 ) -> PermissionChecker:
     permission_mode = mode if isinstance(mode, PermissionMode) else PermissionMode(mode)
     return PermissionChecker(
@@ -1093,6 +1094,7 @@ def build_permission_checker(
             mode=permission_mode,
             rules=permission_rules_from_config(raw_rules),
         ),
+        ask_callback=ask_callback,
         classifier_provider=classifier_provider if permission_mode == PermissionMode.AUTO else None,
         project_dir=project_dir,
     )
