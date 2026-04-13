@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shlex
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from fnmatch import fnmatchcase
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -732,6 +734,41 @@ def rule_matches(tool_pattern: str, tool_name: str, tool_input: dict[str, Any] |
     )
 
 
+def _extract_requested_path(tool_input: dict[str, Any] | None) -> str:
+    tool_input = tool_input or {}
+    for key in ("file_path", "path"):
+        raw = str(tool_input.get(key, "") or "").strip()
+        if raw:
+            return raw
+    return ""
+
+
+def _contains_path_glob(raw_path: str) -> bool:
+    return any(char in raw_path for char in "*?[]")
+
+
+def _normalize_scope_path(raw_path: str, base_dir: str) -> Path | None:
+    value = str(raw_path or "").strip()
+    if not value or _contains_path_glob(value):
+        return None
+    try:
+        candidate = Path(value).expanduser()
+        if not candidate.is_absolute():
+            root = Path(base_dir or os.getcwd()).expanduser().resolve()
+            candidate = root / candidate
+        return candidate.resolve()
+    except OSError:
+        return None
+
+
+def _is_subpath(child: Path, parent: Path) -> bool:
+    try:
+        child.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
 def permission_rules_from_config(raw_rules: list[dict[str, str]] | None) -> list[PermissionRule]:
     if not raw_rules:
         return []
@@ -797,6 +834,8 @@ class PermissionConfig:
     rules: list[PermissionRule] = field(default_factory=list)
     auto_mode_allow_descriptions: list[str] = field(default_factory=list)
     auto_mode_deny_descriptions: list[str] = field(default_factory=list)
+    project_dir: str = ""
+    additional_directories: list[str] = field(default_factory=list)
 
 
 async def classify_auto_mode(
@@ -893,6 +932,65 @@ class PermissionChecker:
         self._config.mode = mode
         self._auto_state.active = mode == PermissionMode.AUTO
 
+    @property
+    def project_dir(self) -> str:
+        return str(self._config.project_dir or "").strip()
+
+    @property
+    def additional_directories(self) -> list[str]:
+        return list(self._config.additional_directories)
+
+    def set_additional_directories(self, paths: list[str]) -> None:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw_path in paths:
+            try:
+                resolved = str(Path(str(raw_path)).expanduser().resolve())
+            except OSError:
+                continue
+            if not resolved or resolved in seen:
+                continue
+            seen.add(resolved)
+            normalized.append(resolved)
+        self._config.additional_directories = normalized
+
+    def add_additional_directories(self, paths: list[str]) -> None:
+        self.set_additional_directories(
+            [*self._config.additional_directories, *paths],
+        )
+
+    def add_rules(self, rules: list[PermissionRule]) -> None:
+        self._config.rules.extend(rules)
+
+    def _is_path_within_allowed_workspace(
+        self,
+        tool_input: dict[str, Any] | None,
+    ) -> bool:
+        raw_path = _extract_requested_path(tool_input)
+        if not raw_path:
+            return True
+
+        requested_path = _normalize_scope_path(raw_path, self.project_dir)
+        if requested_path is None:
+            return True
+
+        scope_roots: list[Path] = []
+        if self.project_dir:
+            try:
+                scope_roots.append(Path(self.project_dir).expanduser().resolve())
+            except OSError:
+                pass
+        for raw_dir in self._config.additional_directories:
+            try:
+                scope_roots.append(Path(raw_dir).expanduser().resolve())
+            except OSError:
+                continue
+
+        if not scope_roots:
+            return True
+
+        return any(_is_subpath(requested_path, root) for root in scope_roots)
+
     def _matching_rule(
         self,
         tool_name: str,
@@ -919,6 +1017,8 @@ class PermissionChecker:
             return PermissionDecision.ALLOW
         if mode == PermissionMode.PLAN:
             return PermissionDecision.ALLOW if is_read_only else PermissionDecision.DENY
+        if is_read_only and not self._is_path_within_allowed_workspace(tool_input):
+            return self._apply_dont_ask(PermissionDecision.ASK)
         if mode == PermissionMode.ACCEPT_EDITS:
             if is_read_only or is_edit_tool(tool_name):
                 return PermissionDecision.ALLOW
@@ -984,6 +1084,26 @@ class PermissionChecker:
                 tool_input,
                 decision,
                 reason="plan_mode",
+                tool_use_id=tool_use_id,
+            )
+
+        if is_read_only and not self._is_path_within_allowed_workspace(tool_input):
+            if self._ask_callback is not None:
+                result = await self._ask_callback(tool_name, tool_input)
+                final = self._apply_dont_ask(result)
+                return self._finalize_decision(
+                    tool_name,
+                    tool_input,
+                    final,
+                    reason="ask_callback" if final == PermissionDecision.DENY else "",
+                    tool_use_id=tool_use_id,
+                )
+            final = self._apply_dont_ask(PermissionDecision.ASK)
+            return self._finalize_decision(
+                tool_name,
+                tool_input,
+                final,
+                reason="dont_ask_mode" if final == PermissionDecision.DENY else "",
                 tool_use_id=tool_use_id,
             )
 
@@ -1086,6 +1206,7 @@ def build_permission_checker(
     raw_rules: list[dict[str, str]] | None = None,
     classifier_provider: BaseProvider | None = None,
     project_dir: str | Any | None = None,
+    additional_dirs: list[str] | None = None,
     ask_callback: PermissionCallback | None = None,
 ) -> PermissionChecker:
     permission_mode = mode if isinstance(mode, PermissionMode) else PermissionMode(mode)
@@ -1093,6 +1214,8 @@ def build_permission_checker(
         config=PermissionConfig(
             mode=permission_mode,
             rules=permission_rules_from_config(raw_rules),
+            project_dir=str(project_dir or ""),
+            additional_directories=list(additional_dirs or []),
         ),
         ask_callback=ask_callback,
         classifier_provider=classifier_provider if permission_mode == PermissionMode.AUTO else None,

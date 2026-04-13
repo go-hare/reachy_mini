@@ -29,6 +29,7 @@ from ccmini.auth import load_auth_state
 from ccmini.bridge import BridgeClient, BridgeConfig, BridgeServer, RemoteExecutorHost, create_remote_executor_host
 from ccmini.config import CLIConfig, load_config, load_profile, sync_remote_config
 from ccmini.commands import SlashCommand
+from ccmini.commands.builtin import AddDirCommand
 from ccmini.commands.types import Command, CommandSource, CommandType
 from ccmini.embedded import HostEvent, HostToolResult
 from ccmini.frontend_host import _build_ready_payload, _find_open_port, _port_is_available
@@ -54,7 +55,14 @@ from ccmini.messages import (
 )
 from ccmini.memory.store import JsonlMemoryStore
 from ccmini.memory.types import LongTermRecord, MemoryCandidate, MemoryPatch
-from ccmini.permissions import BashCommandAnalyzer, PermissionChecker, PermissionConfig, PermissionMode, RiskLevel
+from ccmini.permissions import (
+    BashCommandAnalyzer,
+    PermissionChecker,
+    PermissionConfig,
+    PermissionDecision,
+    PermissionMode,
+    RiskLevel,
+)
 from ccmini.delegation.multi_agent import AgentTool
 from ccmini.delegation.builtin_agents import WORKER_AGENT
 from ccmini.delegation.tasks import TaskManager
@@ -2113,6 +2121,123 @@ def test_check_directory_trust_accepts_ccmini_marker(tmp_path: Path) -> None:
     assert check_directory_trust(tmp_path) is True
 
 
+def test_permission_checker_prompts_for_read_outside_workspace(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    external_dir = tmp_path / "reference"
+    external_dir.mkdir(parents=True, exist_ok=True)
+    external_file = external_dir / "CLAUDE.md"
+    external_file.write_text("external\n", encoding="utf-8")
+    seen: list[tuple[str, dict[str, object]]] = []
+
+    async def ask_callback(
+        tool_name: str,
+        tool_input: dict[str, object],
+    ) -> PermissionDecision:
+        seen.append((tool_name, tool_input))
+        return PermissionDecision.ALLOW
+
+    checker = PermissionChecker(
+        PermissionConfig(
+            mode=PermissionMode.DEFAULT,
+            project_dir=str(workspace),
+        ),
+        ask_callback=ask_callback,
+    )
+
+    decision = asyncio.run(
+        checker.resolve(
+            "Read",
+            {"file_path": str(external_file)},
+            is_read_only=True,
+        )
+    )
+
+    assert decision == PermissionDecision.ALLOW
+    assert seen == [("Read", {"file_path": str(external_file)})]
+
+
+def test_permission_checker_allows_reads_in_added_reference_directory(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    external_dir = tmp_path / "reference"
+    external_dir.mkdir(parents=True, exist_ok=True)
+    external_file = external_dir / "CLAUDE.md"
+    external_file.write_text("external\n", encoding="utf-8")
+
+    checker = PermissionChecker(
+        PermissionConfig(
+            mode=PermissionMode.DEFAULT,
+            project_dir=str(workspace),
+            additional_directories=[str(external_dir)],
+        )
+    )
+
+    decision = asyncio.run(
+        checker.resolve(
+            "Read",
+            {"file_path": str(external_file)},
+            is_read_only=True,
+        )
+    )
+
+    assert decision == PermissionDecision.ALLOW
+
+
+def test_add_dir_command_persists_reference_directory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _prepare_environment(monkeypatch, tmp_path)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    reference_dir = tmp_path / "reference"
+    reference_dir.mkdir(parents=True, exist_ok=True)
+
+    class _DummyAgent:
+        def __init__(self) -> None:
+            self.provider = SimpleNamespace()
+            self._working_directory = str(workspace)
+            self._reference_directories: list[str] = []
+            self._permission_checker = PermissionChecker(
+                PermissionConfig(
+                    mode=PermissionMode.DEFAULT,
+                    project_dir=str(workspace),
+                )
+            )
+
+        @property
+        def working_directory(self) -> str:
+            return self._working_directory
+
+        @property
+        def reference_directories(self) -> list[str]:
+            return list(self._reference_directories)
+
+        def add_reference_directory(self, path: str) -> str:
+            resolved = str(Path(path).expanduser().resolve())
+            if resolved not in self._reference_directories:
+                self._reference_directories.append(resolved)
+            return resolved
+
+    agent = _DummyAgent()
+
+    result = asyncio.run(
+        AddDirCommand().execute(
+            f'--remember "{reference_dir}"',
+            agent,  # type: ignore[arg-type]
+        )
+    )
+
+    normalized = str(reference_dir.resolve())
+    assert "Added reference directory" in result
+    assert normalized in agent.reference_directories
+    assert normalized in agent._permission_checker.additional_directories
+    assert normalized in load_config().reference_directories
+
+
 def test_list_peers_uses_ccmini_home_when_legacy_env_is_present(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -3828,6 +3953,93 @@ def test_publish_host_event_persists_and_emits_runtime_event(
     assert recent[0]["text"] == "battery=20%"
 
 
+def test_submit_user_input_isolates_transcript_per_conversation_id(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _prepare_environment(monkeypatch, tmp_path)
+    seen_histories: dict[str, list[str]] = {}
+
+    async def fake_run_query(params: object):
+        conv_id = str(getattr(params, "conversation_id"))  # type: ignore[attr-defined]
+        seen_histories[conv_id] = [msg.text for msg in getattr(params, "messages", [])]  # type: ignore[attr-defined]
+        getattr(params, "messages").append(assistant_message(f"reply:{conv_id}"))  # type: ignore[attr-defined]
+        yield CompletionEvent(text=f"reply:{conv_id}", conversation_id=conv_id, stop_reason="end_turn")
+
+    monkeypatch.setattr(query_engine_module, "run_query", fake_run_query)
+
+    async def run() -> Agent:
+        agent = Agent(
+            provider=ProviderConfig(type="mock", model="mock-model"),
+            system_prompt="You are helpful.",
+        )
+        agent.set_memory_roots(profile_root=str(tmp_path / "profile"))
+        agent.publish_host_event(
+            HostEvent(
+                conversation_id="conv-a",
+                event_type="host_note",
+                role="user",
+                text="host-a",
+            )
+        )
+        agent.submit_user_input("hello a", conversation_id="conv-a")
+        await agent.wait_reply(timeout=5.0)
+        agent.submit_user_input("hello b", conversation_id="conv-b")
+        await agent.wait_reply(timeout=5.0)
+        return agent
+
+    agent = asyncio.run(run())
+
+    assert any("hello a" in text for text in seen_histories["conv-a"])
+    assert any("host-a" in text for text in seen_histories["conv-a"])
+    assert all("hello a" not in text for text in seen_histories["conv-b"])
+    assert all("host-a" not in text for text in seen_histories["conv-b"])
+
+    assert agent._session_store is not None
+    conv_a_texts = [message.text for message in agent._session_store.load_session("conv-a")]
+    conv_b_texts = [message.text for message in agent._session_store.load_session("conv-b")]
+    assert any("hello a" in text for text in conv_a_texts)
+    assert any("host-a" in text for text in conv_a_texts)
+    assert all("hello b" not in text for text in conv_a_texts)
+    assert any("hello b" in text for text in conv_b_texts)
+    assert all("hello a" not in text for text in conv_b_texts)
+
+
+def test_publish_host_event_keeps_conversation_snapshots_separate(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _prepare_environment(monkeypatch, tmp_path)
+    agent = Agent(
+        provider=ProviderConfig(type="mock", model="mock-model"),
+        system_prompt="You are helpful.",
+    )
+    agent.set_memory_roots(profile_root=str(tmp_path / "profile"))
+
+    agent.publish_host_event(
+        HostEvent(
+            conversation_id="conv-a",
+            event_type="sensor",
+            role="user",
+            text="alpha",
+        )
+    )
+    agent.publish_host_event(
+        HostEvent(
+            conversation_id="conv-b",
+            event_type="sensor",
+            role="user",
+            text="beta",
+        )
+    )
+
+    assert agent._session_store is not None
+    conv_a = agent._session_store.load_session("conv-a")
+    conv_b = agent._session_store.load_session("conv-b")
+    assert [message.text for message in conv_a] == ["alpha"]
+    assert [message.text for message in conv_b] == ["beta"]
+
+
 def test_query_long_term_skips_irrelevant_memories_without_token_overlap(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -4035,8 +4247,6 @@ def test_agent_kairos_public_state_tracks_proactive_ticks(
     _prepare_environment(monkeypatch, tmp_path)
 
     async def run() -> tuple[int, float]:
-        import ccmini.kairos.proactive as proactive_runtime
-
         agent = Agent(
             provider=ProviderConfig(type="mock", model="mock-model"),
             system_prompt="You are helpful.",
@@ -4049,7 +4259,7 @@ def test_agent_kairos_public_state_tracks_proactive_ticks(
                 "proactive_enabled": True,
             },
         )
-        proactive_runtime.build_tick_message()
+        agent._record_local_kairos_tick(timestamp=123.0)
         state = agent.get_kairos_state()
         await agent.deactivate_kairos()
         return int(state["tick_count"]), float(state["last_tick_ts"])
@@ -4057,7 +4267,48 @@ def test_agent_kairos_public_state_tracks_proactive_ticks(
     tick_count, last_tick_ts = asyncio.run(run())
 
     assert tick_count >= 1
-    assert last_tick_ts > 0
+    assert last_tick_ts == 123.0
+
+
+def test_get_kairos_state_ignores_global_proactive_metrics(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _prepare_environment(monkeypatch, tmp_path)
+
+    async def run() -> tuple[dict[str, object], dict[str, object]]:
+        import ccmini.kairos.proactive as proactive_runtime
+
+        proactive_runtime._state.metrics.tick_count = 0
+        proactive_runtime._state.metrics.last_tick_ts = 0.0
+
+        agent_a = Agent(
+            provider=ProviderConfig(type="mock", model="mock-model"),
+            system_prompt="You are helpful.",
+        )
+        agent_b = Agent(
+            provider=ProviderConfig(type="mock", model="mock-model"),
+            system_prompt="You are helpful.",
+        )
+        await agent_a.activate_kairos(
+            mode="assistant",
+            trust_accepted=True,
+            gate_config={"kairos_enabled": True, "proactive_enabled": True},
+        )
+        proactive_runtime.build_tick_message()
+        state_a = agent_a.get_kairos_state()
+        state_b = agent_b.get_kairos_state()
+        await agent_a.deactivate_kairos()
+        proactive_runtime._state.metrics.tick_count = 0
+        proactive_runtime._state.metrics.last_tick_ts = 0.0
+        return state_a, state_b
+
+    state_a, state_b = asyncio.run(run())
+
+    assert state_a["tick_count"] == 0
+    assert state_a["last_tick_ts"] == 0.0
+    assert state_b["tick_count"] == 0
+    assert state_b["last_tick_ts"] == 0.0
 
 
 def test_agent_buddy_host_api_controls_companion(
@@ -4107,6 +4358,74 @@ def test_agent_buddy_host_api_controls_companion(
     assert "companion_hatched" in event_types
     assert "companion_pet" in event_types
     assert "companion_muted" in event_types
+
+
+def test_companion_intro_attachment_ignores_global_muted_config_for_instance_api(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    home = _prepare_environment(monkeypatch, tmp_path)
+    (home / "config.json").write_text('{"companionMuted": true}', encoding="utf-8")
+
+    agent = Agent(
+        provider=ProviderConfig(type="mock", model="mock-model"),
+        system_prompt="You are helpful.",
+    )
+    agent.enable_buddy(True)
+    agent.hatch_companion(name="Momo")
+
+    assert agent.is_companion_muted() is False
+    intro = agent.get_companion_intro_attachment()
+    assert intro
+    assert intro[0]["name"] == "Momo"
+
+
+def test_agent_host_api_isolates_kairos_and_buddy_state_per_instance(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _prepare_environment(monkeypatch, tmp_path)
+
+    async def run() -> None:
+        agent_a = Agent(
+            provider=ProviderConfig(type="mock", model="mock-model"),
+            system_prompt="You are helpful.",
+        )
+        agent_b = Agent(
+            provider=ProviderConfig(type="mock", model="mock-model"),
+            system_prompt="You are helpful.",
+        )
+
+        activated = await agent_a.activate_kairos(
+            mode="assistant",
+            trust_accepted=True,
+            gate_config={
+                "kairos_enabled": True,
+                "proactive_enabled": True,
+                "channels_enabled": True,
+            },
+        )
+        assert activated is True
+        assert agent_a.is_kairos_active() is True
+        assert agent_b.is_kairos_active() is False
+
+        await agent_b.deactivate_kairos()
+        assert agent_a.is_kairos_active() is True
+
+        companion_a = agent_a.hatch_companion(name="Alpha")
+        assert companion_a.name == "Alpha"
+        assert agent_b.get_companion() is None
+
+        companion_b = agent_b.hatch_companion(name="Beta")
+        assert companion_b.name == "Beta"
+        assert agent_a.get_companion() is not None
+        assert agent_a.get_companion().name == "Alpha"
+        assert agent_b.get_companion() is not None
+        assert agent_b.get_companion().name == "Beta"
+
+        await agent_a.deactivate_kairos()
+
+    asyncio.run(run())
 
 
 def test_agent_team_peer_and_tool_profile_host_api(

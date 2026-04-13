@@ -1,3 +1,5 @@
+const MIN_COLUMNS_FOR_INLINE_BUDDY = 88
+
 export function isVisibleTranscriptMessage(
   messageType: string,
   firstLine: string,
@@ -48,7 +50,8 @@ export function getComposerLayoutState({
   showInlineBuddyCompanion: boolean
   composerPanelColumns: number
 } {
-  const showInlineBuddyCompanion = inlineBuddyReservedColumns > 0
+  const showInlineBuddyCompanion =
+    inlineBuddyReservedColumns > 0 && columns >= MIN_COLUMNS_FOR_INLINE_BUDDY
 
   return {
     showInlineBuddyCompanion,

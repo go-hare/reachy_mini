@@ -65,12 +65,23 @@ export type CcminiPendingToolRequest = {
 
 export type CcminiControlDecision = 'allow' | 'deny' | 'ask'
 
+export type CcminiControlResponse = {
+  decision: CcminiControlDecision
+  scope?: 'once' | 'directory'
+  scopePath?: string
+}
+
 export type CcminiControlRequest = {
   requestId: string
   requestType: string
   toolName: string
   toolInput?: Record<string, unknown>
   permissionMode?: string
+  operationType?: string
+  filePath?: string
+  directoryPath?: string
+  workingDirectory?: string
+  referenceDirectories?: string[]
 }
 
 export type CcminiPromptSuggestionState = {

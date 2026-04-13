@@ -27,6 +27,7 @@ import {
   isAskUserQuestionPendingTool,
   parseAskUserQuestions,
 } from '../components/CcminiPendingEditors.js'
+import { CcminiAddDirectoryEditor } from '../components/CcminiAddDirectoryEditor.js'
 import ScrollBox from '../ink/components/ScrollBox.js'
 import type { ScrollBoxHandle } from '../ink/components/ScrollBox.js'
 import { isFullscreenEnvEnabled } from '../utils/fullscreen.js'
@@ -41,6 +42,7 @@ import {
 } from '../ccmini/bridgeTypes.js'
 import {
   BuddyCompanion,
+  BuddyReactionBubble,
   getBuddyReservedColumns,
 } from '../ccmini/BuddyCompanion.js'
 import { deriveBuddyReaction } from '../ccmini/buddyReaction.js'
@@ -82,6 +84,7 @@ type QueuedCcminiSubmission = {
 
 const DEFAULT_INPUT_PLACEHOLDER = 'Describe a task or type / for commands'
 const DONOR_POINTER = '❯'
+const INLINE_BUDDY_GUTTER = 1
 const EMPTY_PROMPT_SUGGESTION_STATE: CcminiPromptSuggestionState = {
   text: '',
   shownAt: 0,
@@ -105,6 +108,11 @@ const IDLE_SPECULATION_STATE: CcminiSpeculationState = {
 const QUEUED_SUBMISSION_NOTICE =
   'Current turn is still running. Queued your message and will send it automatically.'
 
+function quoteSlashCommandArg(value: string): string {
+  const escaped = value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+  return `"${escaped}"`
+}
+
 export function CcminiRepl({
   ccminiConnectConfig,
   initialMessages = [],
@@ -123,6 +131,9 @@ export function CcminiRepl({
     useState<CcminiPendingToolRequest | null>(null)
   const [pendingControlRequest, setPendingControlRequest] =
     useState<CcminiControlRequest | null>(null)
+  const [addDirectoryInitialValue, setAddDirectoryInitialValue] =
+    useState<string | null>(null)
+  const showAddDirectoryDialog = addDirectoryInitialValue !== null
   const [promptSuggestion, setPromptSuggestion] =
     useState<CcminiPromptSuggestionState>(EMPTY_PROMPT_SUGGESTION_STATE)
   const [speculation, setSpeculation] =
@@ -318,7 +329,8 @@ export function CcminiRepl({
       transportStatus !== 'connected' ||
       isLoading ||
       pendingCcminiToolRequest ||
-      pendingControlRequest
+      pendingControlRequest ||
+      showAddDirectoryDialog
     ) {
       return
     }
@@ -366,11 +378,15 @@ export function CcminiRepl({
     queuedSubmissions,
     sendMessage,
     setMessages,
+    showAddDirectoryDialog,
     transportStatus,
   ])
 
-  const { submitInputValue } = useCcminiSubmitHandlers({
+  const { submitInputValue, submitRemoteInputValue } = useCcminiSubmitHandlers({
     applyMainInputState,
+    openAddDirectoryDialog: initialValue => {
+      setAddDirectoryInitialValue(initialValue)
+    },
     openThemePicker,
     onExit,
     sendMessage,
@@ -390,14 +406,61 @@ export function CcminiRepl({
   const fullscreenMode = isFullscreenEnvEnabled()
   const columns = stdout.columns ?? 100
   const terminalRows = stdout.rows ?? 24
+  const askUserQuestionCount = parseAskUserQuestions(
+    firstPendingCcminiToolCall?.toolInput,
+  ).length
+  const {
+    visibleMessages,
+    toolUseLookup,
+    showWelcome,
+    conversationWidth: baseConversationWidth,
+    recentActivityLines,
+    showBuddyCompanion,
+    showAskUserQuestionEditor,
+  } = useCcminiTranscriptViewModel({
+    messages,
+    showFullThinking,
+    inboxLines: inboxSummary.lines,
+    showVisibleThemePicker,
+    showVisibleCommandCatalog,
+    pendingToolRequestActive: Boolean(
+      pendingCcminiToolRequest || pendingControlRequest || showAddDirectoryDialog,
+    ),
+    buddySpeaking: Boolean(buddyReaction),
+    columns,
+    pendingCallsLength: pendingCcminiCalls.length,
+    isAskUserQuestionPending: isAskUserQuestionPendingTool(
+      firstPendingCcminiToolCall,
+    ),
+    askUserQuestionCount,
+  })
+  const showComposerBuddy = showBuddyCompanion
+  const buddySpeaking = Boolean(buddyReaction)
+  const idealBuddyRailColumns = showComposerBuddy
+    ? getBuddyReservedColumns(columns, buddySpeaking)
+    : 0
+  const inlineBuddyColumns = showComposerBuddy && !fullscreenMode
+    ? Math.min(
+        idealBuddyRailColumns,
+        Math.max(0, columns - 24 - INLINE_BUDDY_GUTTER),
+      )
+    : 0
+  const showRightBuddyRail = inlineBuddyColumns > 0
+  const composerPanelColumns = showRightBuddyRail
+    ? Math.max(24, columns - inlineBuddyColumns - INLINE_BUDDY_GUTTER)
+    : columns
   const footerBuddyReservedColumns =
     !showVisibleThemePicker &&
     !showVisibleCommandCatalog &&
     !pendingCcminiToolRequest &&
-    !pendingControlRequest
-      ? getBuddyReservedColumns(columns)
+    !pendingControlRequest &&
+    !showAddDirectoryDialog &&
+    showRightBuddyRail
+      ? inlineBuddyColumns + INLINE_BUDDY_GUTTER
       : 0
-
+  const conversationWidth = showRightBuddyRail
+    ? Math.max(20, composerPanelColumns - 4)
+    : baseConversationWidth
   const textInputState = useTextInput({
     value: inputValue,
     onChange: setMainInputValue,
@@ -411,7 +474,7 @@ export function CcminiRepl({
     onHistoryDown: () => {},
     onHistoryReset: () => {},
     onClearInput: () => applyMainInputState('', 0),
-    focus: !pendingCcminiToolRequest && !pendingControlRequest,
+    focus: !pendingCcminiToolRequest && !pendingControlRequest && !showAddDirectoryDialog,
     multiline: false,
     cursorChar: ' ',
     invert: value => (showVisualCursor ? chalk.inverse(value) : value),
@@ -427,7 +490,9 @@ export function CcminiRepl({
   useCcminiKeyboardController({
     inputValueRef,
     recentImeCandidateRef,
-    pendingToolRequestActive: Boolean(pendingCcminiToolRequest || pendingControlRequest),
+    pendingToolRequestActive: Boolean(
+      pendingCcminiToolRequest || pendingControlRequest || showAddDirectoryDialog
+    ),
     showThemePicker,
     showCommandCatalog,
     showPromptHelp,
@@ -450,36 +515,18 @@ export function CcminiRepl({
     submitInputValue,
     onTextInputInput: textInputState.onInput,
   })
-
-  const askUserQuestionCount = parseAskUserQuestions(
-    firstPendingCcminiToolCall?.toolInput,
-  ).length
-  const {
-    visibleMessages,
-    toolUseLookup,
-    showWelcome,
-    conversationWidth,
-    recentActivityLines,
-    showBuddyCompanion,
-    showInlineBuddyCompanion,
-    composerPanelColumns,
-    showAskUserQuestionEditor,
-  } = useCcminiTranscriptViewModel({
-    messages,
-    showFullThinking,
-    inboxLines: inboxSummary.lines,
-    showVisibleThemePicker,
-    showVisibleCommandCatalog,
-    pendingToolRequestActive: Boolean(
-      pendingCcminiToolRequest || pendingControlRequest,
-    ),
-    columns,
-    pendingCallsLength: pendingCcminiCalls.length,
-    isAskUserQuestionPending: isAskUserQuestionPendingTool(
-      firstPendingCcminiToolCall,
-    ),
-    askUserQuestionCount,
-  })
+  const composerFooterLeft = isLoading
+    ? 'esc to interrupt'
+    : showVisibleCommandCatalog
+      ? 'up/down browse · tab insert · esc close'
+      : showVisiblePromptHelp
+        ? 'esc to close shortcuts'
+        : '? for shortcuts'
+  const composerFooterRight = transportStatus === 'connecting'
+    ? 'connecting…'
+    : transportStatus === 'disconnected'
+      ? 'disconnected'
+      : '● high · /effort'
 
   useEffect(() => {
     if (!fullscreenMode) {
@@ -517,12 +564,14 @@ export function CcminiRepl({
       width="100%"
       height={fullscreenMode ? terminalRows : undefined}
     >
-      <CcminiDonorWelcome
-        themeSetting={activeThemeSetting}
-        columns={columns}
-        version={getMacroVersion()}
-        recentActivityLines={recentActivityLines}
-      />
+      {showWelcome ? (
+        <CcminiDonorWelcome
+          themeSetting={activeThemeSetting}
+          columns={columns}
+          version={getMacroVersion()}
+          recentActivityLines={recentActivityLines}
+        />
+      ) : null}
 
       {fullscreenMode ? (
         <ScrollBox
@@ -531,7 +580,7 @@ export function CcminiRepl({
           flexGrow={1}
           flexShrink={1}
           width="100%"
-          marginTop={1}
+          marginTop={showWelcome ? 1 : 0}
           stickyScroll
         >
           <CcminiTranscriptContent
@@ -557,21 +606,27 @@ export function CcminiRepl({
           ) : null}
         </ScrollBox>
       ) : (
-        <Box flexDirection="column" width="100%" marginTop={1}>
-          <CcminiTranscriptContent
-            visibleMessages={visibleMessages}
-            toolUseLookup={toolUseLookup}
-            conversationWidth={conversationWidth}
-            activeThemeSetting={activeThemeSetting}
-            showFullThinking={showFullThinking}
-            pendingToolRequest={pendingCcminiToolRequest}
-            firstPendingToolCall={firstPendingCcminiToolCall}
-            pendingCallCount={pendingCcminiCalls.length}
-            showAskUserQuestionEditor={showAskUserQuestionEditor}
-            isLoading={isLoading}
-            spinnerVerb={spinnerVerb}
-          />
-        </Box>
+        !showRightBuddyRail ? (
+          <Box
+            flexDirection="column"
+            width="100%"
+            marginTop={showWelcome ? 1 : 0}
+          >
+            <CcminiTranscriptContent
+              visibleMessages={visibleMessages}
+              toolUseLookup={toolUseLookup}
+              conversationWidth={conversationWidth}
+              activeThemeSetting={activeThemeSetting}
+              showFullThinking={showFullThinking}
+              pendingToolRequest={pendingCcminiToolRequest}
+              firstPendingToolCall={firstPendingCcminiToolCall}
+              pendingCallCount={pendingCcminiCalls.length}
+              showAskUserQuestionEditor={showAskUserQuestionEditor}
+              isLoading={isLoading}
+              spinnerVerb={spinnerVerb}
+            />
+          </Box>
+        ) : null
       )}
 
       {showVisibleThemePicker ? (
@@ -596,17 +651,79 @@ export function CcminiRepl({
         />
       ) : null}
 
-      {!pendingCcminiToolRequest && !pendingControlRequest ? (
-        <React.Fragment>
+      {!pendingCcminiToolRequest && !pendingControlRequest && !showAddDirectoryDialog ? (
+        showRightBuddyRail ? (
           <Box
-            flexDirection={showInlineBuddyCompanion ? 'row' : 'column'}
+            flexDirection="row"
             width="100%"
-            alignItems={showInlineBuddyCompanion ? 'flex-end' : undefined}
+            gap={INLINE_BUDDY_GUTTER}
+            alignItems="stretch"
           >
             <Box
-              width={showInlineBuddyCompanion ? composerPanelColumns : '100%'}
+              width={composerPanelColumns}
               flexGrow={1}
               flexShrink={1}
+              flexDirection="column"
+            >
+              <CcminiTranscriptContent
+                visibleMessages={visibleMessages}
+                toolUseLookup={toolUseLookup}
+                conversationWidth={conversationWidth}
+                activeThemeSetting={activeThemeSetting}
+                showFullThinking={showFullThinking}
+                pendingToolRequest={pendingCcminiToolRequest}
+                firstPendingToolCall={firstPendingCcminiToolCall}
+                pendingCallCount={pendingCcminiCalls.length}
+                showAskUserQuestionEditor={showAskUserQuestionEditor}
+                isLoading={isLoading}
+                spinnerVerb={spinnerVerb}
+              />
+              <ComposerPanel
+                themeSetting={activeThemeSetting}
+                columns={composerPanelColumns}
+                inputValue={inputValue}
+                renderedValue={textInputState.renderedValue}
+                cursorLine={textInputState.cursorLine}
+                cursorColumn={textInputState.cursorColumn}
+                donorPointer={DONOR_POINTER}
+                padLineToWidth={padLineToWidth}
+                terminalFocused={isTerminalFocused}
+                showVisualCursor={showVisualCursor}
+                placeholderText=""
+                footerLeft={composerFooterLeft}
+                footerRight={composerFooterRight}
+              />
+              {showVisiblePromptHelp ? (
+                <PromptHelpMenu
+                  themeSetting={activeThemeSetting}
+                  columns={composerPanelColumns}
+                />
+              ) : null}
+            </Box>
+            <Box
+              width={inlineBuddyColumns}
+              flexShrink={0}
+              flexDirection="column"
+              justifyContent="space-between"
+            >
+              <BuddyReactionBubble
+                themeSetting={activeThemeSetting}
+                reaction={buddyReaction}
+                maxWidth={inlineBuddyColumns}
+              />
+              <Box flexGrow={1} />
+              <BuddyCompanion
+                themeSetting={activeThemeSetting}
+                columns={columns}
+                maxWidth={inlineBuddyColumns}
+              />
+            </Box>
+          </Box>
+        ) : (
+          <React.Fragment>
+            <Box
+              flexDirection="column"
+              width="100%"
             >
               <ComposerPanel
                 themeSetting={activeThemeSetting}
@@ -620,34 +737,27 @@ export function CcminiRepl({
                 terminalFocused={isTerminalFocused}
                 showVisualCursor={showVisualCursor}
                 placeholderText=""
-                footerLeft='? for shortcuts'
-                footerRight='● high · /effort'
+                footerLeft={composerFooterLeft}
+                footerRight={composerFooterRight}
               />
             </Box>
-            {showInlineBuddyCompanion ? (
-              <BuddyCompanion
-                themeSetting={activeThemeSetting}
-                columns={columns}
-                reaction={buddyReaction}
-              />
-            ) : null}
-          </Box>
-          {showVisibleThemePicker
-            ? null
-            : showVisibleCommandCatalog
+            {showVisibleThemePicker
               ? null
-              : showVisiblePromptHelp
-                ? (
-                    <PromptHelpMenu
-                      themeSetting={activeThemeSetting}
-                      columns={columns}
-                    />
-                  )
-                : null}
-        </React.Fragment>
+              : showVisibleCommandCatalog
+                ? null
+                : showVisiblePromptHelp
+                  ? (
+                      <PromptHelpMenu
+                        themeSetting={activeThemeSetting}
+                        columns={columns}
+                      />
+                    )
+                  : null}
+          </React.Fragment>
+        )
       ) : null}
 
-      {showBuddyCompanion && !showInlineBuddyCompanion ? (
+      {showComposerBuddy && !showRightBuddyRail ? (
         <Box width="100%" justifyContent="flex-end">
           <BuddyCompanion
             themeSetting={activeThemeSetting}
@@ -661,21 +771,40 @@ export function CcminiRepl({
         <CcminiControlRequestEditor
           request={pendingControlRequest}
           columns={columns}
-          onSubmit={async decision => {
+          onSubmit={async response => {
             const ok = await submitControlResponse(
               pendingControlRequest.requestId,
-              decision,
+              response,
             )
             if (ok) {
               setPendingControlRequest(null)
             }
           }}
           onAbort={() => {
-            void submitControlResponse(pendingControlRequest.requestId, 'deny')
+            void submitControlResponse(pendingControlRequest.requestId, {
+              decision: 'deny',
+              scope: 'once',
+            })
             setPendingControlRequest(null)
           }}
           themeSetting={activeThemeSetting}
           truncateInlineText={truncateInlineText}
+        />
+      ) : null}
+
+      {showAddDirectoryDialog && !pendingControlRequest ? (
+        <CcminiAddDirectoryEditor
+          initialValue={addDirectoryInitialValue ?? ''}
+          columns={columns}
+          themeSetting={activeThemeSetting}
+          onSubmit={async (path, options) => {
+            const command = `/add-dir ${options.remember ? '--remember ' : ''}${quoteSlashCommandArg(path)}`
+            setAddDirectoryInitialValue(null)
+            await submitRemoteInputValue(command)
+          }}
+          onAbort={() => {
+            setAddDirectoryInitialValue(null)
+          }}
         />
       ) : null}
 
@@ -707,6 +836,7 @@ export function CcminiRepl({
           key={pendingCcminiToolRequest.runId}
           runId={pendingCcminiToolRequest.runId}
           calls={pendingCcminiCalls}
+          columns={columns}
           onSubmit={async results => {
             const ok = await submitToolResults(
               pendingCcminiToolRequest.runId,

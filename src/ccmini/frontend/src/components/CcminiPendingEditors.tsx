@@ -7,8 +7,8 @@ import {
   MainInputLine,
   renderInputLineWithPlaceholder,
 } from './CcminiComposerPanel.js'
-import { ConsoleSection, getFrameBorderColor } from './CcminiSectionFrame.js'
 import type {
+  CcminiControlResponse,
   CcminiControlRequest,
   CcminiPendingToolCall,
 } from '../ccmini/bridgeTypes.js'
@@ -26,7 +26,7 @@ type SavedToolResult = {
 type ControlRequestEditorProps = {
   request: CcminiControlRequest
   columns: number
-  onSubmit: (decision: 'allow' | 'deny') => void | Promise<void>
+  onSubmit: (response: CcminiControlResponse) => void | Promise<void>
   onAbort: () => void
   themeSetting: ThemeSetting
   truncateInlineText: (value: string, maxLength?: number) => string
@@ -338,6 +338,124 @@ function renderInputLine(
     cursorOffset,
     placeholder,
     showVisualCursor,
+  )
+}
+
+function PendingPromptSurface({
+  columns,
+  themeSetting,
+  footerText,
+  inputValue,
+  renderedValue,
+  cursorLine,
+  cursorColumn,
+  placeholderText,
+  terminalFocused,
+  showVisualCursor,
+  customLine,
+}: {
+  columns: number
+  themeSetting: ThemeSetting
+  footerText: string
+  inputValue: string
+  renderedValue: string
+  cursorLine: number
+  cursorColumn: number
+  placeholderText: string
+  terminalFocused: boolean
+  showVisualCursor: boolean
+  customLine?: React.ReactNode
+}): React.ReactNode {
+  const theme = getThemeTokens(themeSetting)
+  const divider = '─'.repeat(Math.max(24, columns - 6))
+
+  return (
+    <Box marginTop={1} flexDirection="column" width="100%">
+      <Text dimColor>{applyForeground(divider, theme.permission)}</Text>
+      <Box paddingX={2}>
+        {customLine ?? (
+          <MainInputLine
+            promptPrefix={`${DONOR_POINTER} `}
+            dimPrefix={false}
+            inputValue={inputValue}
+            renderedValue={renderedValue}
+            cursorLine={cursorLine}
+            cursorColumn={cursorColumn}
+            placeholderText={placeholderText}
+            terminalFocused={terminalFocused}
+            showVisualCursor={showVisualCursor}
+          />
+        )}
+      </Box>
+      <Text dimColor>{applyForeground(divider, theme.permission)}</Text>
+      <Box paddingX={2}>
+        <Text dimColor italic wrap="wrap">
+          {footerText}
+        </Text>
+      </Box>
+    </Box>
+  )
+}
+
+function PendingDialog({
+  title,
+  subtitle,
+  color,
+  titleColor,
+  titleRight,
+  innerPaddingX = 1,
+  marginTop = 1,
+  themeSetting,
+  children,
+}: {
+  title: string
+  subtitle?: React.ReactNode
+  color?: string
+  titleColor?: string
+  titleRight?: React.ReactNode
+  innerPaddingX?: number
+  marginTop?: number
+  themeSetting: ThemeSetting
+  children: React.ReactNode
+}): React.ReactNode {
+  const theme = getThemeTokens(themeSetting)
+  const borderColor = color ?? theme.permission
+  const resolvedTitleColor = titleColor ?? borderColor
+
+  return (
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor={borderColor}
+      borderLeft={false}
+      borderRight={false}
+      borderBottom={false}
+      marginTop={marginTop}
+      width="100%"
+    >
+      <Box paddingX={1} flexDirection="column">
+        <Box justifyContent="space-between">
+          <Box flexDirection="column">
+            <Text bold color={resolvedTitleColor}>
+              {title}
+            </Text>
+            {subtitle != null
+              ? typeof subtitle === 'string'
+                ? (
+                    <Text dimColor wrap="truncate-start">
+                      {subtitle}
+                    </Text>
+                  )
+                : subtitle
+              : null}
+          </Box>
+          {titleRight}
+        </Box>
+      </Box>
+      <Box flexDirection="column" paddingX={innerPaddingX}>
+        {children}
+      </Box>
+    </Box>
   )
 }
 
@@ -688,9 +806,11 @@ export function CcminiAskUserQuestionEditor({
       : undefined
 
   return (
-    <ConsoleSection
+    <PendingDialog
       title="Reply Required"
-      subtitle={stepLabel ?? 'final reply paused'}
+      subtitle="Structured input is required before the run can continue."
+      titleRight={<Text dimColor>{stepLabel ?? 'final reply paused'}</Text>}
+      color={theme.permission}
       themeSetting={themeSetting}
       titleColor={theme.permission}
     >
@@ -869,23 +989,18 @@ export function CcminiAskUserQuestionEditor({
               {textMode ? (
                 <Box flexDirection="column" marginTop={1}>
                   <Text dimColor>Type something.</Text>
-                  <Box marginTop={1}>
-                    <MainInputLine
-                      promptPrefix={`${DONOR_POINTER} `}
-                      dimPrefix
-                      inputValue={textValue}
-                      renderedValue={textInputState.renderedValue}
-                      cursorLine={textInputState.cursorLine}
-                      cursorColumn={textInputState.cursorColumn}
-                      terminalFocused={isTerminalFocused}
-                      showVisualCursor={showVisualCursor}
-                    />
-                  </Box>
-                  <Box marginTop={1}>
-                    <Text dimColor italic>
-                      Enter to submit · Esc to go back
-                    </Text>
-                  </Box>
+                  <PendingPromptSurface
+                    columns={columns}
+                    themeSetting={themeSetting}
+                    inputValue={textValue}
+                    renderedValue={textInputState.renderedValue}
+                    cursorLine={textInputState.cursorLine}
+                    cursorColumn={textInputState.cursorColumn}
+                    placeholderText="Type your answer"
+                    terminalFocused={isTerminalFocused}
+                    showVisualCursor={showVisualCursor}
+                    footerText="Enter to submit · Esc to go back"
+                  />
                 </Box>
               ) : (
                 <Box marginTop={1}>
@@ -900,7 +1015,7 @@ export function CcminiAskUserQuestionEditor({
           )}
         </Box>
       </Box>
-    </ConsoleSection>
+    </PendingDialog>
   )
 }
 
@@ -922,9 +1037,10 @@ export function CcminiPendingToolRequestPanel({
   const theme = getThemeTokens(themeSetting)
 
   return (
-    <ConsoleSection
+    <PendingDialog
       title="Reply Required"
       subtitle={toolName}
+      color={theme.warning}
       themeSetting={themeSetting}
       titleColor={theme.warning}
     >
@@ -939,7 +1055,7 @@ export function CcminiPendingToolRequestPanel({
       {callCount > 1 ? (
         <Text dimColor>{callCount} tool results are waiting to be submitted.</Text>
       ) : null}
-    </ConsoleSection>
+    </PendingDialog>
   )
 }
 
@@ -952,6 +1068,12 @@ export function CcminiControlRequestEditor({
   truncateInlineText,
 }: ControlRequestEditorProps): React.ReactNode {
   const theme = getThemeTokens(themeSetting)
+  const isFileAccessRequest = Boolean(
+    request.requestType === 'can_use_tool' &&
+      request.directoryPath &&
+      request.operationType,
+  )
+  const optionCount = isFileAccessRequest ? 3 : 2
   const [selectedIndex, setSelectedIndex] = useState(0)
   const summaryLines = request.toolInput
     ? stringifyUnknown(request.toolInput)
@@ -960,6 +1082,13 @@ export function CcminiControlRequestEditor({
         .filter(Boolean)
         .slice(0, 8)
     : []
+  const sessionScopeVerb =
+    request.operationType === 'read'
+      ? 'allow reading from'
+      : 'allow all edits in'
+  const sessionScopeLabel = request.directoryPath
+    ? `${sessionScopeVerb} ${request.directoryPath} during this session`
+    : 'Allow this directory during the session'
 
   useInput((input, key) => {
     if (key.escape || (key.ctrl && input === 'c')) {
@@ -968,23 +1097,42 @@ export function CcminiControlRequestEditor({
     }
 
     if (key.upArrow || key.leftArrow) {
-      setSelectedIndex(prev => (prev === 0 ? 1 : 0))
+      setSelectedIndex(prev => (prev === 0 ? optionCount - 1 : prev - 1))
       return
     }
     if (key.downArrow || key.rightArrow || key.tab) {
-      setSelectedIndex(prev => (prev === 0 ? 1 : 0))
+      setSelectedIndex(prev => (prev + 1) % optionCount)
       return
     }
     if (!key.return) {
       return
     }
-    void onSubmit(selectedIndex === 0 ? 'allow' : 'deny')
+    if (selectedIndex === 0) {
+      void onSubmit({
+        decision: 'allow',
+        scope: 'once',
+      })
+      return
+    }
+    if (isFileAccessRequest && selectedIndex === 1 && request.directoryPath) {
+      void onSubmit({
+        decision: 'allow',
+        scope: 'directory',
+        scopePath: request.directoryPath,
+      })
+      return
+    }
+    void onSubmit({
+      decision: 'deny',
+      scope: 'once',
+    })
   })
 
   return (
-    <ConsoleSection
+    <PendingDialog
       title="Approval Required"
       subtitle={request.toolName || request.requestType}
+      color={theme.warning}
       themeSetting={themeSetting}
       titleColor={theme.warning}
     >
@@ -1030,8 +1178,26 @@ export function CcminiControlRequestEditor({
           <Text dimColor wrap="wrap">
             Continue this request and let the tool run.
           </Text>
+          {isFileAccessRequest ? (
+            <React.Fragment>
+              <Text wrap="wrap">
+                {selectedIndex === 1
+                  ? applyBackground(
+                      applyForeground(
+                        `${DONOR_POINTER} ${sessionScopeLabel}`,
+                        theme.inverseText,
+                      ),
+                      theme.permission,
+                    )
+                  : `  ${sessionScopeLabel}`}
+              </Text>
+              <Text dimColor wrap="wrap">
+                Treat this external directory as allowed for the rest of the session.
+              </Text>
+            </React.Fragment>
+          ) : null}
           <Text wrap="wrap">
-            {selectedIndex === 1
+            {selectedIndex === optionCount - 1
               ? applyBackground(
                   applyForeground(`${DONOR_POINTER} Deny`, theme.inverseText),
                   theme.error,
@@ -1049,13 +1215,14 @@ export function CcminiControlRequestEditor({
           </Text>
         </Box>
       </Box>
-    </ConsoleSection>
+    </PendingDialog>
   )
 }
 
 type ToolResultEditorProps = {
   runId: string
   calls: CcminiPendingToolCall[]
+  columns: number
   onSubmit: (results: Array<{
     tool_use_id: string
     content: string
@@ -1070,6 +1237,7 @@ type ToolResultEditorProps = {
 export function CcminiToolResultEditor({
   runId,
   calls,
+  columns,
   onSubmit,
   onAbort,
   themeSetting,
@@ -1077,6 +1245,7 @@ export function CcminiToolResultEditor({
   defaultInputPlaceholder,
 }: ToolResultEditorProps): React.ReactNode {
   const { stdin } = useStdin()
+  const theme = getThemeTokens(themeSetting)
   const isTerminalFocused = useTerminalFocus()
   const accessibilityEnabled = useMemo(
     () => isEnvTruthy(process.env.CLAUDE_CODE_ACCESSIBILITY),
@@ -1328,9 +1497,11 @@ export function CcminiToolResultEditor({
   }
 
   return (
-    <ConsoleSection
+    <PendingDialog
       title={calls.length === 1 ? 'Tool Result' : 'Tool Results'}
-      subtitle={`${completedCount}/${calls.length} ready`}
+      subtitle={`Run ${runId} is waiting for client-side tool results.`}
+      titleRight={<Text dimColor>{`${completedCount}/${calls.length} ready`}</Text>}
+      color={theme.permission}
       themeSetting={themeSetting}
     >
       <Box flexDirection="column">
@@ -1363,30 +1534,25 @@ export function CcminiToolResultEditor({
           ))}
         </Box>
 
-        <Text dimColor wrap="wrap">
-          Enter saves this result. Shift+Enter inserts a newline. Prefix with{' '}
-          <Text bold>error:</Text>{' '}to submit an error result. Esc cancels.
-        </Text>
-
-        <Box
-          flexDirection="row"
-          marginTop={1}
-          borderStyle="round"
-          borderColor={getFrameBorderColor(themeSetting)}
-          paddingX={1}
-        >
-          <Text>
-            {DONOR_POINTER}
-            {' '}
-          </Text>
-          {renderInputLine(
+        <PendingPromptSurface
+          columns={columns}
+          themeSetting={themeSetting}
+          inputValue=""
+          renderedValue=""
+          cursorLine={0}
+          cursorColumn={0}
+          placeholderText={defaultInputPlaceholder}
+          terminalFocused={isTerminalFocused}
+          showVisualCursor={showVisualCursor}
+          footerText="Enter saves this result · Shift+Enter inserts newline · prefix with error: to submit an error · Esc cancels"
+          customLine={renderInputLine(
             drafts[activeIndex] ?? '',
             cursorOffset,
             defaultInputPlaceholder,
             showVisualCursor,
           )}
-        </Box>
+        />
       </Box>
-    </ConsoleSection>
+    </PendingDialog>
   )
 }

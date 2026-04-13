@@ -43,12 +43,44 @@ export function isAppleTerminalSession(): boolean {
   )
 }
 
+function truncateTextToWidth(value: string, width: number): string {
+  if (width <= 0) {
+    return ''
+  }
+  if (stringWidth(value) <= width) {
+    return value
+  }
+
+  const ellipsis = '…'
+  if (width <= stringWidth(ellipsis)) {
+    return ellipsis
+  }
+
+  let result = ''
+  for (const char of value) {
+    const next = `${result}${char}`
+    if (stringWidth(next) + stringWidth(ellipsis) > width) {
+      break
+    }
+    result = next
+  }
+
+  return `${result}${ellipsis}`
+}
+
 export function padLineToWidth(left: string, right: string, width: number): string {
   const safeWidth = Math.max(24, width)
-  const leftWidth = stringWidth(left)
   const rightWidth = stringWidth(right)
-  const gap = Math.max(1, safeWidth - leftWidth - rightWidth)
-  return `${left}${' '.repeat(gap)}${right}`
+  const minimumGap = 1
+
+  if (rightWidth + minimumGap >= safeWidth) {
+    return truncateTextToWidth(right, safeWidth)
+  }
+
+  const leftBudget = safeWidth - rightWidth - minimumGap
+  const fittedLeft = truncateTextToWidth(left, leftBudget)
+  const gap = Math.max(minimumGap, safeWidth - stringWidth(fittedLeft) - rightWidth)
+  return `${fittedLeft}${' '.repeat(gap)}${right}`
 }
 
 export function getMacroVersion(): string {

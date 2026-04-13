@@ -50,6 +50,37 @@ The user explicitly asked for:
 
 - Run `bunx tsc --noEmit` inside `frontend/` after the UI changes.
 
+## Follow-up: Reference Project Interaction
+
+The user also explicitly wants the donor-style human interaction for adding and approving a reference project, not a one-off hardcoded path.
+
+### Goal
+
+- make the active `ccmini` runtime support donor-style "reference project / working directory" interaction
+- support explicit `/add-dir` flow in the active frontend
+- support permission prompts for reading files outside the current workspace with a session-level allow option
+- make added reference directories actually affect runtime behavior instead of only showing UI text
+
+### Planned Scope
+
+1. Extend the backend runtime so file reads outside the current working directory no longer silently behave like in-workspace reads.
+2. Add a session-level reference-directory state that can be updated by the frontend and restored from config when remembered.
+3. Add a backend `/add-dir` slash command so the feature works through the existing command/runtime path instead of a frontend-only stub.
+4. Add a local active-frontend `/add-dir` interaction panel that:
+   - accepts a path
+   - validates the directory
+   - offers "this session" vs "remember"
+5. Upgrade the active control-request panel so file access prompts can offer:
+   - allow once
+   - allow this directory during the session
+   - deny
+6. Inject added reference-directory guidance into runtime context so the model can actually use the selected reference project.
+
+### Verification Additions
+
+- Run `python -m pytest tests/test_regressions.py -k "permission or add_dir or reference"` for backend regressions.
+- Run `bun test frontend/test/replInputState.test.ts frontend/test/sessionEventState.test.ts` for frontend behavior changes.
+
 ## Clarifying Questions
 
 1. Should the donor runtime be transplanted wholesale into the current frontend?

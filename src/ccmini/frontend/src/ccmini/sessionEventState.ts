@@ -83,6 +83,24 @@ export function getControlRequestFromPayload(
       typeof payload?.permission_mode === 'string'
         ? payload.permission_mode
         : undefined,
+    operationType:
+      typeof payload?.operation_type === 'string'
+        ? payload.operation_type
+        : undefined,
+    filePath:
+      typeof payload?.file_path === 'string' ? payload.file_path : undefined,
+    directoryPath:
+      typeof payload?.directory_path === 'string'
+        ? payload.directory_path
+        : undefined,
+    workingDirectory:
+      typeof payload?.working_directory === 'string'
+        ? payload.working_directory
+        : undefined,
+    referenceDirectories: Array.isArray(payload?.reference_directories)
+      ? payload.reference_directories
+          .filter((value): value is string => typeof value === 'string')
+      : undefined,
   }
 }
 

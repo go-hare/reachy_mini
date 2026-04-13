@@ -24,6 +24,40 @@ type CollapsedReadSearchEntryLike = {
   isActive: boolean
 }
 
+function ResponseLineList({
+  lines,
+  width,
+}: {
+  lines: ToolRenderLine[]
+  width: number | string
+}): React.ReactNode {
+  if (lines.length === 0) {
+    return null
+  }
+
+  return (
+    <Box flexDirection="column" width="100%">
+      {lines.map((line, index) => (
+        <MessageResponseFlow
+          key={`response-line-${index}`}
+          color={line.color}
+          dimColor={line.dimColor}
+        >
+          <Box flexDirection="column" width={width}>
+            <Text
+              color={line.color}
+              dimColor={line.dimColor}
+              wrap="wrap"
+            >
+              {line.text}
+            </Text>
+          </Box>
+        </MessageResponseFlow>
+      ))}
+    </Box>
+  )
+}
+
 function MessageResponseFlow({
   children,
   color,
@@ -85,11 +119,11 @@ export function AssistantFlow({
   const content = lines.join('\n').trimEnd()
 
   return (
-    <MessageDotFlow color={theme.claude}>
+    <MessageResponseFlow color={theme.text} dimColor={false}>
       <Box flexDirection="column" width={width}>
         <Text wrap="wrap">{content}</Text>
       </Box>
-    </MessageDotFlow>
+    </MessageResponseFlow>
   )
 }
 
@@ -193,25 +227,16 @@ export function ToolUseFlow({
   const bodyLines = getToolUseBodyLines(toolName, toolInput)
 
   return (
-    <MessageDotFlow color={accentColor}>
-      <Box flexDirection="column" width={width}>
-        <Text color={accentColor} wrap="wrap">
-          {title}
-        </Text>
-        {bodyLines.length > 0
-          ? bodyLines.map((line, index) => (
-              <Text
-                key={`${toolName}-${index}`}
-                color={line.color}
-                dimColor={line.dimColor}
-                wrap="wrap"
-              >
-                {line.text}
-              </Text>
-            ))
-          : null}
-      </Box>
-    </MessageDotFlow>
+    <Box flexDirection="column" width="100%">
+      <MessageDotFlow color={accentColor}>
+        <Box flexDirection="column" width={width}>
+          <Text color={accentColor} wrap="wrap">
+            {title}
+          </Text>
+        </Box>
+      </MessageDotFlow>
+      <ResponseLineList lines={bodyLines} width={width} />
+    </Box>
   )
 }
 
@@ -248,31 +273,30 @@ export function ToolResultFlow({
     : toolName
       ? getToolAccentColor(toolName)
       : undefined
+  const primaryLine = presentation.header ?? presentation.bodyLines[0]
+  const detailLines = presentation.header
+    ? presentation.bodyLines
+    : presentation.bodyLines.slice(1)
+
+  if (!primaryLine) {
+    return null
+  }
 
   return (
-    <MessageDotFlow color={accentColor} dimColor={!accentColor}>
-      <Box flexDirection="column" width={width ?? '100%'}>
-        {presentation.header ? (
+    <Box flexDirection="column" width="100%">
+      <MessageDotFlow color={accentColor} dimColor={!accentColor}>
+        <Box flexDirection="column" width={width ?? '100%'}>
           <Text
-            color={presentation.header.color}
-            dimColor={presentation.header.dimColor}
+            color={primaryLine.color}
+            dimColor={primaryLine.dimColor}
             wrap="wrap"
           >
-            {presentation.header.text}
+            {primaryLine.text}
           </Text>
-        ) : null}
-        {presentation.bodyLines.map((line, index) => (
-          <Text
-            key={`${toolName ?? 'tool'}-result-${index}`}
-            color={line.color}
-            dimColor={line.dimColor}
-            wrap="wrap"
-          >
-            {line.text}
-          </Text>
-        ))}
-      </Box>
-    </MessageDotFlow>
+        </Box>
+      </MessageDotFlow>
+      <ResponseLineList lines={detailLines} width={width ?? '100%'} />
+    </Box>
   )
 }
 
@@ -287,23 +311,20 @@ export function ToolProgressFlow({
   width?: number
   getToolAccentColor: (toolName: string) => string | undefined
 }): React.ReactNode {
+  const lines = content
+    .split('\n')
+    .map(line => line.trimEnd())
+    .filter(Boolean)
+    .map(line => ({
+      text: line,
+      dimColor: true,
+    }))
+
   return (
-    <MessageDotFlow
-      color={toolName ? getToolAccentColor(toolName) : undefined}
-      dimColor={!toolName}
-    >
-      <Box flexDirection="column" width={width ?? '100%'}>
-        {content
-          .split('\n')
-          .map(line => line.trimEnd())
-          .filter(Boolean)
-          .map((line, index) => (
-            <Text key={`${toolName ?? 'tool'}-progress-${index}`} dimColor wrap="wrap">
-              {line}
-            </Text>
-          ))}
-      </Box>
-    </MessageDotFlow>
+    <ResponseLineList
+      lines={lines}
+      width={width ?? '100%'}
+    />
   )
 }
 
@@ -354,7 +375,7 @@ export function ThinkingFlow({
   const theme = getThemeTokens(themeSetting)
 
   return (
-    <MessageDotFlow color={theme.claude}>
+    <MessageDotFlow color={theme.text}>
       <Box flexDirection="column" width="100%">
         {isRedacted ? (
           <AssistantRedactedThinkingMessage />
@@ -384,9 +405,9 @@ export function WorkingStatusFlow({
 
   return (
     <Box marginTop={1} flexDirection="column">
-      <MessageDotFlow color={theme.claude}>
-        <Text>{applyForeground(`${verb}...`, theme.claude)}</Text>
-      </MessageDotFlow>
+      <MessageResponseFlow color={theme.text} dimColor={false}>
+        <Text>{applyForeground(`${verb}...`, theme.text)}</Text>
+      </MessageResponseFlow>
     </Box>
   )
 }

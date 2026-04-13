@@ -28,7 +28,8 @@ def _refresh_permission_runtime(agent: Agent) -> None:
         mode=cfg.permission_mode,
         raw_rules=cfg.permission_rules,
         classifier_provider=agent.provider if cfg.permission_mode == PermissionMode.AUTO.value else None,
-        project_dir=os.getcwd(),
+        project_dir=agent.working_directory,
+        additional_dirs=agent.reference_directories,
     )
 
 
@@ -168,6 +169,42 @@ def _display_path_from_cwd(path: str | Path) -> str:
         return os.path.relpath(raw, os.getcwd())
     except ValueError:
         return raw
+
+
+def _normalize_directory_path(value: str, *, base_dir: str) -> Path:
+    candidate = Path(value).expanduser()
+    if not candidate.is_absolute():
+        candidate = Path(base_dir).expanduser() / candidate
+    return candidate.resolve()
+
+
+def _path_in_directory(path: Path, directory: Path) -> bool:
+    try:
+        path.relative_to(directory)
+        return True
+    except ValueError:
+        return False
+
+
+def _load_reference_directories() -> list[str]:
+    from ..config import load_config
+
+    cfg = load_config()
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw_path in list(getattr(cfg, "reference_directories", []) or []):
+        text = str(raw_path or "").strip()
+        if not text:
+            continue
+        try:
+            resolved = str(Path(text).expanduser().resolve())
+        except OSError:
+            continue
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        result.append(resolved)
+    return result
 
 
 def _sanitize_task_list_id(value: str) -> str:
@@ -1834,6 +1871,97 @@ class PermissionsCommand(SlashCommand):
         return "Unknown permissions command. Run /permissions for usage."
 
 
+class AddDirCommand(SlashCommand):
+    @property
+    def name(self) -> str:
+        return "add-dir"
+
+    @property
+    def description(self) -> str:
+        return "Add a reference directory for this session or remember it globally"
+
+    async def execute(self, args: str, agent: Agent) -> str:
+        from ..config import save_global_config
+
+        try:
+            parts = shlex.split(args, posix=os.name != "nt")
+        except ValueError as exc:
+            return f"Invalid /add-dir arguments: {exc}"
+
+        remember = False
+        path_parts: list[str] = []
+        for part in parts:
+            if part in {"--remember", "--save", "-r"}:
+                remember = True
+                continue
+            path_parts.append(part)
+
+        if not path_parts:
+            return (
+                "Usage:\n"
+                "  /add-dir <directory>\n"
+                "  /add-dir --remember <directory>"
+            )
+
+        raw_path = " ".join(path_parts).strip()
+        if not raw_path:
+            return "Please provide a directory path."
+        if (
+            len(raw_path) >= 2
+            and raw_path[0] == raw_path[-1]
+            and raw_path[0] in {'"', "'"}
+        ):
+            raw_path = raw_path[1:-1]
+
+        try:
+            resolved = _normalize_directory_path(
+                raw_path,
+                base_dir=agent.working_directory,
+            )
+        except OSError as exc:
+            return f"Failed to resolve directory path: {exc}"
+
+        if not resolved.exists():
+            return f"Path not found: {resolved}"
+        if not resolved.is_dir():
+            return f"Path is not a directory: {resolved}"
+
+        working_dir = Path(agent.working_directory).expanduser().resolve()
+        if _path_in_directory(resolved, working_dir):
+            return (
+                f"{resolved} is already accessible within the current working directory "
+                f"{working_dir}."
+            )
+
+        for existing in agent.reference_directories:
+            try:
+                existing_path = Path(existing).expanduser().resolve()
+            except OSError:
+                continue
+            if _path_in_directory(resolved, existing_path):
+                return (
+                    f"{resolved} is already accessible within the existing reference "
+                    f"directory {existing_path}."
+                )
+
+        added = agent.add_reference_directory(str(resolved))
+        checker = getattr(agent, "_permission_checker", None)
+        if checker is not None:
+            checker.add_additional_directories([added])
+
+        if remember:
+            stored = _load_reference_directories()
+            if added not in stored:
+                stored.append(added)
+            save_global_config({"reference_directories": stored})
+
+        _refresh_permission_runtime(agent)
+        return (
+            f"Added reference directory: {added}"
+            + (" (remembered)" if remember else " (session only)")
+        )
+
+
 class DoctorCommand(SlashCommand):
     @property
     def name(self) -> str:
@@ -2378,6 +2506,7 @@ def register_builtin_commands(registry: CommandRegistry) -> None:
     registry.register(StatsCommand())
     registry.register(UsageCommand())
     registry.register(PermissionsCommand())
+    registry.register(AddDirCommand())
     registry.register(DoctorCommand())
     registry.register(TerminalSetupCommand())
     registry.register(StatuslineCommand())

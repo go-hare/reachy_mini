@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .companion import _read_global_config, get_companion
+from .companion import get_companion
 
 
 def companion_intro_text(name: str, species: str) -> str:
@@ -19,32 +19,25 @@ def companion_intro_text(name: str, species: str) -> str:
         f"they know. Don't narrate what {name} might say — the bubble handles that."
     )
 
-
-def _global_companion_muted() -> bool:
-    """Mirror ``getGlobalConfig().companionMuted`` (``utils/config.ts``)."""
-    v = _read_global_config().get("companionMuted")
-    return v is True
-
-
 def get_companion_intro_attachment(
     messages: list[Any] | None,
     *,
     buddy_enabled: bool = True,
     companion_muted: bool | None = None,
+    companion: Any | None = None,
 ) -> list[dict[str, str]]:
     """Mirror ``getCompanionIntroAttachment`` in ``buddy/prompt.ts``.
 
-    Gated like the reference: ``feature('BUDDY')`` → ``buddy_enabled``;
-    ``getGlobalConfig().companionMuted`` → ``companion_muted`` or global config.
+    Gated by the caller-provided Buddy instance state only.
     """
     if not buddy_enabled:
         return []
     if companion_muted is None:
-        companion_muted = _global_companion_muted()
+        companion_muted = False
     if companion_muted:
         return []
 
-    companion = get_companion()
+    companion = companion if companion is not None else get_companion()
     if companion is None:
         return []
 

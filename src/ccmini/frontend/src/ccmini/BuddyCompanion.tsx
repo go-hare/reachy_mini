@@ -20,10 +20,10 @@ type BuddyDisplayState = {
   name: string
 }
 
-const MIN_COLS_FOR_FULL_SPRITE = 100
 const BUDDY_TICK_MS = 500
-const SPRITE_PADDING_X = 2
-const BUBBLE_WRAP_WIDTH = 24
+const SPRITE_PADDING_X = 1
+const BUBBLE_WRAP_WIDTH = 22
+const BUBBLE_BORDER_WIDTH = 4
 const IDLE_SEQUENCE = [0, 0, 0, 0, 1, 0, 0, 0, -1, 0, 0, 2, 0, 0, 0] as const
 const RABBIT_FRAMES = [
   [
@@ -112,31 +112,53 @@ function loadBuddyDisplayState(): BuddyDisplayState | null {
   return { name }
 }
 
-export function getBuddyReservedColumns(columns: number): number {
+function getBuddyContentWidth(name: string, speaking: boolean): number {
+  const labelWidth = stringWidth(name) + 2
+  const spriteWidth = FULL_SPRITE_WIDTH + SPRITE_PADDING_X
+  const bubbleWidth = speaking ? BUBBLE_WRAP_WIDTH + BUBBLE_BORDER_WIDTH : 0
+  return Math.max(spriteWidth, labelWidth, bubbleWidth) + 1
+}
+
+export function getBuddyReservedColumns(
+  _columns: number,
+  speaking = false,
+): number {
   const buddy = loadBuddyDisplayState()
-  if (!buddy || columns < MIN_COLS_FOR_FULL_SPRITE) {
+  if (!buddy) {
     return 0
   }
 
-  const labelWidth = stringWidth(buddy.name)
-  return Math.max(FULL_SPRITE_WIDTH, labelWidth) + SPRITE_PADDING_X + 2
+  return getBuddyContentWidth(buddy.name, speaking)
 }
 
 export function BuddyCompanion({
   themeSetting,
   columns,
   reaction = null,
+  maxWidth,
 }: {
   themeSetting: ThemeSetting
   columns: number
   reaction?: string | null
+  maxWidth?: number
 }): React.ReactNode {
   const buddy = useMemo(() => loadBuddyDisplayState(), [])
   const theme = getThemeTokens(themeSetting)
   const [animRef, time] = useAnimationFrame(BUDDY_TICK_MS)
+  const bubbleWrapWidth = Math.max(
+    12,
+    Math.min(
+      BUBBLE_WRAP_WIDTH,
+      Math.max(
+        12,
+        (maxWidth ?? BUBBLE_WRAP_WIDTH + BUBBLE_BORDER_WIDTH) -
+          BUBBLE_BORDER_WIDTH,
+      ),
+    ),
+  )
   const speechLines = useMemo(
-    () => wrapBubbleText(reaction ?? '', BUBBLE_WRAP_WIDTH),
-    [reaction],
+    () => wrapBubbleText(reaction ?? '', bubbleWrapWidth),
+    [bubbleWrapWidth, reaction],
   )
 
   if (!buddy) {
@@ -151,14 +173,18 @@ export function BuddyCompanion({
   const frame = RABBIT_FRAMES[frameIndex]!.map(line =>
     blink ? line.replaceAll('◉', '-') : line,
   )
+  const speaking = speechLines.length > 0
+  const fullSpriteMinWidth = FULL_SPRITE_WIDTH
+  const reservedColumns = Math.max(
+    0,
+    maxWidth ?? getBuddyContentWidth(buddy.name, speaking),
+  )
 
-  if (columns < MIN_COLS_FOR_FULL_SPRITE) {
+  if (reservedColumns < fullSpriteMinWidth) {
     const face =
       NARROW_RABBIT_FRAMES[
         blink ? NARROW_RABBIT_FRAMES.length - 1 : frameIndex
       ] ?? NARROW_RABBIT_FRAMES[0]
-    const compactReaction =
-      speechLines.length > 0 ? speechLines.join(' / ') : null
 
     return (
       <Box ref={animRef} paddingX={1} alignSelf="flex-end">
@@ -166,12 +192,6 @@ export function BuddyCompanion({
           <Text color={theme.claude}>{face}</Text>
           {' '}
           <Text dimColor>{buddy.name}</Text>
-          {compactReaction ? (
-            <React.Fragment>
-              <Text dimColor> · </Text>
-              <Text color={theme.claude}>{compactReaction}</Text>
-            </React.Fragment>
-          ) : null}
         </Text>
       </Box>
     )
@@ -181,17 +201,18 @@ export function BuddyCompanion({
     <Box
       ref={animRef}
       flexDirection="column"
-      paddingX={1}
-      alignItems="center"
+      alignItems="flex-end"
       alignSelf="flex-end"
+      width={reservedColumns}
     >
-      {speechLines.length > 0 ? (
+      {speaking ? (
         <Box
           flexDirection="column"
           borderStyle="round"
           borderColor={theme.claude}
           paddingX={1}
           marginBottom={1}
+          alignSelf="flex-end"
         >
           {speechLines.map((line, index) => (
             <Text key={`speech-${index}`} color={theme.claude}>
@@ -200,12 +221,69 @@ export function BuddyCompanion({
           ))}
         </Box>
       ) : null}
-      {frame.map((line, index) => (
-        <Text key={index} color={theme.claude}>
-          {line}
-        </Text>
-      ))}
-      <Text dimColor>{buddy.name}</Text>
+      <Box
+        flexDirection="column"
+        paddingX={1}
+        alignItems="center"
+        width={Math.max(FULL_SPRITE_WIDTH + SPRITE_PADDING_X, stringWidth(buddy.name) + 2)}
+      >
+        {frame.map((line, index) => (
+          <Text key={index} color={theme.claude}>
+            {line}
+          </Text>
+        ))}
+        <Text dimColor>{buddy.name}</Text>
+      </Box>
+    </Box>
+  )
+}
+
+export function BuddyReactionBubble({
+  themeSetting,
+  reaction,
+  maxWidth,
+}: {
+  themeSetting: ThemeSetting
+  reaction: string | null
+  maxWidth?: number
+}): React.ReactNode {
+  const buddy = useMemo(() => loadBuddyDisplayState(), [])
+  const theme = getThemeTokens(themeSetting)
+  const bubbleWrapWidth = Math.max(
+    12,
+    Math.min(
+      BUBBLE_WRAP_WIDTH,
+      Math.max(
+        12,
+        (maxWidth ?? BUBBLE_WRAP_WIDTH + BUBBLE_BORDER_WIDTH) -
+          BUBBLE_BORDER_WIDTH,
+      ),
+    ),
+  )
+  const speechLines = useMemo(
+    () => wrapBubbleText(reaction ?? '', bubbleWrapWidth),
+    [bubbleWrapWidth, reaction],
+  )
+
+  if (!buddy || speechLines.length === 0) {
+    return null
+  }
+
+  return (
+    <Box justifyContent="flex-end" width="100%">
+      <Box
+        flexDirection="column"
+        borderStyle="round"
+        borderColor={theme.claude}
+        paddingX={1}
+        alignSelf="flex-end"
+      >
+        {speechLines.map((line, index) => (
+          <Text key={`speech-${index}`} color={theme.claude}>
+            {line}
+          </Text>
+        ))}
+      </Box>
     </Box>
   )
 }

@@ -12,6 +12,14 @@ describe('resolveLocalCommandIntent', () => {
     expect(resolveLocalCommandIntent('/')).toEqual({
       type: 'open-command-catalog',
     })
+    expect(resolveLocalCommandIntent('/add-dir')).toEqual({
+      type: 'open-add-directory',
+      rawArgs: '',
+    })
+    expect(resolveLocalCommandIntent('/add-dir C:\\refs\\doge')).toEqual({
+      type: 'open-add-directory',
+      rawArgs: 'C:\\refs\\doge',
+    })
     expect(resolveLocalCommandIntent('/help')).toEqual({ type: 'open-help' })
     expect(resolveLocalCommandIntent('/theme')).toEqual({
       type: 'open-theme-picker',

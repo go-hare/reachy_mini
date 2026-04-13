@@ -136,7 +136,7 @@ export function ComposerPanel({
   return (
     <Box marginTop={1} flexDirection="column" width="100%">
       <Text dimColor>{applyForeground(divider, theme.claude)}</Text>
-      <Box paddingLeft={1} flexDirection="column">
+      <Box paddingX={2} flexDirection="column">
         <MainInputLine
           promptPrefix={`${donorPointer} `}
           dimPrefix={false}
@@ -164,12 +164,12 @@ export function ComposerPanel({
         ) : null}
       </Box>
       <Text dimColor>{applyForeground(divider, theme.claude)}</Text>
-      <Box paddingLeft={1} width="100%">
+      <Box paddingX={2} width="100%">
         <Text dimColor wrap="truncate-end">
           {padLineToWidth(
             footerLeft,
             footerRight,
-            Math.max(24, columns - 2),
+            Math.max(24, columns - 4),
           )}
         </Text>
       </Box>

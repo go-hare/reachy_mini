@@ -22,6 +22,7 @@ import type { Message as MessageType } from '../types/message.js'
 
 type UseCcminiSubmitHandlersOptions = {
   applyMainInputState: (nextValue: string, nextOffset: number) => void
+  openAddDirectoryDialog: (initialValue: string) => void
   openThemePicker: () => void
   onExit: () => void | Promise<void>
   sendMessage: (
@@ -48,6 +49,7 @@ type UseCcminiSubmitHandlersOptions = {
 
 export function useCcminiSubmitHandlers({
   applyMainInputState,
+  openAddDirectoryDialog,
   openThemePicker,
   onExit,
   sendMessage,
@@ -64,6 +66,7 @@ export function useCcminiSubmitHandlers({
   setIsLoading,
 }: UseCcminiSubmitHandlersOptions): {
   submitInputValue: (value: string) => Promise<void>
+  submitRemoteInputValue: (value: string) => Promise<void>
   submitLocalCommand: (value: string) => Promise<boolean>
 } {
   const submitLocalCommand = useCallback(
@@ -80,6 +83,13 @@ export function useCcminiSubmitHandlers({
           setShowPromptHelp(true)
           setShowCommandCatalog(false)
           applyMainInputState('', 0)
+          return true
+
+        case 'open-add-directory':
+          setShowPromptHelp(false)
+          setShowCommandCatalog(false)
+          applyMainInputState('', 0)
+          openAddDirectoryDialog(localCommandIntent.rawArgs)
           return true
 
         case 'show-command-help': {
@@ -118,11 +128,74 @@ export function useCcminiSubmitHandlers({
     },
     [
       applyMainInputState,
+      openAddDirectoryDialog,
       onExit,
       openThemePicker,
       setMessages,
       setShowCommandCatalog,
       setShowPromptHelp,
+    ],
+  )
+
+  const submitRemoteInputValue = useCallback(
+    async (value: string): Promise<void> => {
+      setShowPromptHelp(false)
+      setShowCommandCatalog(false)
+
+      const userMessage = createCcminiUserMessage({
+        content: value,
+      })
+      setMessages(prev => [...prev, userMessage])
+      setPromptSuggestion(emptyPromptSuggestionState)
+      setSpeculation(idleSpeculationState)
+      applyMainInputState('', 0)
+      recentImeCandidateRef.current = {
+        text: '',
+        at: 0,
+      }
+
+      const sendOpts = {
+        uuid: userMessage.uuid,
+      }
+
+      if (isTurnBusy) {
+        queueMessage(value, sendOpts)
+        return
+      }
+
+      const result = await sendMessage(value, sendOpts)
+      if (result.ok) {
+        return
+      }
+
+      if (result.status === 'busy') {
+        queueMessage(value, sendOpts)
+        return
+      }
+
+      setMessages(prev => [
+        ...prev,
+        createCcminiSystemMessage(
+          result.message ?? 'Failed to send message to ccmini bridge.',
+          'error',
+        ),
+      ])
+      setIsLoading(false)
+    },
+    [
+      applyMainInputState,
+      emptyPromptSuggestionState,
+      idleSpeculationState,
+      isTurnBusy,
+      queueMessage,
+      recentImeCandidateRef,
+      sendMessage,
+      setIsLoading,
+      setMessages,
+      setPromptSuggestion,
+      setShowCommandCatalog,
+      setShowPromptHelp,
+      setSpeculation,
     ],
   )
 
@@ -150,69 +223,18 @@ export function useCcminiSubmitHandlers({
         return
       }
 
-      setShowPromptHelp(false)
-      setShowCommandCatalog(false)
-
-      const userMessage = createCcminiUserMessage({
-        content: normalized,
-      })
-      setMessages(prev => [...prev, userMessage])
-      setPromptSuggestion(emptyPromptSuggestionState)
-      setSpeculation(idleSpeculationState)
-      applyMainInputState('', 0)
-      recentImeCandidateRef.current = {
-        text: '',
-        at: 0,
-      }
-
-      const sendOpts = {
-        uuid: userMessage.uuid,
-      }
-
-      if (isTurnBusy) {
-        queueMessage(normalized, sendOpts)
-        return
-      }
-
-      const result = await sendMessage(normalized, sendOpts)
-      if (result.ok) {
-        return
-      }
-
-      if (result.status === 'busy') {
-        queueMessage(normalized, sendOpts)
-        return
-      }
-
-      setMessages(prev => [
-        ...prev,
-        createCcminiSystemMessage(
-          result.message ?? 'Failed to send message to ccmini bridge.',
-          'error',
-        ),
-      ])
-      setIsLoading(false)
+      await submitRemoteInputValue(normalized)
     },
     [
-      applyMainInputState,
-      emptyPromptSuggestionState,
-      idleSpeculationState,
-      isTurnBusy,
-      queueMessage,
       recentImeCandidateRef,
-      sendMessage,
-      setIsLoading,
-      setMessages,
-      setPromptSuggestion,
-      setShowCommandCatalog,
-      setShowPromptHelp,
-      setSpeculation,
       submitLocalCommand,
+      submitRemoteInputValue,
     ],
   )
 
   return {
     submitInputValue,
+    submitRemoteInputValue,
     submitLocalCommand,
   }
 }

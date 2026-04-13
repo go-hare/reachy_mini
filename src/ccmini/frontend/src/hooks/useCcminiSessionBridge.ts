@@ -2,7 +2,7 @@ import type React from 'react'
 import { useCallback, useEffect, useRef } from 'react'
 import type {
   CcminiConnectConfig,
-  CcminiControlDecision,
+  CcminiControlResponse,
   CcminiControlRequest,
   CcminiPendingToolRequest,
   CcminiPromptSuggestionState,
@@ -72,7 +72,7 @@ export function useCcminiSessionBridge({
   ) => Promise<boolean>
   submitControlResponse: (
     requestId: string,
-    decision: CcminiControlDecision,
+    response: CcminiControlResponse,
   ) => Promise<boolean>
 } {
   const managerRef = useRef<CcminiSessionManager | null>(null)
@@ -159,14 +159,14 @@ export function useCcminiSessionBridge({
   const submitControlResponse = useCallback(
     async (
       requestId: string,
-      decision: CcminiControlDecision,
+      response: CcminiControlResponse,
     ): Promise<boolean> => {
       const manager = managerRef.current
       if (!manager) {
         return false
       }
       try {
-        const ok = await manager.submitControlResponse(requestId, decision)
+        const ok = await manager.submitControlResponse(requestId, response)
         if (ok) {
           setPendingControlRequest(prev =>
             prev?.requestId === requestId ? null : prev,

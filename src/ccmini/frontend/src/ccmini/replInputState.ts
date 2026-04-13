@@ -7,6 +7,7 @@ export type RecentImeCandidate = {
 
 export type LocalCommandIntent =
   | { type: 'open-command-catalog' }
+  | { type: 'open-add-directory'; rawArgs: string }
   | { type: 'open-help' }
   | { type: 'show-command-help'; lookup: string }
   | { type: 'open-theme-picker' }
@@ -22,6 +23,13 @@ export function resolveLocalCommandIntent(value: string): LocalCommandIntent {
 
   if (normalized === '/help') {
     return { type: 'open-help' }
+  }
+
+  if (normalized === '/add-dir' || normalized.startsWith('/add-dir ')) {
+    return {
+      type: 'open-add-directory',
+      rawArgs: normalized.slice('/add-dir'.length).trim(),
+    }
   }
 
   if (normalized.startsWith('/help ')) {

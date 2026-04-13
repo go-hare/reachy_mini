@@ -102,6 +102,7 @@ class BackgroundResult:
     team_name: str = ""
     task_type: str = ""
     isolation: str = ""
+    conversation_id: str = ""
     #: When the background work was started from a tool call (e.g. main-session
     #: backgrounding in reference), correlates with that ``tool_use_id``.
     tool_use_id: str | None = None
@@ -318,6 +319,7 @@ class BackgroundAgentRunner:
                 "workerName": name,
                 "canResume": True,
                 "resumeCount": int((metadata or {}).get("resumeCount", 0) or 0),
+                "conversation_id": str((runtime_overrides or {}).get("conversation_id", "") or ""),
             },
         )
 
@@ -566,6 +568,7 @@ class BackgroundAgentRunner:
             "profile": str(metadata.get("profile", "") or ""),
             "workerName": str(metadata.get("workerName", "") or ""),
             "teamName": str(metadata.get("teamName", "") or ""),
+            "conversationId": str(metadata.get("conversation_id", "") or ""),
             "backendType": str(metadata.get("backendType", "") or ""),
             "isolation": str(metadata.get("isolation", "") or ""),
             "agentType": str(metadata.get("agentType", "") or ""),
@@ -712,15 +715,36 @@ class BackgroundAgentRunner:
         except (asyncio.QueueEmpty, asyncio.TimeoutError):
             return None
 
-    def drain_completions(self) -> list[BackgroundResult]:
-        """Drain all pending completions from the queue."""
-        results: list[BackgroundResult] = []
+    def drain_completions(
+        self,
+        *,
+        conversation_id: str | None = None,
+    ) -> list[BackgroundResult]:
+        """Drain pending completions, optionally scoped to one conversation."""
+        if not conversation_id:
+            results: list[BackgroundResult] = []
+            while True:
+                try:
+                    results.append(self._completion_queue.get_nowait())
+                except asyncio.QueueEmpty:
+                    break
+            return results
+
+        matched: list[BackgroundResult] = []
+        kept: list[BackgroundResult] = []
         while True:
             try:
-                results.append(self._completion_queue.get_nowait())
+                item = self._completion_queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
-        return results
+            if not item.conversation_id or item.conversation_id == conversation_id:
+                matched.append(item)
+            else:
+                kept.append(item)
+
+        for item in kept:
+            self._completion_queue.put_nowait(item)
+        return matched
 
     def discard_completion(self, task_id: str) -> bool:
         """Remove one queued completion for *task_id* while preserving order."""
@@ -778,6 +802,7 @@ class BackgroundAgentRunner:
             team_name=str((getattr(current_task, "metadata", {}) or {}).get("teamName", "") or ""),
             task_type=str(getattr(current_task.type, "value", current_task.type)),
             isolation=str((getattr(current_task, "metadata", {}) or {}).get("isolation", "") or ""),
+            conversation_id=str((getattr(current_task, "metadata", {}) or {}).get("conversation_id", "") or ""),
         )
         self._completion_queue.put_nowait(result)
         if self._on_complete is not None:
@@ -1068,6 +1093,7 @@ class BackgroundAgentRunner:
                         getattr(getattr(task_info, "type", None), "value", getattr(runtime_ctx, "task_type", ""))
                     ),
                     isolation=str(metadata.get("isolation", "") or ""),
+                    conversation_id=str(metadata.get("conversation_id", "") or ""),
                 )
                 self._task_contexts[task_id] = _TaskRuntimeContext(
                     system_prompt=system_prompt,
@@ -1271,6 +1297,7 @@ class BackgroundAgentRunner:
                     team_name=str(task_metadata.get("teamName", "") or ""),
                     task_type=task_type_value,
                     isolation=str(task_metadata.get("isolation", "") or ""),
+                    conversation_id=str(task_metadata.get("conversation_id", "") or ""),
                 )
                 self._update_task_snapshot(
                     task_id,
@@ -1400,6 +1427,7 @@ class BackgroundAgentRunner:
                 team_name=str(task_metadata.get("teamName", "") or ""),
                 task_type=task_type_value,
                 isolation=str(task_metadata.get("isolation", "") or ""),
+                conversation_id=str(task_metadata.get("conversation_id", "") or ""),
             )
 
         info = self._task_manager.get_status(task_id)

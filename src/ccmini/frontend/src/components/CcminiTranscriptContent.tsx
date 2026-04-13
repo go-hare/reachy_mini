@@ -150,7 +150,7 @@ export function CcminiTranscriptContent({
               <SystemFlow
                 content={entry.lines.join('\n').trimEnd()}
                 addMargin={false}
-                dot
+                dot={false}
                 dimColor
                 width={conversationWidth}
               />

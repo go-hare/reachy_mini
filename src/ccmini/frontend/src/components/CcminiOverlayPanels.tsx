@@ -50,42 +50,51 @@ export function PromptHelpMenu({
   columns: number
 }): React.ReactNode {
   const theme = getThemeTokens(themeSetting)
-  const compact = columns < 86
+  const compact = columns < 96
 
   return (
     <Box marginTop={1} flexDirection="column" width="100%">
       <InlineOverlayHeader
-        title="Shortcuts"
+        title="Keyboard shortcuts"
         themeSetting={themeSetting}
         width={columns}
       />
       <Box
         flexDirection="column"
         marginTop={1}
-        paddingLeft={1}
+        paddingX={2}
         width="100%"
       >
-        <Box flexDirection={compact ? 'column' : 'row'} width="100%">
-          <Box flexDirection="column" width={compact ? '100%' : 28}>
-            <Text>{applyForeground('Prompt commands', theme.claude)}</Text>
+        <Box flexDirection={compact ? 'column' : 'row'} width="100%" gap={compact ? 1 : 3}>
+          <Box flexDirection="column" width={compact ? '100%' : 24}>
+            <Text>{applyForeground('Prompt input', theme.claude)}</Text>
+            <Text dimColor>! for bash mode</Text>
             <Text dimColor>/ for commands</Text>
             <Text dimColor>@ for file paths</Text>
             <Text dimColor>& for background</Text>
             <Text dimColor>/btw for side question</Text>
-            <Text dimColor>/theme for text style</Text>
           </Box>
           <Box
             flexDirection="column"
-            width={compact ? '100%' : 40}
-            marginLeft={compact ? 0 : 4}
-            marginTop={compact ? 1 : 0}
+            width={compact ? '100%' : 35}
           >
             <Text>{applyForeground('Keyboard flow', theme.claude)}</Text>
             <Text dimColor>double tap esc to clear input</Text>
             <Text dimColor>shift + tab to auto-accept edits</Text>
             <Text dimColor>ctrl + o for verbose output</Text>
-            <Text dimColor>ctrl + t to toggle syntax preview</Text>
+            <Text dimColor>ctrl + t to toggle tasks</Text>
             <Text dimColor>shift + ⏎ for newline</Text>
+          </Box>
+          <Box
+            flexDirection="column"
+            width={compact ? '100%' : 28}
+          >
+            <Text>{applyForeground('Prompt tools', theme.claude)}</Text>
+            <Text dimColor>ctrl + _ to undo</Text>
+            <Text dimColor>ctrl + v to paste images</Text>
+            <Text dimColor>alt + p to switch model</Text>
+            <Text dimColor>ctrl + g to edit in $EDITOR</Text>
+            <Text dimColor>/keybindings to customize</Text>
           </Box>
         </Box>
       </Box>

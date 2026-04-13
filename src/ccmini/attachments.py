@@ -101,7 +101,7 @@ class CompanionIntroSource(AttachmentSource):
     """``getCompanionIntroAttachment`` from ``buddy/prompt.ts``, attached via ``query.ts`` bus.
 
     Context (see ``engine/query.py``): ``messages``, ``buddy_enabled``, ``companion_muted``
-    (optional override; ``None`` reads ``companionMuted`` from global config).
+    (optional override; ``None`` means the instance did not mute Buddy).
     """
 
     async def get_attachments(self, context: dict[str, Any]) -> list[Attachment]:

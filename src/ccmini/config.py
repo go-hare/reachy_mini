@@ -71,6 +71,7 @@ class CLIConfig:
     multiline_key: str = "shift+enter"
     permission_mode: str = "default"
     permission_rules: list[dict[str, str]] = field(default_factory=list)
+    reference_directories: list[str] = field(default_factory=list)
     statusline_enabled: bool = True
     coordinator_enabled: bool = False
     kairos_enabled: bool = False
@@ -356,6 +357,18 @@ def validate_config(cfg: CLIConfig) -> list[ValidationError]:
                     ValidationError(
                         "permission_rules",
                         f"rule #{index + 1} has invalid decision '{decision}'",
+                    )
+                )
+
+    if not isinstance(cfg.reference_directories, list):
+        errors.append(ValidationError("reference_directories", "must be a list of strings"))
+    else:
+        for index, value in enumerate(cfg.reference_directories, start=1):
+            if not isinstance(value, str) or not value.strip():
+                errors.append(
+                    ValidationError(
+                        "reference_directories",
+                        f"entry #{index} must be a non-empty string",
                     )
                 )
 

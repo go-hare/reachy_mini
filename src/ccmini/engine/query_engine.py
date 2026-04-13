@@ -1181,13 +1181,21 @@ class QueryEngine:
     def _get_user_context(self, conversation_id: str) -> dict[str, str]:
         from datetime import date
 
-        from ..prompt_defaults import build_claude_md_context
+        from ..prompt_defaults import (
+            build_claude_md_context,
+            build_reference_directories_context,
+        )
 
         context: dict[str, str] = {}
 
         claude_md = build_claude_md_context()
         if claude_md:
             context["claudeMd"] = claude_md
+
+        reference_dirs = list(getattr(self._agent, "reference_directories", []) or [])
+        reference_context = build_reference_directories_context(reference_dirs)
+        if reference_context:
+            context["referenceDirectories"] = reference_context
 
         adapter = getattr(self._agent, "_memory_adapter", None)
         if adapter is not None:

@@ -1,6 +1,7 @@
 import type { DonorCommandCatalogEntry } from './donorCommandCatalog.js'
 
 const FRONTEND_LOCAL_COMMAND_NAMES = new Set([
+  'add-dir',
   'commands',
   'exit',
   'help',

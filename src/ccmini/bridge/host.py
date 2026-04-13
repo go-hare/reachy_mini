@@ -29,7 +29,7 @@ from ..messages import (
     UsageEvent,
     tool_result_content_to_text,
 )
-from ..permissions import PermissionDecision, PermissionMode, build_permission_checker
+from ..permissions import PermissionDecision, PermissionMode, PermissionRule, build_permission_checker
 from ..profiles import RuntimeProfile
 from ..prompts import SystemPrompt
 from ..providers import BaseProvider, ProviderConfig
@@ -349,6 +349,45 @@ class RemoteExecutorHost:
             self._sessions[session_id] = state
         return state
 
+    @staticmethod
+    def _resolve_tool_path(
+        working_directory: str,
+        tool_input: dict[str, Any],
+    ) -> Path | None:
+        raw_value = str(
+            tool_input.get("file_path", "") or tool_input.get("path", "") or ""
+        ).strip()
+        if not raw_value or any(char in raw_value for char in "*?[]"):
+            return None
+        try:
+            candidate = Path(raw_value).expanduser()
+            if not candidate.is_absolute():
+                candidate = Path(working_directory or ".").expanduser() / candidate
+            return candidate.resolve()
+        except OSError:
+            return None
+
+    @staticmethod
+    def _infer_operation_type(tool_name: str, *, is_read_only: bool) -> str:
+        if is_read_only:
+            return "read"
+        if tool_name.lower() in {"write", "filewrite"}:
+            return "create"
+        return "write"
+
+    @staticmethod
+    def _build_directory_allow_rules(directory: str) -> list[PermissionRule]:
+        pattern = str(Path(directory).expanduser().resolve() / "*")
+        tool_names = ["Read", "Edit", "Write", "NotebookEdit", "FileEdit", "FileWrite"]
+        return [
+            PermissionRule(
+                tool_pattern=f"{tool_name}({pattern})",
+                decision=PermissionDecision.ALLOW,
+                reason="session_directory_scope",
+            )
+            for tool_name in tool_names
+        ]
+
     def _install_remote_permission_runtime(
         self,
         session_id: str,
@@ -367,6 +406,18 @@ class RemoteExecutorHost:
                 tool_name: str,
                 tool_input: dict[str, Any],
             ) -> PermissionDecision:
+                tool = find_tool_by_name(agent.tools, tool_name)
+                is_read_only = bool(getattr(tool, "is_read_only", False))
+                resolved_path = self._resolve_tool_path(agent.working_directory, tool_input)
+                directory_path = ""
+                if resolved_path is not None:
+                    directory_path = str(
+                        resolved_path if resolved_path.is_dir() else resolved_path.parent
+                    )
+                operation_type = self._infer_operation_type(
+                    tool_name,
+                    is_read_only=is_read_only,
+                )
                 request_id = uuid4().hex[:12]
                 loop = asyncio.get_running_loop()
                 future: asyncio.Future[dict[str, Any]] = loop.create_future()
@@ -380,6 +431,11 @@ class RemoteExecutorHost:
                         "tool_name": tool_name,
                         "tool_input": tool_input,
                         "permission_mode": cfg.permission_mode,
+                        "operation_type": operation_type,
+                        "working_directory": agent.working_directory,
+                        "file_path": str(resolved_path) if resolved_path is not None else "",
+                        "directory_path": directory_path,
+                        "reference_directories": list(agent.reference_directories),
                     },
                 )
                 try:
@@ -406,12 +462,34 @@ class RemoteExecutorHost:
                     decision = PermissionDecision(decision_raw)
                 except Exception:
                     decision = PermissionDecision.DENY
+
+                granted_scope = str(response.get("scope", "") or "").strip().lower()
+                granted_directory = str(
+                    response.get("scope_path", "") or response.get("directory_path", "") or ""
+                ).strip()
+                checker = getattr(agent, "_permission_checker", None)
+                if (
+                    decision == PermissionDecision.ALLOW
+                    and granted_scope == "directory"
+                    and granted_directory
+                    and checker is not None
+                ):
+                    normalized_directory = str(Path(granted_directory).expanduser().resolve())
+                    checker.add_additional_directories([normalized_directory])
+                    if operation_type != "read":
+                        checker.add_rules(
+                            self._build_directory_allow_rules(normalized_directory),
+                        )
+                    agent.add_reference_directory(normalized_directory)
+
                 await self._publish_stream_event(
                     session_id,
                     {
                         "event_type": "control_request_resolved",
                         "request_id": request_id,
                         "decision": decision.value,
+                        "scope": granted_scope,
+                        "scope_path": granted_directory,
                     },
                 )
                 return decision
@@ -421,6 +499,7 @@ class RemoteExecutorHost:
                 raw_rules=cfg.permission_rules,
                 classifier_provider=classifier_provider,
                 project_dir=agent.working_directory or "",
+                additional_dirs=agent.reference_directories,
                 ask_callback=_ask_callback,
             )
         except Exception:
@@ -448,6 +527,8 @@ class RemoteExecutorHost:
             "backgroundTasks": background_tasks,
             "team": team_snapshot,
             "planState": self._build_plan_state_snapshot(agent),
+            "workingDirectory": str(getattr(agent, "working_directory", "") or ""),
+            "referenceDirectories": list(getattr(agent, "reference_directories", []) or []),
         }
 
     @staticmethod

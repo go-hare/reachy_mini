@@ -391,17 +391,67 @@ def build_mcp_instructions(mcp_instructions: str | None = None) -> str | None:
 def build_claude_md_context() -> str | None:
     """Load the nearest ``CLAUDE.md`` content, matching reference user context."""
     current = Path.cwd().resolve()
+    candidate = find_nearest_claude_md(current)
+    if candidate is None:
+        return None
+    try:
+        text = candidate.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if text:
+        return text
+    return None
+
+
+def find_nearest_claude_md(start: Path) -> Path | None:
+    """Return the nearest ``CLAUDE.md`` at or above *start*."""
+    current = start.resolve()
     for candidate_dir in (current, *current.parents):
         candidate = candidate_dir / "CLAUDE.md"
-        if not candidate.is_file():
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def build_reference_directories_context(directories: list[str]) -> str | None:
+    """Render additional reference-directory guidance for the runtime."""
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_path in directories:
+        text = str(raw_path or "").strip()
+        if not text:
+            continue
+        try:
+            resolved = str(Path(text).expanduser().resolve())
+        except OSError:
+            continue
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        normalized.append(resolved)
+
+    if not normalized:
+        return None
+
+    sections = [
+        "Additional reference directories are available for this session. "
+        "Use them as donor/example projects when helpful.",
+    ]
+    for path in normalized[:4]:
+        sections.append(f"- {path}")
+        candidate = find_nearest_claude_md(Path(path))
+        if candidate is None:
             continue
         try:
             text = candidate.read_text(encoding="utf-8").strip()
         except OSError:
-            return None
-        if text:
-            return text
-    return None
+            continue
+        if not text:
+            continue
+        sections.append(f"  Nearest CLAUDE.md: {candidate}")
+        sections.append(text)
+
+    return "\n".join(sections).strip() or None
 
 
 # ======================================================================

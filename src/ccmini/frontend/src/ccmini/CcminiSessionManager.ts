@@ -1,5 +1,5 @@
 import {
-  type CcminiControlDecision,
+  type CcminiControlResponse,
   type CcminiBridgeEventRecord,
   type CcminiBridgeMessage,
   type CcminiConnectConfig,
@@ -209,19 +209,23 @@ export class CcminiSessionManager {
 
   async submitControlResponse(
     requestId: string,
-    decision: CcminiControlDecision,
+    controlResponse: CcminiControlResponse,
   ): Promise<boolean> {
-    const response = await this.sendBridgeMessage({
+    const message = await this.sendBridgeMessage({
       type: 'control_response',
       payload: {
         id: requestId,
-        decision,
-        allow: decision === 'allow',
+        decision: controlResponse.decision,
+        allow: controlResponse.decision === 'allow',
+        ...(controlResponse.scope ? { scope: controlResponse.scope } : {}),
+        ...(controlResponse.scopePath
+          ? { scope_path: controlResponse.scopePath }
+          : {}),
       },
       session_id: this.config.sessionId,
       request_id: createCcminiRequestId(),
     })
-    return isAcceptedBridgeResponse(response)
+    return isAcceptedBridgeResponse(message)
   }
 
   sendInterrupt(): void {

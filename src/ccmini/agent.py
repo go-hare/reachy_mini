@@ -160,6 +160,26 @@ class AgentConfig:
     enable_distribution_entry_points: bool = True
 
 
+@dataclass
+class ConversationRuntimeState:
+    """Conversation-scoped mutable runtime state for one ``conversation_id``."""
+
+    conversation_id: str
+    messages: list[Message] = field(default_factory=list)
+    usage_tracker: UsageTracker = field(default_factory=UsageTracker)
+    stats_tracker: StatsTracker | None = None
+    runtime_notifications: list[StreamEvent] = field(default_factory=list)
+    last_reply: str = ""
+    pending_client_run_id: str | None = None
+    pending_client_calls: list[ToolCallEvent] = field(default_factory=list)
+    current_turn_user_text: str = ""
+    last_turn_tool_names: list[str] = field(default_factory=list)
+    current_turn_tools: list[Tool] = field(default_factory=list)
+    current_turn_state: Any | None = None
+    content_replacement_state: Any = None
+    task_budget: dict[str, int] | None = None
+
+
 class Agent:
     """The main agent class.
 
@@ -239,6 +259,7 @@ class Agent:
         self._append_system_prompt: str | None = None
         self._user_context: dict[str, str] = {}
         self._system_context: dict[str, str] = {}
+        self._reference_directories: list[str] = []
         self._session_store: SessionStore | None = None
         self._memory_store: JsonlMemoryStore | None = None
         self._memory_adapter: MemoryAdapter | None = None
@@ -248,6 +269,9 @@ class Agent:
 
             runtime_cfg = load_config()
             self._buddy_enabled = bool(runtime_cfg.buddy_enabled)
+            self.set_reference_directories(
+                list(getattr(runtime_cfg, "reference_directories", []) or [])
+            )
             if self._config.kairos_gate_config is None:
                 env_gate = GateConfig.from_env()
                 self._config.kairos_gate_config = GateConfig(
@@ -270,6 +294,9 @@ class Agent:
         self._scheduler = TaskScheduler()
         self._summary_provider = summary_provider
         self._skill_prefetch = skill_prefetch
+        self._buddy_instance_user_id = uuid4().hex
+        self._buddy_instance_companion: Any | None = None
+        self._buddy_nurture_stats: dict[str, Any] = {"pet_count": 0, "last_note": ""}
 
         self._command_registry = SlashCommandRegistry()
         if self._config.enable_builtin_commands:
@@ -287,6 +314,9 @@ class Agent:
         )
         self._bg_runner.set_on_state_change(self._publish_background_task_state)
 
+        self._conversation_states: dict[str, ConversationRuntimeState] = {}
+        self._active_conversation_state: ConversationRuntimeState | None = None
+        self._pending_client_conversations: dict[str, str] = {}
         self._messages: list[Message] = []
         self._running = False
         self._is_processing = False
@@ -329,6 +359,31 @@ class Agent:
         self._away_summary_manager: Any | None = None
         self._last_user_activity_at: float = 0.0
         self._permission_checker: PermissionChecker | None = None
+        self._kairos_gate_config_state: GateConfig = self._config.kairos_gate_config or GateConfig.from_env()
+        self._kairos_state: dict[str, Any] = {
+            "active": False,
+            "mode": "inactive",
+            "forced": False,
+            "trusted": False,
+            "paused": False,
+            "sleeping": False,
+            "context_blocked": False,
+            "brief_enabled": False,
+            "user_msg_opt_in": False,
+            "tick_count": 0,
+            "last_tick_ts": 0.0,
+            "last_wake_ts": 0.0,
+            "channels": [],
+            "allowed_channel_plugins": [],
+        }
+        self._kairos_brief_level: str = "normal"
+        self._kairos_view_mode: str = "transcript"
+        self._kairos_proactive_active: bool = False
+        self._kairos_command_queue: Any | None = None
+        self._kairos_wake_dispatcher: Any | None = None
+        self._kairos_idle_detector: Any | None = None
+        self._kairos_channels: dict[str, Any] = {}
+        self._switch_active_conversation(self._conversation_id)
 
     def _install_session_store(self, runtime_cfg: Any | None) -> None:
         """Attach transcript persistence as a core ccmini runtime service."""
@@ -466,12 +521,18 @@ class Agent:
 
     def _register_buddy_command(self) -> None:
         """Register the local ``/buddy`` command with ccmini runtime callbacks."""
-        from .buddy import BuddyCommand, NurtureEngine, companion_user_id
+        from .buddy import BuddyCommand, NurtureEngine
 
         self._command_registry.register(
             BuddyCommand(
-                user_id=companion_user_id(),
+                user_id=self._buddy_instance_user_id,
                 nurture=NurtureEngine.load(),
+                get_companion_cb=self.get_companion,
+                hatch_companion_cb=lambda name: self.hatch_companion(name=name),
+                is_muted_cb=self.is_companion_muted,
+                set_muted_cb=self.set_companion_muted,
+                record_pet_cb=self.pet_companion,
+                get_nurture_stats_cb=self.get_companion_nurture_stats,
                 on_mute_toggle=lambda muted: setattr(self, "_companion_muted", muted),
             ),
         )
@@ -532,6 +593,124 @@ class Agent:
             return
         append_records(Path(sd), self._conversation_id, records)
 
+    def _normalize_conversation_id(self, conversation_id: str | None) -> str:
+        normalized = str(conversation_id or "").strip()
+        return normalized or self._conversation_id
+
+    def _ensure_conversation_state(self, conversation_id: str | None) -> ConversationRuntimeState:
+        conv_id = self._normalize_conversation_id(conversation_id)
+        state = self._conversation_states.get(conv_id)
+        if state is not None:
+            return state
+
+        state = ConversationRuntimeState(
+            conversation_id=conv_id,
+            current_turn_tools=list(self._tools),
+            stats_tracker=StatsTracker(conv_id),
+        )
+        store = getattr(self, "_session_store", None)
+        if store is not None:
+            with contextlib.suppress(Exception):
+                if store.session_exists(conv_id):
+                    state.messages = store.load_session(conv_id)
+        self._conversation_states[conv_id] = state
+        return state
+
+    def _capture_active_conversation_state(self) -> ConversationRuntimeState | None:
+        state = self._active_conversation_state
+        if state is None:
+            return None
+
+        previous_run_id = state.pending_client_run_id
+        state.messages = self._messages
+        state.usage_tracker = self._usage_tracker
+        state.stats_tracker = self._stats_tracker
+        state.runtime_notifications = self._runtime_notifications
+        state.last_reply = self._last_reply
+        state.pending_client_run_id = self._pending_client_run_id
+        state.pending_client_calls = list(self._pending_client_calls)
+        state.current_turn_user_text = self._current_turn_user_text
+        state.last_turn_tool_names = list(self._last_turn_tool_names)
+        state.current_turn_tools = list(self._current_turn_tools)
+        state.current_turn_state = self._current_turn_state
+        state.content_replacement_state = self._content_replacement_state
+        state.task_budget = dict(self._task_budget) if isinstance(self._task_budget, dict) else self._task_budget
+
+        if previous_run_id and previous_run_id != state.pending_client_run_id:
+            self._pending_client_conversations.pop(previous_run_id, None)
+        if state.pending_client_run_id:
+            self._pending_client_conversations[state.pending_client_run_id] = state.conversation_id
+        return state
+
+    def _switch_active_conversation(self, conversation_id: str | None) -> ConversationRuntimeState:
+        conv_id = self._normalize_conversation_id(conversation_id)
+        if self._active_conversation_state is not None and self._active_conversation_state.conversation_id == conv_id:
+            return self._active_conversation_state
+
+        self._capture_active_conversation_state()
+        state = self._ensure_conversation_state(conv_id)
+        self._active_conversation_state = state
+        self._conversation_id = conv_id
+        self._messages = state.messages
+        self._usage_tracker = state.usage_tracker
+        self._stats_tracker = state.stats_tracker or StatsTracker(conv_id)
+        state.stats_tracker = self._stats_tracker
+        self._runtime_notifications = state.runtime_notifications
+        self._last_reply = state.last_reply
+        self._pending_client_run_id = state.pending_client_run_id
+        self._pending_client_calls = list(state.pending_client_calls)
+        self._current_turn_user_text = state.current_turn_user_text
+        self._last_turn_tool_names = list(state.last_turn_tool_names)
+        self._current_turn_tools = list(state.current_turn_tools or self._tools)
+        self._current_turn_state = state.current_turn_state
+        self._content_replacement_state = state.content_replacement_state
+        self._task_budget = dict(state.task_budget) if isinstance(state.task_budget, dict) else state.task_budget
+        self._refresh_memory_runtime_bindings()
+        return state
+
+    def _persist_session_snapshot_for(
+        self,
+        conversation_id: str,
+        state: ConversationRuntimeState,
+    ) -> None:
+        store = getattr(self, "_session_store", None)
+        if store is None:
+            return
+
+        try:
+            from .session.store import SessionMetadata
+
+            store.save_messages(conversation_id, list(state.messages))
+            title = getattr(self, "_session_name", "").strip()
+            summary = state.usage_tracker.summary()
+            meta = store.load_metadata(conversation_id) or SessionMetadata(
+                session_id=conversation_id,
+                created_at=time.time(),
+            )
+            if title:
+                meta.title = title
+            meta.session_id = conversation_id
+            meta.cwd = self.working_directory
+            meta.updated_at = time.time()
+            meta.message_count = len(state.messages)
+            meta.total_tokens = summary.get("total_input_tokens", 0) + summary.get("total_output_tokens", 0)
+            meta.total_cost_usd = state.usage_tracker.total_cost()
+            meta.model = self.provider.model_name
+            current_turn = state.current_turn_state
+            if current_turn is not None:
+                meta.last_stop_reason = getattr(current_turn, "stop_reason", "") or ""
+                phase = getattr(current_turn, "phase", "")
+                meta.turn_phase = getattr(phase, "value", phase) or ""
+                meta.pending_run_id = getattr(current_turn, "pending_run_id", "") or ""
+                meta.pending_tool_count = len(state.pending_client_calls or [])
+            stats_tracker = state.stats_tracker
+            if stats_tracker is not None:
+                with contextlib.suppress(Exception):
+                    stats_tracker.save()
+            store.save_metadata(meta)
+        except Exception:
+            logger.debug("Failed to persist session snapshot", exc_info=True)
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -578,7 +757,6 @@ class Agent:
         self._unregister_peer_session()
         self._save_coordinator_mode_state()
         if self._kairos_activated_by_agent:
-            deactivate_kairos()
             self._kairos_activated_by_agent = False
 
     async def __aenter__(self) -> Agent:
@@ -700,6 +878,11 @@ class Agent:
         return self._working_directory or os.getcwd()
 
     @property
+    def reference_directories(self) -> list[str]:
+        """Session-scoped additional reference directories."""
+        return list(self._reference_directories)
+
+    @property
     def event_signal(self) -> asyncio.Event:
         """Set whenever new events arrive in the queue.
 
@@ -739,6 +922,37 @@ class Agent:
             for key, value in dict(values or {}).items()
             if str(key).strip() and str(value).strip()
         }
+
+    def set_reference_directories(self, paths: list[str]) -> None:
+        """Replace session-scoped reference directories."""
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw_path in paths:
+            text = str(raw_path or "").strip()
+            if not text:
+                continue
+            resolved = str(Path(text).expanduser().resolve())
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            normalized.append(resolved)
+        self._reference_directories = normalized
+
+    def add_reference_directory(self, path: str) -> str:
+        """Add a single reference directory to this session."""
+        resolved = str(Path(path).expanduser().resolve())
+        if resolved not in self._reference_directories:
+            self._reference_directories.append(resolved)
+        return resolved
+
+    def remove_reference_directory(self, path: str) -> bool:
+        """Remove a single reference directory from this session."""
+        resolved = str(Path(path).expanduser().resolve())
+        original = len(self._reference_directories)
+        self._reference_directories = [
+            entry for entry in self._reference_directories if entry != resolved
+        ]
+        return len(self._reference_directories) != original
 
     def set_tools(self, tools: list[Tool]) -> None:
         """Replace the main tool pool for this agent."""
@@ -1194,7 +1408,10 @@ class Agent:
 
     def publish_host_event(self, event: HostEvent) -> None:
         """Inject a host/runtime event into conversation state and host-visible event flow."""
-        conversation_id = str(event.conversation_id or self._conversation_id).strip() or self._conversation_id
+        self._capture_active_conversation_state()
+        conversation_id = self._normalize_conversation_id(event.conversation_id)
+        state = self._ensure_conversation_state(conversation_id)
+        is_active_conversation = conversation_id == self._conversation_id
         metadata = dict(event.metadata)
         if event.event_type:
             metadata.setdefault("event_type", event.event_type)
@@ -1261,8 +1478,10 @@ class Agent:
                 **metadata,
             },
         )
-        self._messages.append(message)
-        self._persist_session_snapshot()
+        state.messages.append(message)
+        if is_active_conversation:
+            self._messages = state.messages
+        self._persist_session_snapshot_for(conversation_id, state)
 
         if self._memory_store is not None:
             with contextlib.suppress(Exception):
@@ -1288,7 +1507,12 @@ class Agent:
                 **dict(event.metadata),
             },
         )
-        self._dispatch_runtime_event(stream_event)
+        if is_active_conversation:
+            self._dispatch_runtime_event(stream_event)
+        else:
+            annotated = self._annotate_event(stream_event, conversation_id=conversation_id)
+            self._event_queue.put_nowait(annotated)
+            self._fire_event(annotated)
 
     def publish_runtime_event(self, event: HostEvent) -> None:
         """Backward-compatible alias for :meth:`publish_host_event`."""
@@ -1328,11 +1552,12 @@ class Agent:
             tools=tools,
             context_messages=list(self._messages) if include_context else None,
             max_turns=max_turns,
+            runtime_overrides={"conversation_id": self._conversation_id},
         )
 
     def drain_background_completions(self) -> list[BackgroundResult]:
         """Return all completed background task results (non-blocking)."""
-        return self._bg_runner.drain_completions()
+        return self._bg_runner.drain_completions(conversation_id=self._conversation_id)
 
     def list_background_tasks(self, *, include_completed: bool = False) -> list[Any]:
         """List background tasks known to this agent."""
@@ -1456,11 +1681,89 @@ class Agent:
                 team_name=team_name,
             )
 
+    def _get_local_kairos_command_queue(self) -> Any:
+        from .kairos.sleep import CommandQueue
+
+        if self._kairos_command_queue is None:
+            self._kairos_command_queue = CommandQueue()
+        return self._kairos_command_queue
+
+    def _get_local_kairos_wake_dispatcher(self) -> Any:
+        from .kairos.sleep import WakeOnEvent
+
+        if self._kairos_wake_dispatcher is None:
+            self._kairos_wake_dispatcher = WakeOnEvent()
+        return self._kairos_wake_dispatcher
+
+    def _get_local_kairos_idle_detector(self) -> Any:
+        from .kairos.proactive import IdleDetector
+
+        if self._kairos_idle_detector is None:
+            self._kairos_idle_detector = IdleDetector()
+        return self._kairos_idle_detector
+
+    def _is_local_brief_enabled(self) -> bool:
+        return bool(self._kairos_state.get("brief_enabled")) or self._kairos_brief_level != "normal"
+
+    def _get_local_assistant_system_prompt_addendum(self) -> str:
+        if not self.is_kairos_active():
+            return ""
+        return (
+            "# Assistant Mode\n\n"
+            "You are running in assistant mode. You receive periodic <tick> prompts, "
+            "may wake on queued commands, and should stay conservative unless there "
+            "is clear follow-up work to do."
+        )
+
+    def _get_local_proactive_system_prompt(self) -> str | None:
+        if not self.is_proactive_active():
+            return None
+        return (
+            "Autonomous ticking is active. Treat <tick> prompts as timer wakes, "
+            "and stay conservative unless there is clear queued work."
+        )
+
+    def _get_local_brief_system_prompt(self) -> str | None:
+        if not self._is_local_brief_enabled():
+            return None
+        from .kairos.brief import BRIEF_PROACTIVE_SECTION
+
+        return BRIEF_PROACTIVE_SECTION
+
+    def _get_local_channels_system_prompt(self) -> str | None:
+        if not self._kairos_channels:
+            return None
+        lines = [
+            "# Channels",
+            "",
+            "You have access to the following communication channels.",
+            "",
+        ]
+        for tag, channel in sorted(self._kairos_channels.items()):
+            kind = getattr(channel, "kind", None)
+            kind_value = getattr(kind, "value", str(kind or "server"))
+            lines.append(
+                f"- **{getattr(channel, 'name', tag)}** ({kind_value}): "
+                f"server={getattr(channel, 'server_name', '')}"
+            )
+        lines.extend([
+            "",
+            "When you receive a channel message, decide whether to reply in-channel, "
+            "notify the user, or both.",
+        ])
+        return "\n".join(lines)
+
+    def _record_local_kairos_tick(self, *, timestamp: float | None = None) -> None:
+        """Update instance-scoped Kairos tick metrics."""
+        ts = float(timestamp if timestamp is not None else time.time())
+        self._kairos_state["tick_count"] = int(self._kairos_state.get("tick_count", 0) or 0) + 1
+        self._kairos_state["last_tick_ts"] = ts
+
     def configure_kairos(self, gate_config: GateConfig | dict[str, Any]) -> GateConfig:
         """Apply a Kairos gate configuration for this agent instance."""
         cfg = gate_config if isinstance(gate_config, GateConfig) else GateConfig.from_dict(dict(gate_config))
         self._config.kairos_gate_config = cfg
-        set_gate_config(cfg)
+        self._kairos_gate_config_state = cfg
         return cfg
 
     async def activate_kairos(
@@ -1471,30 +1774,37 @@ class Agent:
         gate_config: GateConfig | dict[str, Any] | None = None,
     ) -> bool:
         """Activate the Kairos runtime and start its live loops when needed."""
-        from .kairos import KairosMode
-
         if gate_config is not None:
             self.configure_kairos(gate_config)
-        cfg = self._config.kairos_gate_config or GateConfig.from_env()
-        set_gate_config(cfg)
-
-        normalized_mode = mode.value if isinstance(mode, KairosMode) else str(mode).strip().lower()
-        mode_map = {
-            "assistant": KairosMode.ASSISTANT,
-            "proactive": KairosMode.PROACTIVE_ONLY,
-            "proactive_only": KairosMode.PROACTIVE_ONLY,
-            "cron": KairosMode.CRON_ONLY,
-            "cron_only": KairosMode.CRON_ONLY,
-        }
-        kairos_mode = mode_map.get(normalized_mode)
-        if kairos_mode is None:
+        cfg = self._config.kairos_gate_config or self._kairos_gate_config_state or GateConfig.from_env()
+        normalized_mode = str(getattr(mode, "value", mode)).strip().lower()
+        if normalized_mode not in {"assistant", "proactive", "proactive_only", "cron", "cron_only"}:
             raise ValueError("mode must be one of: assistant, proactive, cron")
 
         trusted = check_directory_trust(self.working_directory) if trust_accepted is None else bool(trust_accepted)
-        self._kairos_activated_by_agent = activate_kairos(
-            mode=kairos_mode,
-            trust_accepted=trusted,
-            gate_config=cfg,
+        if not cfg.kairos_enabled or not trusted:
+            self._kairos_activated_by_agent = False
+            self._kairos_state.update({
+                "active": False,
+                "mode": "inactive",
+                "trusted": trusted,
+            })
+            return False
+
+        self._kairos_gate_config_state = cfg
+        self._kairos_activated_by_agent = True
+        self._kairos_state.update(
+            active=True,
+            mode="proactive" if normalized_mode.startswith("proactive") else ("cron" if normalized_mode.startswith("cron") else "assistant"),
+            trusted=trusted,
+            paused=False,
+            sleeping=False,
+            context_blocked=False,
+            brief_enabled=bool(cfg.brief_enabled),
+        )
+        self._kairos_proactive_active = bool(
+            cfg.proactive_enabled
+            and self._kairos_state["mode"] in {"assistant", "proactive"}
         )
         if self._kairos_activated_by_agent:
             self._install_kairos_prompt_sections()
@@ -1506,34 +1816,37 @@ class Agent:
         """Deactivate Kairos and stop any active runtime loops."""
         if self._running:
             await self._stop_kairos_runtime()
-        deactivate_kairos()
         self._kairos_activated_by_agent = False
+        self._kairos_proactive_active = False
+        self._kairos_state.update(
+            active=False,
+            mode="inactive",
+            paused=False,
+            sleeping=False,
+            context_blocked=False,
+        )
 
     def get_kairos_state(self) -> dict[str, Any]:
         """Return a host-friendly snapshot of the Kairos runtime state."""
-        from .kairos import get_command_queue, get_gate_config, get_kairos_state as _get_kairos_state
-        from .kairos import is_proactive_active as _is_proactive_active
-
-        state = _get_kairos_state()
-        gate = get_gate_config()
-        queue = get_command_queue()
+        gate = self._kairos_gate_config_state
+        queue = self._get_local_kairos_command_queue()
         return {
-            "active": bool(state.active),
-            "mode": state.mode.value,
-            "forced": bool(state.forced),
-            "trusted": bool(state.trusted),
-            "paused": bool(state.paused),
-            "sleeping": bool(state.sleeping),
-            "context_blocked": bool(state.context_blocked),
-            "brief_enabled": bool(state.brief_enabled),
-            "user_msg_opt_in": bool(state.user_msg_opt_in),
-            "tick_count": int(state.tick_count),
-            "last_tick_ts": float(state.last_tick_ts),
-            "last_wake_ts": float(state.last_wake_ts),
-            "channels": list(state.channels),
-            "allowed_channel_plugins": list(state.allowed_channel_plugins),
+            "active": bool(self._kairos_state.get("active", False)),
+            "mode": str(self._kairos_state.get("mode", "inactive") or "inactive"),
+            "forced": bool(self._kairos_state.get("forced", False)),
+            "trusted": bool(self._kairos_state.get("trusted", False)),
+            "paused": bool(self._kairos_state.get("paused", False)),
+            "sleeping": bool(self._kairos_state.get("sleeping", False)),
+            "context_blocked": bool(self._kairos_state.get("context_blocked", False)),
+            "brief_enabled": bool(self._kairos_state.get("brief_enabled", False)),
+            "user_msg_opt_in": bool(self._kairos_state.get("user_msg_opt_in", False)),
+            "tick_count": int(self._kairos_state.get("tick_count", 0) or 0),
+            "last_tick_ts": float(self._kairos_state.get("last_tick_ts", 0.0) or 0.0),
+            "last_wake_ts": float(self._kairos_state.get("last_wake_ts", 0.0) or 0.0),
+            "channels": list(self._kairos_state.get("channels", []) or []),
+            "allowed_channel_plugins": list(self._kairos_state.get("allowed_channel_plugins", []) or []),
             "command_queue_size": int(queue.size()),
-            "proactive_active": bool(_is_proactive_active()),
+            "proactive_active": bool(self._kairos_proactive_active),
             "cron_running": bool(getattr(self._kairos_cron_scheduler, "running", False)),
             "gate_config": {
                 "kairos_enabled": bool(gate.kairos_enabled),
@@ -1548,25 +1861,19 @@ class Agent:
 
     def is_kairos_active(self) -> bool:
         """Return whether Kairos is active for this runtime."""
-        return bool(is_kairos_active())
+        return bool(self._kairos_state.get("active", False))
 
     def pause_proactive(self) -> None:
         """Pause proactive Kairos ticks."""
-        from .kairos import pause_proactive
-
-        pause_proactive()
+        self._kairos_state["paused"] = True
 
     def resume_proactive(self) -> None:
         """Resume proactive Kairos ticks."""
-        from .kairos import resume_proactive
-
-        resume_proactive()
+        self._kairos_state["paused"] = False
 
     def is_proactive_active(self) -> bool:
         """Return whether proactive Kairos ticks are currently active."""
-        from .kairos import is_proactive_active
-
-        return bool(is_proactive_active())
+        return bool(self._kairos_proactive_active)
 
     async def wake(
         self,
@@ -1575,9 +1882,18 @@ class Agent:
         metadata: dict[str, Any] | None = None,
     ) -> None:
         """Interrupt Kairos sleep with a host-originated wake command."""
-        from .kairos import wake_agent
+        from .kairos.sleep import QueuedCommand
 
-        await wake_agent(reason=reason, content=content, **dict(metadata or {}))
+        queue = self._get_local_kairos_command_queue()
+        self._kairos_state["last_wake_ts"] = time.time()
+        await queue.enqueue(
+            QueuedCommand(
+                source=reason,
+                content=content,
+                priority="immediate",
+                metadata=dict(metadata or {}),
+            )
+        )
 
     def enqueue_runtime_command(
         self,
@@ -1588,9 +1904,9 @@ class Agent:
         metadata: dict[str, Any] | None = None,
     ) -> None:
         """Enqueue a runtime command for Kairos to process on the next wake."""
-        from .kairos import QueuedCommand, get_command_queue
+        from .kairos import QueuedCommand
 
-        get_command_queue().enqueue_nowait(
+        self._get_local_kairos_command_queue().enqueue_nowait(
             QueuedCommand(
                 source=source,
                 content=content,
@@ -1609,13 +1925,38 @@ class Agent:
         server_name: str = "",
     ) -> bool:
         """Publish a Kairos channel notification from the host side."""
-        return await self.inject_channel_notification(
-            channel_tag=channel_tag,
-            content=content,
-            sender=sender,
-            metadata=metadata,
+        from .kairos import ChannelEntry, ChannelKind
+        from .kairos.sleep import QueuedCommand
+
+        if not self.is_kairos_active():
+            return False
+        if not bool(self._kairos_gate_config_state.channels_enabled):
+            return False
+
+        kind_text, _, bare_name = str(channel_tag or "").partition(":")
+        kind = ChannelKind.PLUGIN if kind_text == ChannelKind.PLUGIN.value else ChannelKind.SERVER
+        channel = ChannelEntry(
+            kind=kind,
+            name=bare_name or channel_tag or server_name or "channel",
             server_name=server_name,
         )
+        self._kairos_channels[channel.tag] = channel
+        channels = set(self._kairos_state.get("channels", []) or [])
+        channels.add(channel.tag)
+        self._kairos_state["channels"] = sorted(channels)
+        self._get_local_kairos_command_queue().enqueue_nowait(
+            QueuedCommand(
+                source="channel",
+                content=content,
+                priority="next",
+                metadata={
+                    "channel": channel.tag,
+                    "sender": sender,
+                    **dict(metadata or {}),
+                },
+            )
+        )
+        return True
 
     def _get_kairos_task_store(self) -> Any:
         from .kairos import TaskStore
@@ -1661,31 +2002,32 @@ class Agent:
 
     def set_brief_level(self, level: str | Any) -> str:
         """Set the Kairos brief level."""
-        from .kairos import BriefLevel, set_brief_level
-
-        normalized = level if isinstance(level, BriefLevel) else BriefLevel(str(level).strip().lower())
-        set_brief_level(normalized)
-        return normalized.value
+        normalized = str(getattr(level, "value", level)).strip().lower()
+        allowed = {"normal", "brief", "minimal", "silent"}
+        if normalized not in allowed:
+            raise ValueError("level must be one of: normal, brief, minimal, silent")
+        self._kairos_brief_level = normalized
+        self._kairos_state["brief_enabled"] = normalized != "normal" or bool(self._kairos_gate_config_state.brief_enabled)
+        self._kairos_state["user_msg_opt_in"] = normalized != "normal"
+        if normalized != "normal" and self._kairos_view_mode == "transcript":
+            self._kairos_view_mode = "chat"
+        return normalized
 
     def get_brief_level(self) -> str:
         """Return the current Kairos brief level."""
-        from .kairos import get_brief_level
-
-        return get_brief_level().value
+        return self._kairos_brief_level
 
     def set_view_mode(self, mode: str | Any) -> str:
         """Set the Kairos view mode."""
-        from .kairos import ViewMode, set_view_mode
-
-        normalized = mode if isinstance(mode, ViewMode) else ViewMode(str(mode).strip().lower())
-        set_view_mode(normalized)
-        return normalized.value
+        normalized = str(getattr(mode, "value", mode)).strip().lower()
+        if normalized not in {"chat", "transcript"}:
+            raise ValueError("mode must be one of: chat, transcript")
+        self._kairos_view_mode = normalized
+        return normalized
 
     def get_view_mode(self) -> str:
         """Return the current Kairos view mode."""
-        from .kairos import get_view_mode
-
-        return get_view_mode().value
+        return self._kairos_view_mode
 
     def get_inbox_snapshot(
         self,
@@ -1696,7 +2038,17 @@ class Agent:
         """Return the Kairos inbox snapshot for host/UI consumption."""
         from .kairos import get_inbox_snapshot
 
-        return get_inbox_snapshot(limit_per_stream=limit_per_stream, streams=streams)
+        snapshot = get_inbox_snapshot(limit_per_stream=limit_per_stream, streams=streams)
+        known_conversations = set(self._conversation_states)
+        known_conversations.add(self._conversation_id)
+        filtered: dict[str, Any] = {}
+        for stream_name, records in snapshot.items():
+            filtered[stream_name] = [
+                record
+                for record in list(records or [])
+                if not record.get("conversation_id") or record.get("conversation_id") in known_conversations
+            ]
+        return filtered
 
     def enable_buddy(self, enabled: bool) -> None:
         """Enable or disable Buddy/Companion behavior for this agent."""
@@ -1718,11 +2070,34 @@ class Agent:
         """Return whether the companion is muted for this agent instance."""
         return bool(self._companion_muted)
 
+    def _build_instance_companion(
+        self,
+        *,
+        name: str | None = None,
+        personality: str | None = None,
+    ) -> Any:
+        import random
+
+        from .buddy import roll
+        from .buddy.types import Companion
+
+        bones = roll(self._buddy_instance_user_id)["bones"]
+        hatched_at = int(time.time() * 1000)
+        return Companion(
+            rarity=bones.rarity,
+            species=bones.species,
+            eye=bones.eye,
+            hat=bones.hat,
+            shiny=bones.shiny,
+            stats=bones.stats,
+            name=(name or "").strip() or f"{bones.species}-{random.randint(100, 999)}",
+            personality=(personality or "").strip() or "curious and supportive",
+            hatchedAt=hatched_at,
+        )
+
     def get_companion(self) -> Any:
         """Return the currently hatched companion, if any."""
-        from .buddy import companion_user_id, get_companion
-
-        return get_companion(companion_user_id())
+        return self._buddy_instance_companion
 
     def hatch_companion(
         self,
@@ -1731,31 +2106,28 @@ class Agent:
         species: str | None = None,
     ) -> Any:
         """Hatch a companion for the current host user."""
-        from .buddy import companion_user_id, hatch_companion
-
-        companion = hatch_companion(companion_user_id(), name=name)
+        companion = self._build_instance_companion(name=name)
         if species is not None and str(species).strip() and str(species).strip() != companion.species:
             raise ValueError("species override is not supported by the current companion runtime")
+        self._buddy_instance_companion = companion
         self._get_companion_render_state()
         self._fire_companion_event("companion_hatched", {"companion": asdict(companion)})
         return companion
 
     def pet_companion(self) -> dict[str, Any]:
         """Record a companion pet interaction and update render state."""
-        from .buddy import NurtureEngine
-
-        nurture = NurtureEngine.load()
-        nurture.record_pet()
+        self._buddy_nurture_stats["pet_count"] = int(self._buddy_nurture_stats.get("pet_count", 0) or 0) + 1
         self._get_companion_render_state().set_pet()
-        payload = {"pet_count": nurture.pet_count, "last_note": nurture.last_note}
+        payload = {
+            "pet_count": int(self._buddy_nurture_stats.get("pet_count", 0) or 0),
+            "last_note": str(self._buddy_nurture_stats.get("last_note", "") or ""),
+        }
         self._fire_companion_event("companion_pet", payload)
         return payload
 
     def get_companion_nurture_stats(self) -> dict[str, Any]:
         """Return persisted nurture stats for the current companion."""
-        from .buddy import NurtureEngine
-
-        return asdict(NurtureEngine.load())
+        return dict(self._buddy_nurture_stats)
 
     def get_companion_intro_attachment(self) -> list[dict[str, str]]:
         """Return the companion intro attachment payload for host inspection."""
@@ -1764,7 +2136,8 @@ class Agent:
         return get_companion_intro_attachment(
             self._messages,
             buddy_enabled=self._buddy_enabled,
-            companion_muted=self._companion_muted,
+            companion_muted=self.is_companion_muted(),
+            companion=self._buddy_instance_companion,
         )
 
     def _get_companion_render_state(self) -> Any:
@@ -1997,7 +2370,8 @@ class Agent:
         Between turns, any completed background tasks are yielded as
         TextEvent notifications so the user stays informed.
         """
-        conv_id = conversation_id or self._conversation_id
+        conv_id = self._normalize_conversation_id(conversation_id)
+        self._switch_active_conversation(conv_id)
         for note in self._ingest_session_mailbox_messages():
             yield self._annotate_event(note, conversation_id=conv_id)
         for note in self._ingest_team_mailbox_messages():
@@ -2110,55 +2484,27 @@ class Agent:
 
     def _persist_session_snapshot(self) -> None:
         """Persist transcript + metadata when a session store is attached."""
-        store = getattr(self, "_session_store", None)
-        if store is None:
+        state = self._capture_active_conversation_state()
+        if state is None:
             return
-
-        try:
-            from .session.store import SessionMetadata
-
-            store.save_messages(self.conversation_id, self.messages)
-            title = getattr(self, "_session_name", "").strip()
-            summary = self.usage_tracker.summary()
-            meta = store.load_metadata(self.conversation_id) or SessionMetadata(
-                session_id=self.conversation_id,
-                created_at=time.time(),
-            )
-            if title:
-                meta.title = title
-            meta.session_id = self.conversation_id
-            meta.cwd = self.working_directory
-            meta.updated_at = time.time()
-            meta.message_count = len(self.messages)
-            meta.total_tokens = summary.get("total_input_tokens", 0) + summary.get("total_output_tokens", 0)
-            meta.total_cost_usd = self.usage_tracker.total_cost()
-            meta.model = self.provider.model_name
-            current_turn = getattr(self, "_current_turn_state", None)
-            if current_turn is not None:
-                meta.last_stop_reason = getattr(current_turn, "stop_reason", "") or ""
-                phase = getattr(current_turn, "phase", "")
-                meta.turn_phase = getattr(phase, "value", phase) or ""
-                meta.pending_run_id = getattr(current_turn, "pending_run_id", "") or ""
-                meta.pending_tool_count = len(getattr(self, "_pending_client_calls", []) or [])
-            stats_tracker = getattr(self, "_stats_tracker", None)
-            if stats_tracker is not None:
-                with contextlib.suppress(Exception):
-                    stats_tracker.save()
-            store.save_metadata(meta)
-        except Exception:
-            logger.debug("Failed to persist session snapshot", exc_info=True)
+        self._persist_session_snapshot_for(self._conversation_id, state)
 
     def _activate_kairos_runtime(self) -> None:
         """Bootstrap Kairos from environment/runtime gate config."""
         gate = self._config.kairos_gate_config or GateConfig.from_env()
-        set_gate_config(gate)
+        self._kairos_gate_config_state = gate
         trusted = check_directory_trust(os.getcwd())
-        activated = activate_kairos(
-            trust_accepted=trusted,
-            gate_config=gate,
+        self._kairos_activated_by_agent = bool(gate.kairos_enabled and trusted)
+        self._kairos_state.update(
+            active=self._kairos_activated_by_agent,
+            mode="assistant" if self._kairos_activated_by_agent else "inactive",
+            trusted=trusted,
+            brief_enabled=bool(gate.brief_enabled),
         )
-        self._kairos_activated_by_agent = activated
-        if activated:
+        self._kairos_proactive_active = bool(
+            self._kairos_activated_by_agent and gate.proactive_enabled
+        )
+        if self._kairos_activated_by_agent:
             self._install_kairos_prompt_sections()
 
     def _install_kairos_prompt_sections(self) -> None:
@@ -2167,19 +2513,19 @@ class Agent:
             return
         self._system_prompt.add_dynamic(
             "kairos_assistant",
-            get_assistant_system_prompt_addendum,
+            self._get_local_assistant_system_prompt_addendum,
         )
         self._system_prompt.add_dynamic(
             "kairos_proactive",
-            get_proactive_system_prompt,
+            self._get_local_proactive_system_prompt,
         )
         self._system_prompt.add_dynamic(
             "kairos_brief",
-            get_brief_system_prompt,
+            self._get_local_brief_system_prompt,
         )
         self._system_prompt.add_dynamic(
             "kairos_channels",
-            get_channels_system_prompt,
+            self._get_local_channels_system_prompt,
         )
         self._kairos_prompt_sections_installed = True
 
@@ -2197,29 +2543,20 @@ class Agent:
                 TaskStore,
                 create_cron_task,
                 create_dream_cron_task,
-                get_channel_persistence,
-                get_channel_registry,
-                get_gate_config,
-                get_idle_detector,
-                get_wake_on_event,
-                run_proactive_loop,
             )
             from .kairos.sleep import (
-                QueuedCommand,
-                WakeReason,
                 WakeTriggerType,
-                get_command_queue,
                 sleep_until_wake,
             )
             from .services import send_notification
 
-            gate = get_gate_config()
-            idle_detector = get_idle_detector()
+            gate = self._kairos_gate_config_state
+            idle_detector = self._get_local_kairos_idle_detector()
             suggestion_engine = ProactiveSuggestionEngine()
             self._kairos_suggestion_engine = suggestion_engine
-            wake_dispatcher = get_wake_on_event()
-            command_queue = get_command_queue()
-            channel_persistence = get_channel_persistence()
+            wake_dispatcher = self._get_local_kairos_wake_dispatcher()
+            wake_dispatcher.clear()
+            command_queue = self._get_local_kairos_command_queue()
 
             async def _process_pending_commands() -> bool:
                 pending_commands = await command_queue.drain(max_items=8)
@@ -2250,14 +2587,8 @@ class Agent:
                             prompt=cmd.content,
                             context_messages=self._messages[-12:],
                             max_turns=8,
+                            runtime_overrides={"conversation_id": self._conversation_id},
                         )
-                        if cmd.source == "channel":
-                            channel_tag = cmd.metadata.get("channel", "")
-                            if channel_tag:
-                                try:
-                                    channel_persistence.mark_read(channel_tag)
-                                except Exception:
-                                    logger.debug("Failed to clear unread channel message", exc_info=True)
                 return True
 
             async def _wake_on_channel(cmd: Any) -> None:
@@ -2277,20 +2608,6 @@ class Agent:
             wake_dispatcher.wake_on_channel(_wake_on_channel, label="notify-channel")
             wake_dispatcher.wake_on_schedule(_wake_on_schedule, label="notify-cron")
 
-            for channel_tag in channel_persistence.list_channels_with_unread():
-                for msg in channel_persistence.load_unread(channel_tag):
-                    command_queue.enqueue_nowait(
-                        QueuedCommand(
-                            source="channel",
-                            content=msg.content,
-                            priority="next",
-                            metadata={
-                                "channel": msg.channel_tag,
-                                "sender": msg.sender,
-                            },
-                        )
-                    )
-
             async def _command_watcher(stop_event: asyncio.Event) -> None:
                 while not stop_event.is_set():
                     try:
@@ -2306,20 +2623,24 @@ class Agent:
                         logger.debug("Kairos command watcher failed", exc_info=True)
 
             async def _on_tick(_tick_msg: dict[str, Any]) -> bool:
+                self._record_local_kairos_tick()
                 level = await idle_detector.tick()
                 await suggestion_engine.evaluate(level)
                 if await _process_pending_commands():
                     return True
 
-                if level == IdleLevel.ACTIVE or self._is_processing:
+                if level == IdleLevel.ACTIVE or self._is_processing or bool(self._kairos_state.get("paused", False)):
                     return False
 
                 if time.time() - self._kairos_last_autonomous_action_at < 300:
+                    self._kairos_state["sleeping"] = True
                     wake_result = await sleep_until_wake(
                         min(30.0, max(5.0, self._kairos_last_autonomous_action_at - time.time() + 300)),
                         queue=command_queue,
                     )
-                    return wake_result.reason != WakeReason.TIMEOUT
+                    self._kairos_state["sleeping"] = False
+                    self._kairos_state["last_wake_ts"] = time.time()
+                    return str(getattr(wake_result.reason, "value", wake_result.reason)) != "timeout"
 
                 self._kairos_last_autonomous_action_at = time.time()
                 self._bg_runner.spawn(
@@ -2332,6 +2653,7 @@ class Agent:
                     ),
                     context_messages=self._messages[-12:],
                     max_turns=6,
+                    runtime_overrides={"conversation_id": self._conversation_id},
                 )
                 return True
 
@@ -2339,12 +2661,24 @@ class Agent:
             self._kairos_command_task = asyncio.create_task(
                 _command_watcher(self._kairos_proactive_stop)
             )
-            self._kairos_proactive_task = asyncio.create_task(
-                run_proactive_loop(
-                    _on_tick,
-                    stop_event=self._kairos_proactive_stop,
+            if gate.proactive_enabled and self._kairos_state.get("mode") in {"assistant", "proactive"}:
+                self._kairos_proactive_active = True
+
+                async def _local_proactive_loop(stop_event: asyncio.Event) -> None:
+                    try:
+                        while not stop_event.is_set():
+                            try:
+                                await asyncio.wait_for(stop_event.wait(), timeout=10.0)
+                                break
+                            except asyncio.TimeoutError:
+                                pass
+                            await _on_tick({})
+                    finally:
+                        self._kairos_proactive_active = False
+
+                self._kairos_proactive_task = asyncio.create_task(
+                    _local_proactive_loop(self._kairos_proactive_stop)
                 )
-            )
 
             if gate.cron_enabled:
                 store = self._get_kairos_task_store()
@@ -2359,9 +2693,7 @@ class Agent:
 
                 async def _on_cron_fire(task: Any) -> None:
                     try:
-                        from .kairos.sleep import wake_agent
-
-                        await wake_agent("cron", task.prompt, task_id=getattr(task, "id", ""))
+                        await self.wake("cron", task.prompt, {"task_id": getattr(task, "id", "")})
                     except Exception:
                         logger.debug("Kairos cron wake failed", exc_info=True)
 
@@ -2380,12 +2712,15 @@ class Agent:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await proactive_task
         self._kairos_proactive_task = None
+        self._kairos_proactive_active = False
         command_task = self._kairos_command_task
         if command_task is not None:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await command_task
         self._kairos_command_task = None
         self._kairos_proactive_stop = None
+        self._kairos_state["sleeping"] = False
+        self._kairos_state["paused"] = False
 
         cron_scheduler = self._kairos_cron_scheduler
         if cron_scheduler is not None:
@@ -2407,6 +2742,9 @@ class Agent:
         ``query()`` path: mailbox ingest, background notifications, busy state,
         and prevent-sleep for the continuation.
         """
+        mapped_conversation = self._pending_client_conversations.get(run_id)
+        if mapped_conversation:
+            self._switch_active_conversation(mapped_conversation)
         normalized_results = self._normalize_tool_result_blocks(results)
         for note in self._ingest_session_mailbox_messages():
             yield self._annotate_event(note)
@@ -2480,6 +2818,7 @@ class Agent:
             self._bg_runner.spawn(
                 name=f"scheduled-{task.task_id}",
                 prompt=task.prompt,
+                runtime_overrides={"conversation_id": self._conversation_id},
             )
             logger.debug("Scheduled task %s spawned as background agent", task.name)
         except Exception:
@@ -2581,9 +2920,10 @@ class Agent:
 
     async def _publish_background_task_state(self, snapshot: dict[str, Any]) -> None:
         """Publish background-task lifecycle updates as structured runtime events."""
+        conversation_id = str(snapshot.get("conversationId", "") or self._conversation_id).strip() or self._conversation_id
         self.publish_host_event(
             HostEvent(
-                conversation_id=self._conversation_id,
+                conversation_id=conversation_id,
                 event_type="task_state",
                 role="system",
                 text=json.dumps(snapshot, ensure_ascii=False),
@@ -2603,7 +2943,7 @@ class Agent:
 
     def _yield_background_notifications(self) -> list[TextEvent]:
         """Drain completed background tasks and format as TextEvents."""
-        results = self._bg_runner.drain_completions()
+        results = self._bg_runner.drain_completions(conversation_id=self._conversation_id)
         events: list[TextEvent] = []
         for result in results:
             events.append(
@@ -2819,6 +3159,9 @@ class Agent:
                 return False
 
             self._messages = state["messages"]
+            active_state = self._ensure_conversation_state(self._conversation_id)
+            active_state.messages = self._messages
+            self._active_conversation_state = active_state
             if state.get("system_prompt_text"):
                 self._system_prompt.add_static(
                     state["system_prompt_text"],

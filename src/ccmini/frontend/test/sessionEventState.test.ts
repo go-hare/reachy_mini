@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import {
+  getControlRequestFromPayload,
   getPendingToolRequestFromPayload,
   parsePromptSuggestionState,
   parseSpeculationState,
@@ -132,6 +133,36 @@ describe('pending tool request helpers', () => {
         'call-1',
       ),
     ).toBeNull()
+  })
+})
+
+describe('control request helpers', () => {
+  test('parses richer file access metadata for control requests', () => {
+    expect(
+      getControlRequestFromPayload({
+        request_id: 'ctrl-1',
+        request_type: 'can_use_tool',
+        tool_name: 'Read',
+        tool_input: { file_path: 'D:/refs/doge/CLAUDE.md' },
+        permission_mode: 'default',
+        operation_type: 'read',
+        file_path: 'D:/refs/doge/CLAUDE.md',
+        directory_path: 'D:/refs/doge',
+        working_directory: 'D:/work/py/reachy_mini/src/ccmini',
+        reference_directories: ['D:/refs/one', 'D:/refs/two'],
+      }),
+    ).toEqual({
+      requestId: 'ctrl-1',
+      requestType: 'can_use_tool',
+      toolName: 'Read',
+      toolInput: { file_path: 'D:/refs/doge/CLAUDE.md' },
+      permissionMode: 'default',
+      operationType: 'read',
+      filePath: 'D:/refs/doge/CLAUDE.md',
+      directoryPath: 'D:/refs/doge',
+      workingDirectory: 'D:/work/py/reachy_mini/src/ccmini',
+      referenceDirectories: ['D:/refs/one', 'D:/refs/two'],
+    })
   })
 })
 

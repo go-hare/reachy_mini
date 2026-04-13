@@ -27,6 +27,7 @@ type UseCcminiTranscriptViewModelOptions = {
   showVisibleThemePicker: boolean
   showVisibleCommandCatalog: boolean
   pendingToolRequestActive: boolean
+  buddySpeaking: boolean
   columns: number
   pendingCallsLength: number
   isAskUserQuestionPending: boolean
@@ -40,6 +41,7 @@ export function useCcminiTranscriptViewModel({
   showVisibleThemePicker,
   showVisibleCommandCatalog,
   pendingToolRequestActive,
+  buddySpeaking,
   columns,
   pendingCallsLength,
   isAskUserQuestionPending,
@@ -92,7 +94,7 @@ export function useCcminiTranscriptViewModel({
     pendingToolRequestActive,
   })
   const inlineBuddyReservedColumns = showBuddyCompanion
-    ? getBuddyReservedColumns(columns)
+    ? getBuddyReservedColumns(columns, buddySpeaking)
     : 0
   const {
     showInlineBuddyCompanion,
