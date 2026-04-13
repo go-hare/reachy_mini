@@ -53,6 +53,10 @@
       title: JavaScript SDK & Web Apps
     - local: SDK/integration
       title: AI Integrations
+    - local: SDK/ccmini-single-brain-design
+      title: ccmini 单脑架构
+    - local: SDK/ccmini-single-brain-checklist
+      title: ccmini 单脑实施清单
     - local: SDK/core-concept
       title: Core Concepts
     - local: SDK/media-architecture
