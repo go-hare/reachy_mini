@@ -60,7 +60,7 @@
 - `turn_id`
   一次用户输入对应的一轮主链标识，由 `agent.submit_user_input(...)` 返回，并贯穿该轮对用户可见的输出。
 - `run_id`
-  一次 query 执行片段或 tool 恢复续跑链路的标识。一个 `turn_id` 可以关联一个或多个 `run_id`。
+  一次 query 执行片段或 tool 恢复续跑链路的标识。目标态下，一个 `turn_id` 可以关联一个或多个 `run_id`；若当前实现仍是单槽位 continuation，应在宿主适配层按现状接入，不要误判为已具备多 run 并发恢复能力。
 - `tool_use_id`
   单个工具调用的唯一标识。它用于把 `PendingToolCallEvent.calls[*]` 和后续 `HostToolResult` 对上。
 - `stale`
@@ -80,7 +80,7 @@
 - 不在第一阶段改 WebSocket 协议
 - 不在第一阶段改 app project 目录结构
 - 不在第一阶段马上物理删除 `front/` 和 `core/`
-- 不在第一阶段启用全部 `ccmini` 高级能力，如 Kairos、多 agent、Buddy 驱动 UI
+- 不要求第一阶段同时打通 `ccmini` 的全部扩展面，如 Kairos、Buddy 驱动 UI
 - 不把机器人高频控制环塞进 `ccmini`
 
 ## 4. 核心结论
@@ -137,10 +137,58 @@ flowchart LR
 - Hook 体系：`PreQueryHook`、`PreToolUseHook`、`IdleHook`、`StopHook` 等
 - 统一 memory/session
 - 流式事件：`TextEvent`、`CompletionEvent`、`ThinkingEvent`、`ToolProgressEvent`、`ErrorEvent`
-- 快响应相关能力：fast mode、prompt suggestion、speculation、tool-use summary
-- 后台任务、多 agent、Kairos、Buddy 等进一步扩展能力
+- 快思考相关能力：fast mode、prompt suggestion、speculation、tool-use summary
+- 慢思考与协调能力：coordinator、background tasks、多 agent、team / peer
+- 睡眠与记忆能力：统一 memory/session、sleep / consolidation 相关能力
+- companion / 宠物态能力：Buddy、companion、关系连续性相关能力
+- 时间性与自主性能力：Kairos、proactive / autonomy 相关能力
 
 这说明 `ccmini` 不是再加一层，而是已经具备取代当前双脑的基础。
+
+### 6.1 这些能力为什么都和机器人有关
+
+这里还需要再明确一层：
+
+- 快思考
+- 慢思考
+- 睡眠与记忆
+- companion / 宠物态
+- 团队协作
+- Kairos / 自主性
+
+这些不是“机器人之外的高级插件”，而是持续存在型机器人主脑本来就该有的能力层。
+
+因为 Reachy Mini 不是一次性问答器，而是：
+
+- 持续在线
+- 持续与人互动
+- 有身体
+- 有时间流逝
+- 有长期关系
+- 有空闲期与活跃期
+
+所以这些能力应被理解为：
+
+- 都属于单脑内部能力
+- 都可以服务机器人行为
+- 只是第一阶段不要求全部外显接入到 runtime 表现层
+
+### 6.2 coordinator 在单脑里的定位
+
+这里需要明确一件很容易被误解的事：
+
+- `coordinator` 不是另一颗脑
+- `coordinator` 不是外挂 orchestration 服务
+- `coordinator` 是 `ccmini.Agent` 自身的一种工作模式
+
+也就是说，单脑架构下可以是这样的关系：
+
+- 唯一大脑仍然是 `ccmini.Agent`
+- 这颗大脑可以运行在 `normal` 模式
+- 也可以运行在 `coordinator` 模式
+- 当它运行在 `coordinator` 模式时，worker delegation / background task / result synthesis 仍然属于这颗主脑内部能力
+
+因此本文说“只保留一个 brain”，并不意味着要弱化或关闭 coordinator；恰恰相反，coordinator 可以作为单脑的核心协调能力存在。
 
 ## 7. 新分层定义
 
@@ -430,7 +478,9 @@ flowchart LR
 - `FRONT.md / AGENTS.md / USER.md / SOUL.md / TOOLS.md`
 - `GET /`
 - `WS /ws/agent`
+- `ChatResponse.surface_state / front_decision / front_tool_results`
 - 浏览器消息结构
+- `speech_preview`
 - `front_hint_*`
 - `surface_state`
 - `front_final_*`
@@ -510,6 +560,12 @@ flowchart LR
 - `thread_id -> execution_handles`
   例如当前动作、跟踪、TTS 播放等可中断句柄
 
+补充说明：
+
+- 这里描述的是宿主目标态状态模型
+- 如果当前 `ccmini` continuation 仍是单 pending-client-run 槽位，宿主第一阶段应按现状实现适配
+- 不要因为目标态文档里使用 `run_id` 映射，就误以为当前已经支持一个 turn 上多个并发 client-side continuation
+
 建议固定遵守的规则：
 
 - `thread_id` 是外部 UI / 浏览器概念，`conversation_id` 是 `ccmini` 会话概念；第一阶段保持稳定一对一
@@ -524,9 +580,10 @@ flowchart LR
 
 | ccmini 事件 / 宿主信号 | 旧浏览器事件 | 建议 |
 | --- | --- | --- |
+| 宿主 ASR / 语音局部预览 | `speech_preview` | 继续保留，服务浏览器或麦克风桥的实时转写 UX |
 | `TextEvent` | `front_final_chunk` | 作为实际 assistant 流式输出追加到最终回复 |
 | `CompletionEvent` | `front_final_done` | 发送整轮最终全文，作为前台收口结果 |
-| 宿主本地即时确认 / fast mode / speculation | `front_hint_chunk` / `front_hint_done` | 可选；第一阶段允许完全不发 |
+| 宿主本地即时确认 / fast mode / speculation | `front_hint_chunk` / `front_hint_done` | Phase 1 建议先兼容保留；若要裁剪，需同步调整外部兼容目标与验证清单 |
 | `ThinkingEvent` | 无强制公开事件 | 默认仅驱动 `surface_state` 或宿主本地中间态 |
 | `ToolProgressEvent` | 无强制公开事件 | 默认宿主内部消化；如确有必要，可翻成短暂 hint 或 system text |
 | `PendingToolCallEvent` | 不直接透传 | 宿主执行工具后走 `submit_tool_results(...)` 恢复 |
@@ -537,7 +594,7 @@ flowchart LR
 
 - 如果已经发过 `front_final_chunk`，则 `front_final_done` 应携带该轮最终全文，前端以 done 为准收口
 - 不要把真实回复流伪装成 `front_hint_*`，否则会重新引入“hint/final 双轨语义不清”的问题
-- 浏览器允许完全收不到 `front_hint_*`，不能把 hint 当成单脑主链的必需事件
+- `front_hint_*` 不能承载真实主回复流，但在 Phase 1 是否保留应由兼容目标明确决定，不能一边写“必须保持”一边又默认删除
 
 ## 14. Prompt 资产怎么利用
 
@@ -565,28 +622,39 @@ flowchart LR
 优先值得利用的能力：
 
 - 常驻单 Agent
+- coordinator mode
 - 流式输出
 - client-tool 暂停恢复
 - Hook 体系
 - 统一 memory/session
-- fast mode
+- fast mode（快思考）
 - tool-use summary
 - prompt suggestion
 - speculation
+- 睡眠与记忆相关能力
+- companion / Buddy 相关能力
+- Kairos / 时间性能力
 
-第二阶段后可考虑利用的能力：
+后续继续扩展的能力面：
 
 - background tasks
-- coordinator mode
 - team / peer
-- Kairos
-- Buddy
+- 更强的 autonomy / proactive 行为
+- 更完整的 companion / 宠物态外显行为
+- 更完整的团队协作与长期任务推进
 
 建议顺序：
 
-- 第一阶段只用核心宿主接口，不上复杂特性
-- 第二阶段再启用少量高价值增强
-- 第三阶段再评估自治与多 agent 能力
+- 第一阶段打通单脑主链，并允许主脑按 profile / runtime 需要运行在 `normal` 或 `coordinator` 模式
+- 第一阶段不要求把快思考、慢思考、睡眠记忆、companion、Kairos、自主性全部外显接到机器人表现层
+- 第二阶段再扩展 background task、team / peer、Kairos / autonomy 等更完整的行为面
+- 第三阶段再把 companion / 宠物态、长期关系和更强自主性更完整地接入机器人体验
+
+补充原则：
+
+- 这些能力层都属于单脑内部能力，不应在迁移过程中被架构性丢失
+- 第一阶段可以不把它们全部外显接到 Reachy Mini runtime 行为里
+- 但应保留它们的接入点、模式切换点和后续落位空间
 
 ## 16. 推荐迁移阶段
 
@@ -598,6 +666,7 @@ flowchart LR
 - 现有 Reachy 执行器继续工作
 - 浏览器协议完全不变
 - 旧 `front/core` 可以暂时留在代码目录中，但不再参与主推理热路径
+- 主脑可按需要运行在 `normal` 或 `coordinator` 模式，而不引入第二颗脑
 
 动作：
 
@@ -606,6 +675,7 @@ flowchart LR
 - 工具恢复改走 `submit_tool_results(...)`
 - 状态注入改走 `HostEvent`
 - 流式事件翻译成旧 WebSocket 输出
+- 若 profile 需要主脑协调 worker，则宿主支持 `agent.set_mode("coordinator")`
 
 ### 阶段二：清理旧 core 兼容链
 

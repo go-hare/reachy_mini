@@ -25,6 +25,7 @@
 - [ ] 第一阶段不物理删除 `front/` 和 `core/`
 - [ ] 只替换内部推理主链
 - [ ] `ccmini.Agent` 成为唯一认知层
+- [ ] `coordinator` 作为 `ccmini.Agent` 的内部模式保留，不视为第二颗脑
 - [ ] Reachy Mini 宿主继续负责执行、实时控制、表情、语音、安全
 
 ## 1. 架构冻结清单
@@ -45,8 +46,10 @@
 - [ ] `ReachyMiniApp` 外部行为不变
 - [ ] `GET /` 保持不变
 - [ ] `WS /ws/agent` 保持不变
+- [ ] `ChatResponse.surface_state / front_decision / front_tool_results` 保持兼容
 - [ ] 浏览器继续发送 `user_text`
 - [ ] 浏览器继续支持 `user_speech_started / user_speech_stopped`
+- [ ] runtime 继续输出 `speech_preview`
 - [ ] runtime 继续输出 `front_hint_*`
 - [ ] runtime 继续输出 `surface_state`
 - [ ] runtime 继续输出 `front_final_*`
@@ -65,6 +68,8 @@
 - [ ] 宿主自行传入机器人工具集
 - [ ] 宿主在 runtime 启动时调用 `await agent.start()`
 - [ ] 宿主在 runtime 停止时调用 `await agent.stop()`
+- [ ] 宿主支持按 profile / runtime 配置切换 `agent.set_mode("normal" | "coordinator")`
+- [ ] 若启用 `coordinator`，worker delegation / background task 仍视为主脑内部能力，不引入第二脑链路
 
 ### 3.2 替换旧输入主链
 
@@ -125,6 +130,7 @@
 - [ ] stale 事件只允许用于本地清理，不再继续推送浏览器
 - [ ] `submit_tool_results(run_id, ...)` 必须走保存下来的映射恢复，不能猜当前线程
 - [ ] 不重新引入任务板、双轨 memory 或 sleep 子系统
+- [ ] 若当前 `ccmini` continuation 仍是单 pending-client-run 槽位，宿主第一阶段按现状适配，不假设已支持多 run 并发恢复
 
 ## 4. 事件翻译层清单
 
@@ -132,9 +138,10 @@
 
 ### 4.1 ccmini -> 旧浏览器协议
 
+- [ ] 宿主继续输出 `speech_preview`，服务实时转写预览
 - [ ] `TextEvent` 默认翻译为 `front_final_chunk`，作为实际 assistant 流式输出
 - [ ] `CompletionEvent` 翻译为 `front_final_done`，并携带整轮最终全文
-- [ ] `front_hint_chunk / front_hint_done` 只用于宿主本地即时确认、fast mode 或后续 speculation；第一阶段允许完全不发
+- [ ] `front_hint_chunk / front_hint_done` 只用于宿主本地即时确认、fast mode 或后续 speculation；Phase 1 先兼容保留
 - [ ] `ThinkingEvent` 默认不直接暴露给浏览器，只驱动 `surface_state` 或宿主本地中间态
 - [ ] `ToolProgressEvent` 默认不新增公开协议；如确有需要，只翻成短暂 hint 或 system text
 - [ ] `PendingToolCallEvent` 不直接透传浏览器
@@ -147,7 +154,7 @@
 - [ ] 第一阶段不要求浏览器知道 `ccmini` 事件名
 - [ ] 所有 `ccmini` 内部事件先在宿主侧消化
 - [ ] 浏览器仍只看到当前已有协议
-- [ ] 浏览器不能把 `front_hint_*` 当成单脑主链的必需事件
+- [ ] 浏览器不能把 `front_hint_*` 当成真实主回复流
 - [ ] 不把真实回复流伪装成 `front_hint_*`，避免重新引入双轨语义歧义
 
 ## 5. 工具接入清单
@@ -278,6 +285,7 @@
 - [ ] `TOOLS.md` 继续作为工具边界说明
 - [ ] `FRONT.md` 继续作为用户可见风格约束
 - [ ] 宿主额外运行时规则通过 `append system prompt` 或 context 注入
+- [ ] 快思考 / 慢思考 / 睡眠记忆 / companion / Kairos / autonomy 等能力层不因迁移而被架构性丢失
 
 明确：
 
@@ -381,7 +389,8 @@
 
 - [ ] 浏览器可正常连接 `WS /ws/agent`
 - [ ] 用户输入仍能拿到回复
-- [ ] `front_hint_*` 若启用则仍正常输出；若未启用，浏览器也能正常工作
+- [ ] `speech_preview` 仍正常输出
+- [ ] `front_hint_*` 仍正常输出
 - [ ] `front_final_chunk` 仍正常输出
 - [ ] `front_final_*` 仍正常输出
 - [ ] `surface_state` 仍正常输出
@@ -390,8 +399,12 @@
 - [ ] reply audio 和中断逻辑不退化
 - [ ] 头部动作、情绪、相机工具仍正常
 - [ ] 现有 app project 不需要修改即可运行
+- [ ] `ChatResponse.surface_state / front_decision / front_tool_results` 仍可正常返回
 - [ ] 同一线程连续打断时，旧 turn 残留事件不会污染新 turn
 - [ ] `PendingToolCallEvent` 恢复后的输出不会串到错误线程
+- [ ] `coordinator` 模式下主脑仍可正常输出流式回复，不因 worker 派工阻塞前台
+- [ ] `coordinator` 模式下后台 worker/task notification 不会绕过当前 `turn_id` 裁决
+- [ ] 快思考 / 慢思考 / 睡眠记忆 / companion / Kairos / autonomy 等能力层的入口没有被迁移意外切断
 
 ### 13.2 第二阶段验证
 
@@ -418,6 +431,7 @@
 - [ ] 不要在第一阶段同时重写 UI 和 brain
 - [ ] 不要把旧 `core` 的概念整包复制进 `ccmini`
 - [ ] 不要以“兼容迁移”为名继续依赖 `core.memory`、`sleep_agent`、`run_store`
+- [ ] 不要把 `coordinator` 描述成外挂服务或第二颗脑
 
 ## 15. 第一阶段完成定义
 

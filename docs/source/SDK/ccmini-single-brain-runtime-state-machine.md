@@ -133,6 +133,12 @@ tool_calls: list[tool_use_id]
 - `run_id` 是 tool 恢复时唯一可信的路由键
 - 不允许通过“当前线程看起来像这个线程”去猜归属
 
+补充说明：
+
+- 这里描述的是宿主目标态状态模型
+- 如果当前 `ccmini` 实现仍是单 pending-client-run continuation 槽位，第一阶段宿主应按该现状适配
+- 宿主可以先维护 `run_id -> {thread_id, conversation_id, turn_id}` 映射接口，但不要误以为底层已天然支持一个 turn 上多个并发 client-side continuation
+
 ## 5. 核心不变量
 
 实现时建议把下面几条当成硬约束：
@@ -338,6 +344,23 @@ stateDiagram-v2
 - 可以做 idle 动作、表情或低频维护
 - 但不应该重新长出 `sleep_agent` 式自治子系统
 
+### 7.11 coordinator worker / task notification
+
+如果主脑运行在 `coordinator` 模式，后台 worker 完成、失败、被停止时，宿主或 runtime 可能会收到 task notification / runtime notification。
+
+建议规则：
+
+- 这些通知属于主脑内部协作事件，不代表出现了第二颗脑
+- 它们可以进入 `ccmini` 当前会话，作为后续综合、继续派工或总结的输入
+- 它们本身不自动生成新的前台 `turn_id`
+- 它们本身也不应直接覆盖当前 `front_final_*`
+- 如果主脑基于这些通知决定继续对用户说话，仍然要通过当前 turn 规则或一个新的正式 turn 来输出
+
+一句话：
+
+- worker 可以后台跑
+- 但前台输出裁决仍然只认宿主当前 turn 规则
+
 ## 8. stale 事件处理策略
 
 这是单脑状态机里最容易被漏掉的地方。
@@ -400,17 +423,20 @@ idle -> playing -> interrupt_pending -> interrupted -> cooldown -> idle
 
 第一阶段建议固定如下：
 
+- 宿主 ASR / partial transcript -> `speech_preview`
 - `TextEvent` -> `front_final_chunk`
 - `CompletionEvent` -> `front_final_done`
 - `ErrorEvent` -> `turn_error`
 - 相位变化 -> `surface_state`
-- `front_hint_*` 可选，不是主链必需
+- `front_hint_*` 作为兼容保留的宿主即时提示，不承载真实主回复流
 
 前端兼容要求：
 
+- `speech_preview` 仍然可用
 - 即使完全收不到 `front_hint_*` 也能正常工作
 - `front_final_done` 到来时，以其全文为准收口
 - 对于 stale turn，前端不应该再收到新的 final 输出
+- coordinator 的后台 worker 通知不应直接伪装成新的 `front_final_*`
 
 ## 12. 一条完整 happy path
 
@@ -512,7 +538,18 @@ idle -> playing -> interrupt_pending -> interrupted -> cooldown -> idle
 }
 ```
 
-### 13.5 可选的 `front_hint_*`
+### 13.5 `speech_preview`
+
+```json
+{
+  "type": "speech_preview",
+  "thread_id": "thread-demo",
+  "turn_id": "",
+  "text": "看看我前面..."
+}
+```
+
+### 13.6 可选的 `front_hint_*`
 
 如果第一阶段保留宿主即时确认，也建议把它严格当成可选增强，而不是主回复流：
 
@@ -527,6 +564,7 @@ idle -> playing -> interrupt_pending -> interrupted -> cooldown -> idle
 
 约束：
 
+- `speech_preview` 继续服务实时转写 UX，不应被误删
 - `front_hint_*` 可以完全不发
 - `front_final_done` 应始终带整轮最终全文
 - `front_final_chunk` 和 `front_final_done` 的 `turn_id` 必须一致
