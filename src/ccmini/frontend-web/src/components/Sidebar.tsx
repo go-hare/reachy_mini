@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { createPortal } from 'react-dom';
 import { getStreamingIds } from '../streamingState';
@@ -18,12 +18,13 @@ import claudeImg from '../assets/icons/claude.png';
 import searchIconImg from '../assets/icons/search-icon.png';
 import customizeIconImg from '../assets/icons/customize-icon.png';
 import { NAV_ITEMS } from '../constants';
-import { ChevronUp, Settings, HelpCircle } from 'lucide-react';
+import { ChevronDown, ChevronRight, ChevronUp, Plus, Settings, HelpCircle } from 'lucide-react';
 import { getConversations, deleteConversation, updateConversation, getUser, getUserUsage, getUserProfile } from '../api';
 
 import SearchModal from './SearchModal';
 
 interface SidebarProps {
+  mode?: 'chat' | 'cowork' | 'code';
   isCollapsed: boolean;
   toggleSidebar: () => void;
   refreshTrigger: number;
@@ -31,6 +32,10 @@ interface SidebarProps {
   onOpenSettings?: () => void;
   onOpenUpgrade?: () => void;
   onCloseOverlays?: () => void;
+  coworkWorkspacePaths?: string[];
+  activeCoworkWorkspacePath?: string;
+  onCoworkSelectWorkspace?: (path: string) => void;
+  onCoworkAddWorkspace?: () => void;
   tunerConfig?: any;
   setTunerConfig?: (config: any) => void;
 }
@@ -106,7 +111,22 @@ const RenameModal = ({ isOpen, onClose, onSave, initialTitle }: RenameModalProps
   );
 };
 
-const Sidebar = ({ isCollapsed, toggleSidebar, refreshTrigger, onNewChatClick, onOpenSettings, onOpenUpgrade, onCloseOverlays, tunerConfig, setTunerConfig }: SidebarProps) => {
+const Sidebar = ({
+  mode = 'chat',
+  isCollapsed,
+  toggleSidebar,
+  refreshTrigger,
+  onNewChatClick,
+  onOpenSettings,
+  onOpenUpgrade,
+  onCloseOverlays,
+  coworkWorkspacePaths = [],
+  activeCoworkWorkspacePath = '',
+  onCoworkSelectWorkspace,
+  onCoworkAddWorkspace,
+  tunerConfig,
+  setTunerConfig,
+}: SidebarProps) => {
   const navigate = useNavigate();
   const location = useLocation();
   const [chats, setChats] = useState<any[]>([]);
@@ -126,6 +146,8 @@ const Sidebar = ({ isCollapsed, toggleSidebar, refreshTrigger, onNewChatClick, o
   const [isNewChatAnimating, setIsNewChatAnimating] = useState(false);
   const [streamingIds, setStreamingIds] = useState<Set<string>>(new Set());
   const [updateStatus, setUpdateStatus] = useState<{ type: string; version?: string; percent?: number } | null>(null);
+  const [collapsedCoworkWorkspaces, setCollapsedCoworkWorkspaces] = useState<Set<string>>(new Set());
+  const isCoworkMode = mode === 'cowork';
 
   // Listen for streaming state changes. When a stream JUST ended (set size shrunk),
   // also refetch usage so the bottom-left progress bar reflects the new spend.
@@ -159,23 +181,45 @@ const Sidebar = ({ isCollapsed, toggleSidebar, refreshTrigger, onNewChatClick, o
   const userBtnRef = useRef<HTMLButtonElement>(null);
   const isSelfHostedMode = (localStorage.getItem('user_mode') || 'selfhosted') === 'selfhosted';
 
+  const availableCoworkWorkspaces = useMemo(() => {
+    const chatPaths = chats
+      .map((chat) => String(chat?.workspace_path || '').trim())
+      .filter(Boolean);
+    return Array.from(new Set([...coworkWorkspacePaths, ...chatPaths]));
+  }, [chats, coworkWorkspacePaths]);
+
+  useEffect(() => {
+    if (!activeCoworkWorkspacePath) return;
+    setCollapsedCoworkWorkspaces((prev) => {
+      if (!prev.has(activeCoworkWorkspacePath)) return prev;
+      const next = new Set(prev);
+      next.delete(activeCoworkWorkspacePath);
+      return next;
+    });
+  }, [activeCoworkWorkspacePath]);
+
   // Map labels to the correct custom icon
-  const getIcon = (label: string, size: number) => {
-    const className = "dark:invert transition-[filter] duration-200";
-    switch (label) {
+const getIcon = (label: string, size: number) => {
+  const className = "dark:invert transition-[filter] duration-200";
+  switch (label) {
       case 'Chats': return <IconChatBubble size={size} className={className} />;
       case 'Projects': return <IconProjects size={size} className={className} />;
       case 'Artifacts': return <IconArtifactsExact size={size} className={className} />;
       case 'Code': return <IconCode size={size} className={className} />;
       default: return <IconChatBubble size={size} className={className} />;
-    }
-  };
+  }
+};
+
+const getWorkspaceName = (workspacePath: string) => {
+  const parts = String(workspacePath || '').split(/[\\/]+/).filter(Boolean);
+  return parts[parts.length - 1] || workspacePath || 'Workspace';
+};
 
   const handleNewChat = () => {
     setIsNewChatAnimating(true);
     setTimeout(() => setIsNewChatAnimating(false), 300);
     if (onNewChatClick) onNewChatClick();
-    navigate('/');
+    navigate(isCoworkMode ? '/cowork' : '/');
   };
 
   const updateTuner = (key: string, value: number) => {
@@ -185,6 +229,9 @@ const Sidebar = ({ isCollapsed, toggleSidebar, refreshTrigger, onNewChatClick, o
   };
 
   const handleNavClick = (label: string) => {
+    if (isCoworkMode) {
+      return;
+    }
     if (label === 'Chats') {
       navigate('/chats');
       return;
@@ -201,6 +248,25 @@ const Sidebar = ({ isCollapsed, toggleSidebar, refreshTrigger, onNewChatClick, o
       // Disabled temporarily
       return;
     }
+  };
+
+  const handleCoworkNewChat = (workspacePath: string) => {
+    onCoworkSelectWorkspace?.(workspacePath);
+    if (onNewChatClick) onNewChatClick();
+    onCloseOverlays?.();
+    navigate('/cowork');
+  };
+
+  const toggleCoworkWorkspaceCollapsed = (workspacePath: string) => {
+    setCollapsedCoworkWorkspaces((prev) => {
+      const next = new Set(prev);
+      if (next.has(workspacePath)) {
+        next.delete(workspacePath);
+      } else {
+        next.add(workspacePath);
+      }
+      return next;
+    });
   };
 
   useEffect(() => {
@@ -553,96 +619,233 @@ const Sidebar = ({ isCollapsed, toggleSidebar, refreshTrigger, onNewChatClick, o
             ))}
           </nav>
 
-          {/* Recents Section Header */}
-          <div
-            className={`group flex items-center gap-3 px-3 pb-2 transition-opacity duration-200 select-none ${isCollapsed ? 'opacity-0 hidden' : 'opacity-100'}`}
-            style={{
-              marginTop: `${tunerConfig?.recentsMt || 0}px`,
-              paddingLeft: `${tunerConfig?.recentsPl || 12}px`,
-              paddingRight: '12px'
-            }}
-          >
-            <span className="text-[13px] font-medium text-claude-textSecondary">Recents</span>
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                setIsRecentsCollapsed(!isRecentsCollapsed);
-              }}
-              className="text-[13px] font-medium text-claude-textSecondary opacity-0 group-hover:opacity-60 hover:opacity-100 transition-opacity cursor-pointer outline-none"
-            >
-              {isRecentsCollapsed ? 'Show' : 'Hide'}
-            </button>
-          </div>
-
-          {/* Recents List */}
-          <div className={`space-y-0.5 pb-2 transition-all duration-200 ${isCollapsed || isRecentsCollapsed ? 'opacity-0 hidden h-0 overflow-hidden' : 'opacity-100'}`}>
-            {chats.slice(0, 30).map((chat, index) => {
-              const isActive = location.pathname === `/chat/${chat.id}`;
-              return (
-                <div
-                  key={chat.id}
-                  onClick={() => { onCloseOverlays?.(); navigate(`/chat/${chat.id}`); }}
-                  className={`
-                    relative group flex items-center w-full rounded-lg transition-colors cursor-pointer min-h-[32px]
-                    ${isActive || activeMenuIndex === index ? 'bg-claude-hover' : 'hover:bg-claude-hover'}
-                  `}
-                  style={{
-                    paddingTop: `${tunerConfig?.recentsItemPy || 6}px`,
-                    paddingBottom: `${tunerConfig?.recentsItemPy || 6}px`,
-                    paddingLeft: `${tunerConfig?.recentsPl || 12}px`,
-                    paddingRight: `${tunerConfig?.recentsPl || 12}px`
-                  }}
-                >
-                  {/* Streaming indicator — single breathing dot */}
-                  {streamingIds.has(chat.id) && (
-                    <span
-                      className="flex-shrink-0 mr-2 w-[7px] h-[7px] rounded-full bg-neutral-700 dark:bg-neutral-300 animate-pulse"
-                      style={{ animationDuration: '1.6s' }}
-                    />
-                  )}
-                  {/* Chat Title */}
-                  <div className="flex-1 min-w-0 pr-6">
-                    <div
-                      className="text-claude-text truncate leading-snug"
-                      style={{ fontSize: `${tunerConfig?.recentsFontSize || 13}px` }}
-                    >
-                      {chat.title || 'New Chat'}
-                    </div>
-                    {chat.project_name && (
-                      <div className="text-[11px] text-claude-textSecondary truncate leading-snug mt-0.5 opacity-60">
-                        {chat.project_name}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Three Dots Button */}
-                  <button
-                    onClick={(e) => handleMenuClick(e, index)}
-                    className={`
-                      absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded text-claude-textSecondary hover:text-claude-text transition-all
-                      ${activeMenuIndex === index ? 'opacity-100 block' : 'opacity-0 group-hover:opacity-100 hidden group-hover:block'}
-                    `}
-                  >
-                    <IconDotsHorizontal size={16} />
-                  </button>
-                </div>
-              );
-            })}
-            {chats.length > 30 && (
-              <button
-                onClick={() => { onCloseOverlays?.(); navigate('/chats'); }}
-                className="w-full flex items-center gap-2 rounded-lg hover:bg-claude-hover transition-colors text-claude-textSecondary hover:text-claude-text"
+          {isCoworkMode ? (
+            <div className={`pb-2 transition-all duration-200 ${isCollapsed ? 'opacity-0 hidden h-0 overflow-hidden' : 'opacity-100'}`}>
+              <div
+                className="flex items-center justify-between px-3 pb-2"
                 style={{
-                  paddingTop: `${tunerConfig?.recentsItemPy || 6}px`,
-                  paddingBottom: `${tunerConfig?.recentsItemPy || 6}px`,
+                  marginTop: `${tunerConfig?.recentsMt || 0}px`,
                   paddingLeft: `${tunerConfig?.recentsPl || 12}px`,
+                  paddingRight: '12px'
                 }}
               >
-                <IconDotsHorizontal size={18} className="opacity-60" />
-                <span style={{ fontSize: `${tunerConfig?.recentsFontSize || 13}px` }} className="leading-tight">All chats</span>
-              </button>
-            )}
-          </div>
+                <span className="text-[13px] font-medium text-claude-textSecondary">Workspaces</span>
+                <button
+                  onClick={() => onCoworkAddWorkspace?.()}
+                  className="text-[12px] font-medium text-claude-textSecondary hover:text-claude-text transition-colors"
+                >
+                  Add
+                </button>
+              </div>
+
+              {availableCoworkWorkspaces.length === 0 ? (
+                <button
+                  onClick={() => onCoworkAddWorkspace?.()}
+                  className="mx-3 w-[calc(100%-24px)] rounded-lg border border-claude-border px-3 py-3 text-left text-[13px] text-claude-textSecondary hover:bg-claude-hover transition-colors"
+                >
+                  选择一个目录作为 Cowork workspace
+                </button>
+              ) : (
+                <div className="space-y-1">
+                  {availableCoworkWorkspaces.map((workspacePath) => {
+                    const workspaceChats = chats.filter((chat) => String(chat?.workspace_path || '').trim() === workspacePath);
+                    const isSelectedWorkspace = workspacePath === activeCoworkWorkspacePath;
+                    const isCollapsedWorkspace = collapsedCoworkWorkspaces.has(workspacePath);
+                    return (
+                      <div key={workspacePath} className="rounded-lg">
+                        <button
+                          onClick={() => {
+                            if (isSelectedWorkspace) {
+                              toggleCoworkWorkspaceCollapsed(workspacePath);
+                              return;
+                            }
+                            onCoworkSelectWorkspace?.(workspacePath);
+                          }}
+                          className={`w-full flex items-center justify-between rounded-lg px-3 py-2 text-left transition-colors ${isSelectedWorkspace ? 'bg-claude-hover text-claude-text' : 'text-claude-textSecondary hover:bg-claude-hover hover:text-claude-text'}`}
+                          style={{
+                            paddingLeft: `${tunerConfig?.recentsPl || 12}px`,
+                            paddingRight: `${tunerConfig?.recentsPl || 12}px`
+                          }}
+                          title={workspacePath}
+                        >
+                          <div className="min-w-0 flex items-start gap-2 flex-1">
+                            <button
+                              type="button"
+                              className="mt-0.5 rounded p-0.5 text-claude-textSecondary/80 hover:text-claude-text hover:bg-claude-hover"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                toggleCoworkWorkspaceCollapsed(workspacePath);
+                              }}
+                              aria-label={isCollapsedWorkspace ? 'Expand workspace' : 'Collapse workspace'}
+                            >
+                              {isCollapsedWorkspace ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+                            </button>
+                            <div className="min-w-0">
+                              <div className="truncate text-[13px] font-medium">{getWorkspaceName(workspacePath)}</div>
+                              <div className="truncate text-[11px] opacity-70">{workspacePath}</div>
+                            </div>
+                          </div>
+                          <div className="ml-3 flex flex-col items-center justify-center gap-0.5">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleCoworkNewChat(workspacePath);
+                              }}
+                              className="rounded p-0.5 text-claude-textSecondary hover:text-claude-text hover:bg-claude-hover"
+                              aria-label="在该工作区开启对话"
+                            >
+                              <Plus size={14} />
+                            </button>
+                            <span className="text-[11px] opacity-70 leading-none">{workspaceChats.length}</span>
+                          </div>
+                        </button>
+
+                        {isSelectedWorkspace && !isCollapsedWorkspace && (
+                          <div className="mt-1 space-y-0.5 border-l border-claude-border/70 ml-4">
+                            {workspaceChats.length === 0 ? (
+                              <div className="px-3 py-2 text-[12px] text-claude-textSecondary">这个 workspace 还没有对话</div>
+                            ) : (
+                              workspaceChats.slice(0, 30).map((chat) => {
+                                const index = chats.findIndex((item) => item.id === chat.id);
+                                const isActive = location.pathname === `/cowork/${chat.id}`;
+                                return (
+                                  <div
+                                    key={chat.id}
+                                    onClick={() => { onCloseOverlays?.(); navigate(`/cowork/${chat.id}`); }}
+                                    className={`relative group flex items-center w-full rounded-lg transition-colors cursor-pointer min-h-[32px] ${isActive || activeMenuIndex === index ? 'bg-claude-hover' : 'hover:bg-claude-hover'}`}
+                                    style={{
+                                      paddingTop: `${tunerConfig?.recentsItemPy || 6}px`,
+                                      paddingBottom: `${tunerConfig?.recentsItemPy || 6}px`,
+                                      paddingLeft: `${(tunerConfig?.recentsPl || 12) + 8}px`,
+                                      paddingRight: `${tunerConfig?.recentsPl || 12}px`
+                                    }}
+                                  >
+                                    {streamingIds.has(chat.id) && (
+                                      <span
+                                        className="flex-shrink-0 mr-2 w-[7px] h-[7px] rounded-full bg-neutral-700 dark:bg-neutral-300 animate-pulse"
+                                        style={{ animationDuration: '1.6s' }}
+                                      />
+                                    )}
+                                    <div className="flex-1 min-w-0 pr-6">
+                                      <div
+                                        className="text-claude-text truncate leading-snug"
+                                        style={{ fontSize: `${tunerConfig?.recentsFontSize || 13}px` }}
+                                      >
+                                        {chat.title || 'New Chat'}
+                                      </div>
+                                    </div>
+                                    {index >= 0 && (
+                                      <button
+                                        onClick={(e) => handleMenuClick(e, index)}
+                                        className={`absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded text-claude-textSecondary hover:text-claude-text transition-all ${activeMenuIndex === index ? 'opacity-100 block' : 'opacity-0 group-hover:opacity-100 hidden group-hover:block'}`}
+                                      >
+                                        <IconDotsHorizontal size={16} />
+                                      </button>
+                                    )}
+                                  </div>
+                                );
+                              })
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          ) : (
+            <>
+              {/* Recents Section Header */}
+              <div
+                className={`group flex items-center gap-3 px-3 pb-2 transition-opacity duration-200 select-none ${isCollapsed ? 'opacity-0 hidden' : 'opacity-100'}`}
+                style={{
+                  marginTop: `${tunerConfig?.recentsMt || 0}px`,
+                  paddingLeft: `${tunerConfig?.recentsPl || 12}px`,
+                  paddingRight: '12px'
+                }}
+              >
+                <span className="text-[13px] font-medium text-claude-textSecondary">Recents</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setIsRecentsCollapsed(!isRecentsCollapsed);
+                  }}
+                  className="text-[13px] font-medium text-claude-textSecondary opacity-0 group-hover:opacity-60 hover:opacity-100 transition-opacity cursor-pointer outline-none"
+                >
+                  {isRecentsCollapsed ? 'Show' : 'Hide'}
+                </button>
+              </div>
+
+              {/* Recents List */}
+              <div className={`space-y-0.5 pb-2 transition-all duration-200 ${isCollapsed || isRecentsCollapsed ? 'opacity-0 hidden h-0 overflow-hidden' : 'opacity-100'}`}>
+                {chats.slice(0, 30).map((chat, index) => {
+                  const isActive = location.pathname === `/chat/${chat.id}`;
+                  return (
+                    <div
+                      key={chat.id}
+                      onClick={() => { onCloseOverlays?.(); navigate(`/chat/${chat.id}`); }}
+                      className={`
+                        relative group flex items-center w-full rounded-lg transition-colors cursor-pointer min-h-[32px]
+                        ${isActive || activeMenuIndex === index ? 'bg-claude-hover' : 'hover:bg-claude-hover'}
+                      `}
+                      style={{
+                        paddingTop: `${tunerConfig?.recentsItemPy || 6}px`,
+                        paddingBottom: `${tunerConfig?.recentsItemPy || 6}px`,
+                        paddingLeft: `${tunerConfig?.recentsPl || 12}px`,
+                        paddingRight: `${tunerConfig?.recentsPl || 12}px`
+                      }}
+                    >
+                      {streamingIds.has(chat.id) && (
+                        <span
+                          className="flex-shrink-0 mr-2 w-[7px] h-[7px] rounded-full bg-neutral-700 dark:bg-neutral-300 animate-pulse"
+                          style={{ animationDuration: '1.6s' }}
+                        />
+                      )}
+                      <div className="flex-1 min-w-0 pr-6">
+                        <div
+                          className="text-claude-text truncate leading-snug"
+                          style={{ fontSize: `${tunerConfig?.recentsFontSize || 13}px` }}
+                        >
+                          {chat.title || 'New Chat'}
+                        </div>
+                        {chat.project_name && (
+                          <div className="text-[11px] text-claude-textSecondary truncate leading-snug mt-0.5 opacity-60">
+                            {chat.project_name}
+                          </div>
+                        )}
+                      </div>
+
+                      <button
+                        onClick={(e) => handleMenuClick(e, index)}
+                        className={`
+                          absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded text-claude-textSecondary hover:text-claude-text transition-all
+                          ${activeMenuIndex === index ? 'opacity-100 block' : 'opacity-0 group-hover:opacity-100 hidden group-hover:block'}
+                        `}
+                      >
+                        <IconDotsHorizontal size={16} />
+                      </button>
+                    </div>
+                  );
+                })}
+                {chats.length > 30 && (
+                  <button
+                    onClick={() => { onCloseOverlays?.(); navigate('/chats'); }}
+                    className="w-full flex items-center gap-2 rounded-lg hover:bg-claude-hover transition-colors text-claude-textSecondary hover:text-claude-text"
+                    style={{
+                      paddingTop: `${tunerConfig?.recentsItemPy || 6}px`,
+                      paddingBottom: `${tunerConfig?.recentsItemPy || 6}px`,
+                      paddingLeft: `${tunerConfig?.recentsPl || 12}px`,
+                    }}
+                  >
+                    <IconDotsHorizontal size={18} className="opacity-60" />
+                    <span style={{ fontSize: `${tunerConfig?.recentsFontSize || 13}px` }} className="leading-tight">All chats</span>
+                  </button>
+                )}
+              </div>
+            </>
+          )}
 
         </div>
 

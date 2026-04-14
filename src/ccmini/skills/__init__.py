@@ -594,6 +594,31 @@ def _register_mcp_bridge() -> None:
 _register_mcp_bridge()
 
 
+def get_packaged_skill_dirs() -> list[Path]:
+    """Return skill directories that ship inside ccmini itself."""
+    dirs: list[Path] = []
+    packaged = Path(__file__).resolve().parent / "library"
+    if packaged.is_dir():
+        dirs.append(packaged)
+    return dirs
+
+
+def load_packaged_skills() -> list[Skill]:
+    """Load only top-level packaged skills that ship with ccmini."""
+    loader = SkillLoader(skill_dirs=[])
+    found: list[Skill] = []
+    for root in get_packaged_skill_dirs():
+        for subdir in sorted(root.iterdir(), key=lambda item: item.name.lower()):
+            skill_md = subdir / "SKILL.md"
+            if not subdir.is_dir() or not skill_md.is_file():
+                continue
+            try:
+                found.append(loader._parse_skill(skill_md, name=subdir.name))
+            except Exception:
+                logger.warning("Failed to parse packaged skill %s", skill_md, exc_info=True)
+    return found
+
+
 def discover_skill_dirs_for_path(
     filepath: str,
     *,

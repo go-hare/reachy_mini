@@ -490,13 +490,20 @@ export async function getArtifactContent(filePath: string) {
   return res.json();
 }
 
-export async function createConversation(title?: string, model?: string, extras?: { research_mode?: boolean }) {
+export async function createConversation(
+  title?: string,
+  model?: string,
+  extras?: { research_mode?: boolean; workspace_path?: string },
+) {
   const body: any = { model };
   if (title !== undefined) {
     body.title = title;
   }
   if (extras?.research_mode !== undefined) {
     body.research_mode = extras.research_mode;
+  }
+  if (extras?.workspace_path) {
+    body.workspace_path = extras.workspace_path;
   }
   const res = await request('/conversations', {
     method: 'POST',

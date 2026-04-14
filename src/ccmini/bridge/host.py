@@ -12,6 +12,7 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from ..agent import Agent, AgentConfig
+from ..commands.types import CommandType
 from ..config import load_config
 from ..messages import (
     CompletionEvent,
@@ -38,11 +39,70 @@ from ..profiles import RuntimeProfile
 from ..prompts import SystemPrompt
 from ..providers import BaseProvider, ProviderConfig
 from ..session.store import SessionMetadata, SessionStore
+from ..skills import load_packaged_skills
 from ..tool import ClientTool, Tool, ToolResult, ToolUseContext, find_tool_by_name
+from ..paths import mini_agent_path
 from .api import BridgeAPI
 from .core import BridgeConfig, BridgeServer
 from .net_utils import build_connect_url
 from .webrtc_host import WebRTCExecutorManager
+
+
+def _compat_skill_overrides_path() -> Path:
+    root = mini_agent_path("frontend_compat")
+    root.mkdir(parents=True, exist_ok=True)
+    return root / "skills_overrides.json"
+
+
+def _read_skill_overrides() -> dict[str, Any]:
+    path = _compat_skill_overrides_path()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+def _compat_skill_file_tree(root: Path) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for child in sorted(root.iterdir(), key=lambda item: (item.is_file(), item.name.lower())):
+        if child.name in {"__pycache__", ".DS_Store"}:
+            continue
+        if child.is_dir():
+            entries.append({
+                "name": child.name,
+                "type": "folder",
+                "children": _compat_skill_file_tree(child),
+            })
+        else:
+            entries.append({"name": child.name, "type": "file"})
+    return entries
+
+
+def _packaged_skill_entries() -> list[dict[str, Any]]:
+    overrides = _read_skill_overrides()
+    entries: list[dict[str, Any]] = []
+    for skill in load_packaged_skills():
+        skill_root = skill.path.parent
+        skill_id = f"example-{skill.name}"
+        entries.append(
+            {
+                "id": skill_id,
+                "name": skill.name,
+                "description": skill.description,
+                "content": skill.content,
+                "enabled": bool(overrides.get(skill_id, {}).get("enabled", True)),
+                "created_at": "",
+                "files": _compat_skill_file_tree(skill_root),
+                "source_dir": skill.name,
+                "is_example": True,
+                "_source": "packaged",
+                "_skill_root": str(skill_root),
+            }
+        )
+    entries.sort(key=lambda item: (item.get("source_dir") != "skill-creator", str(item.get("name", "")).lower()))
+    return entries
 
 
 def _load_default_bridge_config() -> BridgeConfig:
@@ -349,6 +409,73 @@ class RemoteExecutorHost:
             created_at=time.time(),
         )
 
+    def list_compat_skills(self) -> dict[str, Any]:
+        agent = self._agent_factory("__skill-catalog__")
+        examples = _packaged_skill_entries()
+        example_names = {str(item.get("name", "") or "") for item in examples}
+        overrides = _read_skill_overrides()
+        names_seen: set[str] = set()
+        runtime_skills: list[dict[str, Any]] = []
+        for command in agent._command_registry.get_all_commands():
+            if command.type != CommandType.PROMPT:
+                continue
+            if not command.user_invocable:
+                continue
+            if not (command.prompt_text or "").strip():
+                continue
+            if command.name in example_names:
+                continue
+            if command.name in names_seen:
+                continue
+            names_seen.add(command.name)
+            skill_id = f"runtime-skill-{command.name}"
+            runtime_skills.append(
+                {
+                    "id": skill_id,
+                    "name": command.name,
+                    "description": command.description,
+                    "content": command.prompt_text,
+                    "enabled": bool(overrides.get(skill_id, {}).get("enabled", True)),
+                    "created_at": "",
+                    "files": [{"name": "SKILL.md", "type": "file"}],
+                    "source_dir": command.name,
+                    "is_example": False,
+                    "_source": "runtime",
+                    "_command_name": command.name,
+                }
+            )
+        runtime_skills.sort(key=lambda item: str(item.get("name", "")).lower())
+        return {
+            "examples": examples,
+            "my_skills": runtime_skills,
+        }
+
+    def get_compat_skill(self, skill_id: str) -> dict[str, Any] | None:
+        skills = self.list_compat_skills()
+        for section in ("examples", "my_skills"):
+            for skill in skills.get(section, []):
+                if str(skill.get("id", "") or "") == skill_id:
+                    return skill
+        return None
+
+    def get_compat_skill_file(self, skill_id: str, file_path: str) -> str | None:
+        skill = self.get_compat_skill(skill_id)
+        if skill is None:
+            return None
+        if str(skill.get("_source", "")) == "packaged":
+            root = Path(str(skill.get("_skill_root", "") or ""))
+            requested = file_path.strip() or "SKILL.md"
+            target = (root / requested).resolve()
+            try:
+                if not str(target).startswith(str(root.resolve())) or not target.exists() or not target.is_file():
+                    return None
+                return target.read_text(encoding="utf-8")
+            except Exception:
+                return None
+        if file_path.strip() not in {"", "SKILL.md"}:
+            return None
+        return str(skill.get("content", "") or "")
+
     def _save_session_metadata(self, meta: SessionMetadata) -> None:
         meta.session_id = str(meta.session_id or "").strip()
         if not meta.created_at:
@@ -492,6 +619,7 @@ class RemoteExecutorHost:
                     "model": meta.model,
                     "research_mode": bool(meta.research_mode),
                     "project_id": meta.project_id or None,
+                    "workspace_path": meta.cwd or info.cwd or "",
                     "message_count": info.message_count,
                     "preview": info.preview,
                     "_sort_ts": float(meta.updated_at or 0),
@@ -513,6 +641,7 @@ class RemoteExecutorHost:
                     "model": meta.model,
                     "research_mode": bool(meta.research_mode),
                     "project_id": meta.project_id or None,
+                    "workspace_path": meta.cwd or "",
                     "message_count": meta.message_count,
                     "preview": "",
                     "_sort_ts": float(meta.updated_at or time.time()),
@@ -533,13 +662,18 @@ class RemoteExecutorHost:
         title: str = "",
         model: str = "",
         research_mode: bool = False,
+        workspace_path: str = "",
     ) -> dict[str, Any]:
         handle = await self.create_session({"source": "donor-frontend"})
         state = self._sessions.get(handle.session_id)
+        workspace = str(workspace_path or "").strip()
         if state is not None:
             if title:
                 setattr(state.agent, "_session_name", title)
             state.research_mode = bool(research_mode)
+            if workspace:
+                with contextlib.suppress(Exception):
+                    state.agent.working_directory = workspace
             if model:
                 with contextlib.suppress(Exception):
                     state.agent.provider._config.model = model  # type: ignore[attr-defined]
@@ -550,12 +684,15 @@ class RemoteExecutorHost:
         elif state is not None:
             meta.model = str(getattr(state.agent.provider, "model_name", "") or meta.model)
         meta.research_mode = bool(research_mode)
+        if workspace:
+            meta.cwd = workspace
         self._save_session_metadata(meta)
         return {
             "id": handle.session_id,
             "title": meta.title,
             "model": meta.model,
             "research_mode": meta.research_mode,
+            "workspace_path": meta.cwd or "",
             "created_at": self._iso_timestamp(meta.created_at),
             "updated_at": self._iso_timestamp(meta.updated_at),
         }
@@ -575,6 +712,7 @@ class RemoteExecutorHost:
             "model": meta.model,
             "research_mode": bool(meta.research_mode),
             "project_id": meta.project_id or None,
+            "workspace_path": meta.cwd or "",
             "messages": messages,
             "created_at": self._iso_timestamp(meta.created_at),
             "updated_at": self._iso_timestamp(meta.updated_at),
@@ -599,6 +737,12 @@ class RemoteExecutorHost:
             meta.project_id = str(data.get("project_id", "") or "").strip()
             if state is not None:
                 state.project_id = meta.project_id
+        if "workspace_path" in data or "cwd" in data:
+            workspace_path = str(data.get("workspace_path", data.get("cwd", "")) or "").strip()
+            meta.cwd = workspace_path
+            if state is not None and workspace_path:
+                with contextlib.suppress(Exception):
+                    state.agent.working_directory = workspace_path
         if "model" in data:
             model = str(data.get("model", "") or "").strip()
             if model:
@@ -739,9 +883,18 @@ class RemoteExecutorHost:
     def _ensure_session_state(self, session_id: str) -> _ExecutorSessionState:
         state = self._sessions.get(session_id)
         if state is None:
+            meta = self._load_session_metadata(session_id)
             state = _ExecutorSessionState(
                 agent=self._agent_factory(session_id),
             )
+            if meta.cwd:
+                with contextlib.suppress(Exception):
+                    state.agent.working_directory = meta.cwd
+            if meta.title:
+                with contextlib.suppress(Exception):
+                    setattr(state.agent, "_session_name", meta.title)
+            state.research_mode = bool(meta.research_mode)
+            state.project_id = str(meta.project_id or "")
             self._install_remote_permission_runtime(session_id, state)
             async def _forward_runtime_event(event: Any) -> None:
                 await self._publish_stream_event(
@@ -1511,7 +1664,7 @@ def create_remote_executor_host(
     from ..factory import create_agent
 
     def _factory(conversation_id: str) -> Agent:
-        return create_agent(
+        agent = create_agent(
             provider=provider,
             system_prompt=system_prompt,
             profile=profile,
@@ -1520,6 +1673,7 @@ def create_remote_executor_host(
             conversation_id=conversation_id,
             agent_id=f"remote-executor-{conversation_id}",
         )
+        return agent
 
     return RemoteExecutorHost(
         agent_factory=_factory,

@@ -1572,7 +1572,7 @@ class SkillsCommand(SlashCommand):
 
     async def execute(self, args: str, agent: Agent) -> str:
         from ..commands.types import CommandSource, CommandType
-        from ..skills import SkillLoader, discover_skill_dirs_for_path
+        from ..skills import SkillLoader, discover_skill_dirs_for_path, load_packaged_skills
         from ..skills.bundled import get_bundled_skills
 
         parts = args.strip().split(maxsplit=1)
@@ -1580,7 +1580,7 @@ class SkillsCommand(SlashCommand):
 
         skill_dirs = discover_skill_dirs_for_path(os.getcwd())
         loader = SkillLoader(skill_dirs=skill_dirs)
-        local_skills = loader.discover() if skill_dirs else []
+        local_skills = load_packaged_skills() + (loader.discover() if skill_dirs else [])
         bundled = get_bundled_skills()
         all_commands = agent._command_registry.get_all_commands()
 

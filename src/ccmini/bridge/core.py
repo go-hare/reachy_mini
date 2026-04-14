@@ -910,6 +910,7 @@ class BridgeServer:
 
         last_sequence = since
         poll_interval = 0.1
+        emitted_text_delta = False
         try:
             while self._running:
                 events = compat._stream_events_since(session_id, last_sequence)
@@ -918,6 +919,23 @@ class BridgeServer:
                     payload = event.get("payload", {})
                     if seq > last_sequence:
                         last_sequence = seq
+                    if isinstance(payload, dict):
+                        event_type = str(payload.get("event_type", "") or "")
+                        if event_type in {"text", "assistant_delta", "text_delta"}:
+                            if str(payload.get("text", "") or ""):
+                                emitted_text_delta = True
+                        elif event_type == "completion":
+                            completion_text = str(payload.get("text", "") or "")
+                            if completion_text and not emitted_text_delta:
+                                await response.write(
+                                    self._compat_sse_frame(
+                                        {
+                                            "type": "content_block_delta",
+                                            "delta": {"type": "text_delta", "text": completion_text},
+                                        }
+                                    )
+                                )
+                                emitted_text_delta = True
                     for frame_payload in self._compat_stream_payloads(payload if isinstance(payload, dict) else {}):
                         await response.write(self._compat_sse_frame(frame_payload))
 
@@ -1267,7 +1285,14 @@ class BridgeServer:
 
     async def _aiohttp_compat_skills(self, request: Any) -> Any:
         from aiohttp import web
-        return web.json_response({"examples": [], "my_skills": _compat_load_disk_skills() + _compat_load_custom_skills()})
+        compat = self._compat_handler
+        if compat is not None and hasattr(compat, "list_compat_skills"):
+            data = compat.list_compat_skills()
+            examples = list(data.get("examples", [])) if isinstance(data, dict) else []
+            runtime_skills = list(data.get("my_skills", [])) if isinstance(data, dict) else []
+            custom_skills = _compat_load_custom_skills()
+            return web.json_response({"examples": examples, "my_skills": runtime_skills + custom_skills})
+        return web.json_response({"examples": [], "my_skills": _compat_load_custom_skills()})
 
     async def _aiohttp_compat_create_skill(self, request: Any) -> Any:
         from aiohttp import web
@@ -1295,7 +1320,7 @@ class BridgeServer:
         return web.json_response(skill)
 
     def _compat_find_skill(self, skill_id: str) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
-        skills = _compat_load_custom_skills() + _compat_load_disk_skills()
+        skills = _compat_load_custom_skills()
         for skill in skills:
             if str(skill.get("id", "") or "") == skill_id:
                 return skills, skill
@@ -1312,6 +1337,12 @@ class BridgeServer:
         from aiohttp import web
 
         skill_id = str(request.match_info.get("skill_id", "") or "").strip()
+        compat = self._compat_handler
+        if compat is not None and hasattr(compat, "get_compat_skill"):
+            skill = compat.get_compat_skill(skill_id)
+            if skill is None:
+                return web.json_response({"error": "Skill not found"}, status=404)
+            return web.json_response(skill)
         _, skill = self._compat_find_skill(skill_id)
         if skill is None:
             return web.json_response({"error": "Skill not found"}, status=404)
@@ -1321,19 +1352,16 @@ class BridgeServer:
         from aiohttp import web
 
         skill_id = str(request.match_info.get("skill_id", "") or "").strip()
+        file_path = str(request.query.get("path", "") or "SKILL.md").strip() or "SKILL.md"
+        compat = self._compat_handler
+        if compat is not None and hasattr(compat, "get_compat_skill_file"):
+            content = compat.get_compat_skill_file(skill_id, file_path)
+            if content is None:
+                return web.json_response({"error": "Skill file not found"}, status=404)
+            return web.json_response({"content": content})
         _, skill = self._compat_find_skill(skill_id)
         if skill is None:
             return web.json_response({"error": "Skill not found"}, status=404)
-        file_path = str(request.query.get("path", "") or "SKILL.md").strip() or "SKILL.md"
-        if str(skill.get("_source", "")) == "disk":
-            root = Path(str(skill.get("_skill_root", "") or ""))
-            target = (root / file_path).resolve()
-            try:
-                if not str(target).startswith(str(root.resolve())) or not target.exists() or not target.is_file():
-                    return web.json_response({"error": "Skill file not found"}, status=404)
-                return web.json_response({"content": target.read_text(encoding="utf-8")})
-            except Exception:
-                return web.json_response({"error": "Skill file not found"}, status=404)
         return web.json_response({"content": str(skill.get("content", "") or "")})
 
     async def _aiohttp_compat_update_skill(self, request: Any) -> Any:
@@ -1386,8 +1414,11 @@ class BridgeServer:
             _compat_write_json(path, raw_skills)
             return web.json_response(skill)
 
-        _, disk_skill = self._compat_find_skill(skill_id)
-        if disk_skill is None:
+        compat = self._compat_handler
+        compat_skill = None
+        if compat is not None and hasattr(compat, "get_compat_skill"):
+            compat_skill = compat.get_compat_skill(skill_id)
+        if compat_skill is None:
             return web.json_response({"error": "Skill not found"}, status=404)
         overrides = _compat_read_skill_overrides()
         current = overrides.get(skill_id, {})
@@ -1396,8 +1427,8 @@ class BridgeServer:
         current["enabled"] = enabled
         overrides[skill_id] = current
         _compat_write_skill_overrides(overrides)
-        disk_skill["enabled"] = enabled
-        return web.json_response(disk_skill)
+        compat_skill["enabled"] = enabled
+        return web.json_response(compat_skill)
 
     async def _aiohttp_compat_github_status(self, request: Any) -> Any:
         from aiohttp import web
@@ -1461,6 +1492,7 @@ class BridgeServer:
             title=str(payload.get("title", "") or ""),
             model=str(payload.get("model", "") or ""),
             research_mode=bool(payload.get("research_mode", False)),
+            workspace_path=str(payload.get("workspace_path", "") or ""),
         )
         return web.json_response(data)
 

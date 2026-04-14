@@ -47,7 +47,7 @@ from .attachments import (
     ensure_companion_intro_source,
 )
 from .delegation.background import BackgroundAgentRunner, BackgroundResult
-from .commands import SlashCommandRegistry
+from .commands import SlashCommandRegistry, command_from_skill
 from .commands.builtin import register_builtin_commands, register_bundled_skills_as_commands
 from .embedded import HostEvent, HostToolResult
 from .kairos import (
@@ -101,6 +101,7 @@ from .services import (
 )
 from .services.stats import StatsTracker
 from .services.prevent_sleep import start_prevent_sleep, stop_prevent_sleep
+from .skills import load_packaged_skills
 from .prompts import SystemPrompt
 from .providers import BaseProvider, ProviderConfig, create_provider
 from .engine.compact import CompactTracker, CompactConfig
@@ -304,6 +305,9 @@ class Agent:
             self._register_buddy_command()
         if self._config.enable_bundled_skills:
             register_bundled_skills_as_commands(self._command_registry)
+        with contextlib.suppress(Exception):
+            for skill in load_packaged_skills():
+                self._command_registry.register_command(command_from_skill(skill))
         self._plugin_registry: PluginRegistry | None = None
         self._plugin_tools: list[Tool] = []
         self._install_plugin_runtime()

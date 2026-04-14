@@ -504,6 +504,8 @@ interface MainContentProps {
   onOpenArtifacts?: () => void;
   onTitleChange?: (title: string) => void;
   onChatModeChange?: (isChat: boolean) => void;
+  currentMode?: 'chat' | 'cowork' | 'code';
+  coworkWorkspacePath?: string;
 }
 
 // 草稿存储：在切换对话、打开设置页面时保留输入内容和附件
@@ -1035,7 +1037,7 @@ const MessageList = React.memo<MessageListProps>(({
   );
 });
 
-const MainContent = ({ onNewChat, resetKey, tunerConfig, onOpenDocument, onArtifactsUpdate, onOpenArtifacts, onTitleChange, onChatModeChange }: MainContentProps) => {
+const MainContent = ({ onNewChat, resetKey, tunerConfig, onOpenDocument, onArtifactsUpdate, onOpenArtifacts, onTitleChange, onChatModeChange, currentMode = 'chat', coworkWorkspacePath = '' }: MainContentProps) => {
   const { id } = useParams(); // Get conversation ID from URL
   const location = useLocation();
   const [localId, setLocalId] = useState<string | null>(null);
@@ -1045,6 +1047,9 @@ const MainContent = ({ onNewChat, resetKey, tunerConfig, onOpenDocument, onArtif
   const activeId = id || localId || null;
 
   const navigate = useNavigate();
+  const buildConversationPath = useCallback((conversationId: string) => {
+    return currentMode === 'cowork' ? `/cowork/${conversationId}` : `/chat/${conversationId}`;
+  }, [currentMode]);
   const [inputText, setInputText] = useState("");
   const [messages, setMessages] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
@@ -2279,7 +2284,14 @@ const MainContent = ({ onNewChat, resetKey, tunerConfig, onOpenDocument, onArtif
         }
         // 不传临时标题，让后端生成
         console.log("Creating conversation with model:", modelForCreate);
-        const newConv = await createConversation(undefined, modelForCreate, { research_mode: researchMode });
+        const workspacePath = currentMode === 'cowork' ? coworkWorkspacePath.trim() : '';
+        if (currentMode === 'cowork' && !workspacePath) {
+          throw new Error('Cowork 模式下请先选择工作目录');
+        }
+        const newConv = await createConversation(undefined, modelForCreate, {
+          research_mode: researchMode,
+          workspace_path: workspacePath || undefined,
+        });
         console.log("Created conversation response:", newConv);
 
         if (!newConv || !newConv.id) {
@@ -2302,7 +2314,7 @@ const MainContent = ({ onNewChat, resetKey, tunerConfig, onOpenDocument, onArtif
 
         // Use React Router navigate so useParams stays in sync with the URL
         // isCreatingRef prevents the activeId effect from reloading during streaming
-        navigate(`/chat/${conversationId}`, { replace: true });
+        navigate(buildConversationPath(conversationId), { replace: true });
         if (newConv.model) {
           setCurrentModelString(newConv.model);
         }
@@ -3274,7 +3286,14 @@ const MainContent = ({ onNewChat, resetKey, tunerConfig, onOpenDocument, onArtif
       const modelForCreate = isModelSelectable(currentModelString)
         ? currentModelString
         : resolveModelForNewChat(currentModelString);
-      const newConv = await createConversation(undefined, modelForCreate, { research_mode: researchMode });
+      const workspacePath = currentMode === 'cowork' ? coworkWorkspacePath.trim() : '';
+      if (currentMode === 'cowork' && !workspacePath) {
+        throw new Error('Cowork 模式下请先选择工作目录');
+      }
+      const newConv = await createConversation(undefined, modelForCreate, {
+        research_mode: researchMode,
+        workspace_path: workspacePath || undefined,
+      });
       if (!newConv || !newConv.id) throw new Error('Failed to create conversation');
       convId = newConv.id;
       createdNewConv = true;
@@ -3309,7 +3328,7 @@ const MainContent = ({ onNewChat, resetKey, tunerConfig, onOpenDocument, onArtif
       const text = inputTextRef.current || '';
       const height = textareaHeightRef.current || inputBarBaseHeight;
       draftsStore.set(convId, { text, files: [githubCard], height });
-      navigate(`/chat/${convId}`, { replace: true });
+      navigate(buildConversationPath(convId), { replace: true });
     } else {
       setPendingFiles(prev => [...prev, githubCard]);
     }
@@ -3459,7 +3478,6 @@ const MainContent = ({ onNewChat, resetKey, tunerConfig, onOpenDocument, onArtif
             paddingTop: '40vh'
           }}
         >
-
           <div
             className="flex items-center gap-4"
             style={{ marginBottom: `${tunerConfig?.welcomeMb || 40}px` }}

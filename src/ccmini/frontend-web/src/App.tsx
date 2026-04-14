@@ -34,6 +34,47 @@ const Tooltip = ({ children, text, shortcut }: { children: React.ReactNode; text
   );
 };
 
+type TopModeKey = 'chat' | 'cowork' | 'code';
+
+const TOP_MODE_CONFIG: Array<{ key: TopModeKey; label: string; shortcut: string }> = [
+  { key: 'chat', label: 'Chat', shortcut: 'Ctrl+1' },
+  { key: 'cowork', label: 'Cowork', shortcut: 'Ctrl+2' },
+  { key: 'code', label: 'Code', shortcut: 'Ctrl+3' },
+];
+
+const COWORK_WORKSPACES_STORAGE_KEY = 'cowork_workspace_paths';
+const ACTIVE_COWORK_WORKSPACE_STORAGE_KEY = 'active_cowork_workspace_path';
+
+function readCoworkWorkspacePaths(): string[] {
+  try {
+    const raw = localStorage.getItem(COWORK_WORKSPACES_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((item) => String(item || '').trim())
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function writeCoworkWorkspacePaths(paths: string[]) {
+  localStorage.setItem(COWORK_WORKSPACES_STORAGE_KEY, JSON.stringify(Array.from(new Set(paths.filter(Boolean)))));
+}
+
+function readActiveCoworkWorkspacePath(): string {
+  return String(localStorage.getItem(ACTIVE_COWORK_WORKSPACE_STORAGE_KEY) || '').trim();
+}
+
+function writeActiveCoworkWorkspacePath(path: string) {
+  if (path) {
+    localStorage.setItem(ACTIVE_COWORK_WORKSPACE_STORAGE_KEY, path);
+  } else {
+    localStorage.removeItem(ACTIVE_COWORK_WORKSPACE_STORAGE_KEY);
+  }
+}
+
 const ChatHeader = ({
   title,
   showArtifacts,
@@ -235,6 +276,7 @@ const ChatHeader = ({
 };
 
 const Layout = () => {
+  const { id: routeConversationId } = useParams();
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [newChatKey, setNewChatKey] = useState(0);
@@ -300,8 +342,87 @@ const Layout = () => {
     }
   }, []);
 
+  const [coworkWorkspacePaths, setCoworkWorkspacePaths] = useState<string[]>(() => readCoworkWorkspacePaths());
+  const [activeCoworkWorkspacePath, setActiveCoworkWorkspacePath] = useState<string>(() => readActiveCoworkWorkspacePath());
+
   const location = useLocation();
   const navigate = useNavigate();
+
+  const getActiveTopMode = useCallback((pathname: string): TopModeKey => {
+    if (pathname === '/cowork' || pathname.startsWith('/cowork/')) {
+      return 'cowork';
+    }
+    return 'chat';
+  }, []);
+
+  const activeTopMode = getActiveTopMode(location.pathname);
+
+  useEffect(() => {
+    writeCoworkWorkspacePaths(coworkWorkspacePaths);
+  }, [coworkWorkspacePaths]);
+
+  useEffect(() => {
+    writeActiveCoworkWorkspacePath(activeCoworkWorkspacePath);
+  }, [activeCoworkWorkspacePath]);
+
+  useEffect(() => {
+    if (activeCoworkWorkspacePath) {
+      return;
+    }
+    if (coworkWorkspacePaths.length > 0) {
+      setActiveCoworkWorkspacePath(coworkWorkspacePaths[0]);
+    }
+  }, [activeCoworkWorkspacePath, coworkWorkspacePaths]);
+
+  const rememberCoworkWorkspace = useCallback((path: string) => {
+    const normalized = String(path || '').trim();
+    if (!normalized) return;
+    setCoworkWorkspacePaths((prev) => {
+      const next = prev.filter((item) => item !== normalized);
+      return [normalized, ...next];
+    });
+    setActiveCoworkWorkspacePath(normalized);
+  }, []);
+
+  const promptForCoworkWorkspace = useCallback(async () => {
+    const api = (window as any).electronAPI;
+    if (!api?.selectDirectory) {
+      return '';
+    }
+    const dir = String((await api.selectDirectory()) || '').trim();
+    if (!dir) return '';
+    rememberCoworkWorkspace(dir);
+    return dir;
+  }, [rememberCoworkWorkspace]);
+
+  const handleTopModeChange = useCallback(async (mode: TopModeKey) => {
+    if (mode === 'code') {
+      return;
+    }
+    if (mode === 'cowork') {
+      let workspacePath = activeCoworkWorkspacePath;
+      if (!workspacePath) {
+        workspacePath = await promptForCoworkWorkspace();
+        if (!workspacePath) return;
+      }
+      if (routeConversationId) {
+        try {
+          await updateConversation(routeConversationId, { workspace_path: workspacePath });
+        } catch (err) {
+          console.error('Failed to attach conversation to cowork workspace:', err);
+        }
+        navigate(`/cowork/${routeConversationId}`);
+      } else if (location.pathname !== '/cowork') {
+        navigate('/cowork');
+      }
+      return;
+    }
+    if (routeConversationId) {
+      navigate(`/chat/${routeConversationId}`);
+    } else if (location.pathname !== '/') {
+      navigate('/');
+    }
+  }, [activeCoworkWorkspacePath, location.pathname, navigate, promptForCoworkWorkspace, routeConversationId]);
 
   // Navigation history for back/forward buttons
   const [navHistory, setNavHistory] = useState<string[]>([location.pathname + location.search + location.hash]);
@@ -350,6 +471,34 @@ const Layout = () => {
     setDocumentPanelDoc(null);
     setShowArtifacts(false);
   }, [location.pathname]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (!event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) {
+        return;
+      }
+      if (event.target instanceof HTMLElement) {
+        const tag = event.target.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || event.target.isContentEditable) {
+          return;
+        }
+      }
+
+      if (event.key === '1') {
+        event.preventDefault();
+        void handleTopModeChange('chat');
+      } else if (event.key === '2') {
+        event.preventDefault();
+        void handleTopModeChange('cowork');
+      } else if (event.key === '3') {
+        event.preventDefault();
+        void handleTopModeChange('code');
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [handleTopModeChange]);
 
   // Collapse sidebar on Customize page (Removed per user request)
   useEffect(() => {
@@ -544,25 +693,29 @@ const Layout = () => {
             className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center rounded-xl p-0.5"
             style={{ pointerEvents: 'auto', WebkitAppRegion: 'no-drag', backgroundColor: 'var(--bg-mode-tabs)' } as React.CSSProperties}
           >
-            <Tooltip text="Chat" shortcut="Ctrl+1">
-              <button className="px-3.5 py-1 text-[13px] font-medium rounded-[10px] text-claude-text shadow-sm transition-colors" style={{ backgroundColor: 'var(--bg-mode-tab-active)', fontFamily: 'Inter, system-ui, -apple-system, sans-serif', letterSpacing: '0.01em' }}>
-                Chat
-              </button>
-            </Tooltip>
-            <Tooltip text="Cowork" shortcut="Ctrl+2">
-              <button className="px-3.5 py-1 text-[13px] font-medium rounded-[10px] text-claude-textSecondary hover:text-claude-text transition-colors" style={{ fontFamily: 'Inter, system-ui, -apple-system, sans-serif', letterSpacing: '0.01em' }}>
-                Cowork
-              </button>
-            </Tooltip>
-            <Tooltip text="Code" shortcut="Ctrl+3">
-              <button className="px-3.5 py-1 text-[13px] font-medium rounded-[10px] text-claude-textSecondary hover:text-claude-text transition-colors" style={{ fontFamily: 'Inter, system-ui, -apple-system, sans-serif', letterSpacing: '0.01em' }}>
-                Code
-              </button>
-            </Tooltip>
+            {TOP_MODE_CONFIG.map((item) => {
+              const isActive = activeTopMode === item.key;
+              return (
+                <Tooltip key={item.key} text={item.label} shortcut={item.shortcut}>
+                  <button
+                    onClick={() => { void handleTopModeChange(item.key); }}
+                    className={`px-3.5 py-1 text-[13px] font-medium rounded-[10px] transition-colors ${isActive ? 'text-claude-text shadow-sm' : 'text-claude-textSecondary hover:text-claude-text'}`}
+                    style={{
+                      backgroundColor: isActive ? 'var(--bg-mode-tab-active)' : 'transparent',
+                      fontFamily: 'Inter, system-ui, -apple-system, sans-serif',
+                      letterSpacing: '0.01em'
+                    }}
+                  >
+                    {item.label}
+                  </button>
+                </Tooltip>
+              );
+            })}
           </div>
         </div>
 
         <Sidebar
+          mode={activeTopMode}
           isCollapsed={isSidebarCollapsed}
           toggleSidebar={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
           refreshTrigger={refreshTrigger}
@@ -570,6 +723,10 @@ const Layout = () => {
           onOpenSettings={() => { setShowSettings(true); }}
           onOpenUpgrade={() => {}}
           onCloseOverlays={() => { setShowSettings(false); }}
+          coworkWorkspacePaths={coworkWorkspacePaths}
+          activeCoworkWorkspacePath={activeCoworkWorkspacePath}
+          onCoworkSelectWorkspace={rememberCoworkWorkspace}
+          onCoworkAddWorkspace={() => { void promptForCoworkWorkspace(); }}
           tunerConfig={tunerConfig}
           setTunerConfig={setTunerConfig}
         />
@@ -593,7 +750,7 @@ const Layout = () => {
             {/* Main Content Area - takes remaining width after panel */}
             <div className="flex-1 flex flex-col h-full min-w-0">
               {/* Header - Only render here if NOT in Artifacts-only mode */}
-              {isChatMode && (!showArtifacts || documentPanelDoc) && !showSettings && !showUpgrade && location.pathname !== '/chats' && location.pathname !== '/customize' && location.pathname !== '/projects' && location.pathname !== '/artifacts' && (
+              {isChatMode && (!showArtifacts || documentPanelDoc) && !showSettings && !showUpgrade && location.pathname !== '/chats' && location.pathname !== '/customize' && location.pathname !== '/projects' && location.pathname !== '/artifacts' && location.pathname !== '/cowork' && (
                 <ChatHeader
                   title={currentChatTitle}
                   showArtifacts={showArtifacts}
@@ -629,6 +786,8 @@ const Layout = () => {
                 }} />
               ) : (
                 <MainContent
+                  currentMode={activeTopMode}
+                  coworkWorkspacePath={activeCoworkWorkspacePath}
                   onNewChat={refreshSidebar}
                   resetKey={newChatKey}
                   tunerConfig={tunerConfig}
@@ -689,6 +848,8 @@ const App = () => {
         <Route path="/projects" element={<Layout />} />
         <Route path="/artifacts" element={<Layout />} />
         <Route path="/chat/:id" element={<Layout />} />
+        <Route path="/cowork" element={<Layout />} />
+        <Route path="/cowork/:id" element={<Layout />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </HashRouter>
