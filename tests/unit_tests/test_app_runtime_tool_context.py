@@ -23,8 +23,7 @@ def _write_profile(profile_root: Path, *, config_jsonl: str | None = None) -> No
         or (
             '{"kind":"front","mode":"text","style":"friendly_concise","history_limit":4}\n'
             '{"kind":"vision","no_camera":false,"head_tracker":"","local_vision":false}\n'
-            '{"kind":"front_model","provider":"mock","model":"reachy_mini_front_mock","temperature":0.4}\n'
-            '{"kind":"kernel_model","provider":"mock","model":"reachy_mini_kernel_mock","temperature":0.2}\n'
+            '{"kind":"brain_model","provider":"mock","model":"reachy_mini_brain_mock","temperature":0.2}\n'
         ),
     }.items():
         (profile_root / filename).write_text(content, encoding="utf-8")
@@ -396,8 +395,7 @@ def test_runtime_microphone_bridge_blocks_input_during_reply_audio_cooldown(
         config_jsonl=(
             '{"kind":"front","mode":"text","style":"friendly_concise","history_limit":4}\n'
             '{"kind":"speech_input","enabled":true,"provider":"funasr","base_url":"ws://127.0.0.1:10096","model":"2pass","playback_block_cooldown_ms":900}\n'
-            '{"kind":"front_model","provider":"mock","model":"reachy_mini_front_mock","temperature":0.4}\n'
-            '{"kind":"kernel_model","provider":"mock","model":"reachy_mini_kernel_mock","temperature":0.2}\n'
+            '{"kind":"brain_model","provider":"mock","model":"reachy_mini_brain_mock","temperature":0.2}\n'
         ),
     )
 
@@ -411,7 +409,7 @@ def test_runtime_microphone_bridge_blocks_input_during_reply_audio_cooldown(
             language="zh",
             playback_block_cooldown_ms=900,
         ),
-        front_model=SimpleNamespace(api_key="", base_url=""),
+        brain_model=SimpleNamespace(api_key="", base_url=""),
     )
 
     class FakeBridge:
@@ -478,8 +476,7 @@ def test_build_runtime_tool_context_builds_reply_audio_service_when_enabled(
         config_jsonl=(
             '{"kind":"front","mode":"text","style":"friendly_concise","history_limit":4}\n'
             '{"kind":"vision","no_camera":false,"head_tracker":"","local_vision":false}\n'
-            '{"kind":"front_model","provider":"mock","model":"reachy_mini_front_mock","temperature":0.4,"api_key":"front-secret"}\n'
-            '{"kind":"kernel_model","provider":"mock","model":"reachy_mini_kernel_mock","temperature":0.2}\n'
+            '{"kind":"brain_model","provider":"mock","model":"reachy_mini_brain_mock","temperature":0.2,"api_key":"brain-secret"}\n'
             '{"kind":"speech","enabled":true,"provider":"openai","model":"gpt-4o-mini-tts","voice":"alloy"}\n'
         ),
     )
@@ -505,7 +502,7 @@ def test_build_runtime_tool_context_builds_reply_audio_service_when_enabled(
 
     assert context is not None
     assert context.reply_audio_service is sentinel_service
-    assert builder.call_args.kwargs["fallback_api_key"] == "front-secret"
+    assert builder.call_args.kwargs["fallback_api_key"] == "brain-secret"
 
 
 def test_build_runtime_tool_context_builds_yolo_tracker_and_local_vision(

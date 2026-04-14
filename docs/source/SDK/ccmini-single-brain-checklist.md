@@ -1,6 +1,6 @@
-# ccmini 单脑架构实施清单
+# ccmini 单脑架构落地核对清单
 
-本文是 [ccmini 单脑架构](ccmini-single-brain-design.md) 的实施清单版。
+本文是 [ccmini 单脑架构](ccmini-single-brain-design.md) 的落地核对版。
 
 `RuntimeScheduler` 的具体 turn / run / 相位流转草图，见：
 
@@ -14,62 +14,64 @@
 
 - [RuntimeScheduler 单脑状态机草图](ccmini-single-brain-runtime-state-machine.md)
 
-目标不是一次性重写全部运行时，而是按阶段把当前双脑 runtime 平滑切到 `ccmini` 单脑，同时保持外部接口不变。
+这份文档保留为落地核对清单。当前 resident runtime 已经切到 `ccmini` 单脑，下面这些条目主要用于确认哪些目标已经达成，以及后续还有哪些增强项可继续做。
 
 ## 0. 总体原则
 
-- [ ] 外部接口不变
-- [ ] 浏览器 WebSocket 协议不变
-- [ ] app project 结构不变
-- [ ] 第一阶段不改前端页面
-- [ ] 第一阶段不物理删除 `front/` 和 `core/`
-- [ ] 只替换内部推理主链
-- [ ] `ccmini.Agent` 成为唯一认知层
-- [ ] `coordinator` 作为 `ccmini.Agent` 的内部模式保留，不视为第二颗脑
-- [ ] Reachy Mini 宿主继续负责执行、实时控制、表情、语音、安全
+- [x] 以单脑主链为中心直接切换，不以兼容旧协议为前提
+- [x] app project 结构尽量保持稳定，但允许同步调整宿主接口和前端页面
+- [x] 浏览器 WebSocket 协议允许破坏式调整
+- [x] 直接停用并删除 `front/` 和旧 `core` 脑层热路径
+- [x] 同步替换内部推理主链和浏览器事件模型
+- [x] `ccmini.Agent` 成为唯一认知层
+- [x] `coordinator` 作为 `ccmini.Agent` 的内部模式保留，不视为第二颗脑
+- [x] “单脑”明确定义为单一认知实现，而不是全局单前台 turn
+- [x] 前台继续按 `thread_id` 分 lane
+- [x] 后台任务 / worker / Kairos / memory 持续常驻，不因某个前台线程切换而停止
+- [x] Reachy Mini 宿主继续负责执行、实时控制、表情、语音、安全
 
-## 1. 架构冻结清单
+## 1. 架构冻结结果
 
-先把方向固定，避免一边迁移一边继续加深旧架构。
+这部分对应迁移期冻结项，当前都已收口完成。
 
-- [ ] 明确停止给 `FrontService` 增加新推理职责
-- [ ] 明确停止给 `BrainKernel` 增加新推理职责
-- [ ] 明确不再扩展 `front_model` 的新行为
-- [ ] 明确不再扩展 `BrainEvent / BrainOutput` 新协议面
-- [ ] 明确未来统一以 `ccmini` 宿主接口为准
-- [ ] 明确未来只保留一个 brain
+- [x] 明确停止给 `FrontService` 增加新推理职责
+- [x] 明确停止给 `BrainKernel` 增加新推理职责
+- [x] 明确不再扩展 `front_model` 的新行为
+- [x] 明确不再扩展 `BrainEvent / BrainOutput` 新协议面
+- [x] 明确统一以 `ccmini` 宿主接口为准
+- [x] 明确只保留一个 brain
 
-## 2. 外部兼容目标清单
+## 2. 直接切换目标结果
 
-第一阶段必须保持这些对外行为不变。
+这部分目标已经体现在当前实现里。
 
-- [ ] `ReachyMiniApp` 外部行为不变
-- [ ] `GET /` 保持不变
-- [ ] `WS /ws/agent` 保持不变
-- [ ] `ChatResponse.surface_state / front_decision / front_tool_results` 保持兼容
-- [ ] 浏览器继续发送 `user_text`
-- [ ] 浏览器继续支持 `user_speech_started / user_speech_stopped`
-- [ ] runtime 继续输出 `speech_preview`
-- [ ] runtime 继续输出 `front_hint_*`
-- [ ] runtime 继续输出 `surface_state`
-- [ ] runtime 继续输出 `front_final_*`
-- [ ] runtime 继续输出 `turn_error`
-- [ ] app profile 目录继续使用 `AGENTS.md / USER.md / SOUL.md / TOOLS.md / FRONT.md / config.jsonl`
+- [x] `RuntimeScheduler` 对浏览器直接输出单轨事件协议
+- [x] 浏览器主回复流改为 `text_delta`
+- [x] 单轮收口事件改为 `turn_done`
+- [x] 错误事件统一为 `turn_error`
+- [x] 宿主生命周期状态继续通过 `surface_state` 输出
+- [x] 宿主 ASR 预览继续通过 `speech_preview` 输出
+- [x] `ThinkingEvent` / `ToolProgressEvent` 可直接暴露为 `thinking` / `tool_progress`
+- [x] `front_hint_*` / `front_final_*` 退出协议面
+- [x] `ChatResponse` 改成单脑语义，不再保留 `front_decision` 这类双脑遗留字段
+- [x] app profile 目录继续使用 `AGENTS.md / USER.md / SOUL.md / TOOLS.md / FRONT.md / config.jsonl`
 
-## 3. 第一阶段核心改造清单
+## 3. 核心改造结果
 
-这一阶段的目标是：只换内部大脑，不动外部壳。
+这一部分记录已经完成的主链改造。
 
 ### 3.1 在 RuntimeScheduler 中引入 ccmini
 
-- [ ] 在 `RuntimeScheduler` 内新增 resident `ccmini.Agent` 持有逻辑
-- [ ] 使用 `create_robot_agent(...)` 或 `create_agent(..., profile="robot_brain")`
-- [ ] 显式关闭默认 coding-style 工具装配
-- [ ] 宿主自行传入机器人工具集
-- [ ] 宿主在 runtime 启动时调用 `await agent.start()`
-- [ ] 宿主在 runtime 停止时调用 `await agent.stop()`
+- [x] 在 `RuntimeScheduler` 内新增 resident `ccmini` 单脑运行时接入逻辑
+- [x] 使用 `create_robot_agent(...)` 或 `create_agent(..., profile="robot_brain")`
+- [x] 显式关闭默认 coding-style 工具装配
+- [x] 宿主自行传入机器人工具集
+- [x] 宿主在 runtime 启动时调用 `await agent.start()`
+- [x] 宿主在 runtime 停止时调用 `await agent.stop()`
 - [ ] 宿主支持按 profile / runtime 配置切换 `agent.set_mode("normal" | "coordinator")`
 - [ ] 若启用 `coordinator`，worker delegation / background task 仍视为主脑内部能力，不引入第二脑链路
+- [x] 第一阶段不引入“全局唯一活跃前台 turn”语义
+- [x] 第一阶段保持与当前 `front` 一样的 per-thread 前台 lane 语义
 
 ### 3.2 替换旧输入主链
 
@@ -84,11 +86,11 @@
 
 清单：
 
-- [ ] 用户文本输入改走 `submit_user_input(...)`
-- [ ] 语音转写后的最终文本改走 `submit_user_input(...)`
-- [ ] 保留 `thread_id / session_id / user_id`
-- [ ] 将旧 `turn_id` 相关逻辑改为使用 `ccmini` 返回的 `turn_id`
-- [ ] 把当前 metadata 迁移到 `submit_user_input(..., metadata=...)`
+- [x] 用户文本输入改走 `submit_user_input(...)`
+- [x] 语音转写后的最终文本改走 `submit_user_input(...)`
+- [x] 保留 `thread_id / session_id / user_id`
+- [x] 将旧 `turn_id` 相关逻辑改为使用 `ccmini` 返回的 `turn_id`
+- [x] 把当前 metadata 迁移到 `submit_user_input(..., metadata=...)`
 
 ### 3.3 替换旧输出主链
 
@@ -109,14 +111,14 @@
 
 清单：
 
-- [ ] 在宿主中注册 `agent.on_event(...)`
-- [ ] 处理 `TextEvent`
-- [ ] 处理 `CompletionEvent`
-- [ ] 处理 `ErrorEvent`
-- [ ] 处理 `ThinkingEvent`
-- [ ] 处理 `ToolProgressEvent`
-- [ ] 处理 `ToolUseSummaryEvent`
-- [ ] 处理 `PendingToolCallEvent`
+- [x] 在宿主中注册 `agent.on_event(...)`
+- [x] 处理 `TextEvent`
+- [x] 处理 `CompletionEvent`
+- [x] 处理 `ErrorEvent`
+- [x] 处理 `ThinkingEvent`
+- [x] 处理 `ToolProgressEvent`
+- [x] 处理 `ToolUseSummaryEvent`
+- [x] 处理 `PendingToolCallEvent`
 
 ### 3.4 宿主最小状态模型
 
@@ -127,35 +129,36 @@
 - [ ] 维护每个 `thread_id` 的 `audio_state` 与播放/收音互斥状态
 - [ ] 维护动作、跟踪、TTS 等可中断执行句柄
 - [ ] 同一线程收到新的用户输入后，将旧 `turn_id` 的前台输出标记为 stale
+- [ ] 某个线程的新输入只会让该线程自己的旧 `turn_id` stale，其他线程前台 lane 不受影响
 - [ ] stale 事件只允许用于本地清理，不再继续推送浏览器
 - [ ] `submit_tool_results(run_id, ...)` 必须走保存下来的映射恢复，不能猜当前线程
 - [ ] 不重新引入任务板、双轨 memory 或 sleep 子系统
 - [ ] 若当前 `ccmini` continuation 仍是单 pending-client-run 槽位，宿主第一阶段按现状适配，不假设已支持多 run 并发恢复
+- [ ] 后台任务、worker、Kairos、memory 等常驻能力不因某个前台线程 stale 或切换而停止
 
 ## 4. 事件翻译层清单
 
-第一阶段不改浏览器协议，因此需要一层翻译。
+第一阶段直接改浏览器协议，因此重点是定义单脑事件契约，而不是翻译旧协议。
 
-### 4.1 ccmini -> 旧浏览器协议
+### 4.1 ccmini -> 浏览器单轨协议
 
-- [ ] 宿主继续输出 `speech_preview`，服务实时转写预览
-- [ ] `TextEvent` 默认翻译为 `front_final_chunk`，作为实际 assistant 流式输出
-- [ ] `CompletionEvent` 翻译为 `front_final_done`，并携带整轮最终全文
-- [ ] `front_hint_chunk / front_hint_done` 只用于宿主本地即时确认、fast mode 或后续 speculation；Phase 1 先兼容保留
-- [ ] `ThinkingEvent` 默认不直接暴露给浏览器，只驱动 `surface_state` 或宿主本地中间态
-- [ ] `ToolProgressEvent` 默认不新增公开协议；如确有需要，只翻成短暂 hint 或 system text
-- [ ] `PendingToolCallEvent` 不直接透传浏览器
-- [ ] `ErrorEvent` 翻译为 `turn_error`
-- [ ] 宿主状态变更继续翻译为 `surface_state`
-- [ ] 如果已经发过 `front_final_chunk`，则 `front_final_done` 以整轮最终全文收口，前端以 done 为准
+- [x] 宿主继续输出 `speech_preview`，服务实时转写预览
+- [x] `TextEvent` 直接输出为 `text_delta`
+- [x] `CompletionEvent` 直接输出为 `turn_done`，并携带整轮最终全文
+- [x] `ThinkingEvent` 按需直接输出为 `thinking`
+- [x] `ToolProgressEvent` 按需直接输出为 `tool_progress`
+- [x] `PendingToolCallEvent` 不直接透传浏览器
+- [x] `ErrorEvent` 输出为 `turn_error`
+- [x] 宿主状态变更输出为 `surface_state`
+- [x] 如果已经发过 `text_delta`，则 `turn_done` 以整轮最终全文收口，前端以 done 为准
 
-### 4.2 兼容策略
+### 4.2 协议约束
 
-- [ ] 第一阶段不要求浏览器知道 `ccmini` 事件名
-- [ ] 所有 `ccmini` 内部事件先在宿主侧消化
-- [ ] 浏览器仍只看到当前已有协议
-- [ ] 浏览器不能把 `front_hint_*` 当成真实主回复流
-- [ ] 不把真实回复流伪装成 `front_hint_*`，避免重新引入双轨语义歧义
+- [x] 浏览器直接理解单脑事件名
+- [x] 所有 `ccmini` 内部事件先在宿主侧消化
+- [x] `text_delta` 是唯一真实主回复流
+- [x] 不再保留 `front_hint_*` / `front_final_*` 双轨语义
+- [x] `thinking` / `tool_progress` 不能承载真实 assistant 文本流
 
 ## 5. 工具接入清单
 
@@ -279,18 +282,18 @@
 
 只保留一个大脑后，prompt 资产要统一进入 `ccmini`。
 
-- [ ] `AGENTS.md` 继续作为硬规则输入
-- [ ] `USER.md` 继续作为长期用户上下文
-- [ ] `SOUL.md` 继续作为人格基线
-- [ ] `TOOLS.md` 继续作为工具边界说明
-- [ ] `FRONT.md` 继续作为用户可见风格约束
-- [ ] 宿主额外运行时规则通过 `append system prompt` 或 context 注入
+- [x] `AGENTS.md` 继续作为硬规则输入
+- [x] `USER.md` 继续作为长期用户上下文
+- [x] `SOUL.md` 继续作为人格基线
+- [x] `TOOLS.md` 继续作为工具边界说明
+- [x] `FRONT.md` 继续作为用户可见风格约束
+- [x] 宿主额外运行时规则通过 `append system prompt` 或 context 注入
 - [ ] 快思考 / 慢思考 / 睡眠记忆 / companion / Kairos / autonomy 等能力层不因迁移而被架构性丢失
 
 明确：
 
-- [ ] `FRONT.md` 保留
-- [ ] 但 `FRONT.md` 不再对应一个独立 front-model
+- [x] `FRONT.md` 保留
+- [x] 但 `FRONT.md` 不再对应一个独立 front-model
 
 ## 9. 配置收口清单
 
@@ -301,46 +304,45 @@
 
 迁移目标：
 
-- [ ] 第一阶段先兼容读取旧配置
-- [ ] 内部逐步改成只真正使用一套 `ccmini` provider/model 配置
-- [ ] 后续新增统一 `brain_model` 或等价配置
-- [ ] 最终废弃 `front_model`
-- [ ] 最终废弃 `kernel_model`
+- [x] 第一阶段直接改成只真正使用一套 `ccmini` provider/model 配置
+- [x] 新增统一 `brain_model` 或等价配置
+- [x] 删除 `front_model`
+- [x] 删除 `kernel_model`
 
 ## 10. front 停用清单
 
 这里不是第一阶段就删，而是先停用主链职责。
 
-- [ ] `FrontService.handle_user_turn(...)` 不再走主链
-- [ ] `FrontService.present(...)` 不再走主链
-- [ ] `FrontService.reply(...)` 不再走主链
-- [ ] `FrontDecision / FrontUserTurnResult` 不再作为内部主协议
-- [ ] `front_model` 不再决定热路径输出
+- [x] `FrontService.handle_user_turn(...)` 不再走主链
+- [x] `FrontService.present(...)` 不再走主链
+- [x] `FrontService.reply(...)` 不再走主链
+- [x] `FrontDecision / FrontUserTurnResult` 不再作为内部主协议
+- [x] `front_model` 不再决定热路径输出
 
 保留：
 
-- [ ] `FRONT.md`
-- [ ] 必要的宿主表现逻辑
+- [x] `FRONT.md`
+- [x] 必要的宿主表现逻辑
 - [ ] 若有可复用的非模型辅助函数，可后续下沉或保留
 
 ## 11. core 停用清单
 
 同样先停用热路径，再决定是否物理删除。
 
-- [ ] `BrainKernel` 不再作为 resident brain
-- [ ] `publish_user_input(...)` 不再作为主入口
-- [ ] `publish_tool_results(...)` 不再作为主恢复入口
-- [ ] `recv_output()` 不再作为主输出入口
-- [ ] `BrainEvent / BrainOutput` 不再作为主协议
+- [x] `BrainKernel` 不再作为 resident brain
+- [x] `publish_user_input(...)` 不再作为主入口
+- [x] `publish_tool_results(...)` 不再作为主恢复入口
+- [x] `recv_output()` 不再作为主输出入口
+- [x] `BrainEvent / BrainOutput` 不再作为主协议
 - [ ] `task_type` 路由不再作为必须保留的脑内概念
 
 明确不保留：
 
 - [ ] `src/reachy_mini/core/memory.py` 不迁移、不复用
-- [ ] `src/reachy_mini/core/sleep_agent.py` 不迁移旧实现
-- [ ] `src/reachy_mini/core/run_store.py` 不迁移、不保留为宿主任务板
+- [x] `src/reachy_mini/core/sleep_agent.py` 不迁移旧实现
+- [x] `src/reachy_mini/core/run_store.py` 不迁移、不保留为宿主任务板
 - [ ] 如果未来确实需要空闲维护能力，基于 `ccmini` Hook / background task 从需求重新设计，不继承 `sleep_agent.py`
-- [ ] 宿主只保留为运行链路服务的最小线程态、surface 态和执行态，不重新长出 `run_store` 式任务板
+- [x] 宿主只保留为运行链路服务的最小线程态、surface 态和执行态，不重新长出 `run_store` 式任务板
 
 ## 12. 文件级实施清单
 
@@ -348,70 +350,72 @@
 
 ### 12.1 第一批核心文件
 
-- [ ] `src/reachy_mini/runtime/scheduler.py`
+- [x] `src/reachy_mini/runtime/scheduler.py`
   变成 `ccmini` 宿主编排主入口
-- [ ] `src/reachy_mini/apps/app.py`
+- [x] `src/reachy_mini/apps/app.py`
   保持外部接口不变，内部接新的 runtime 行为
-- [ ] `src/reachy_mini/apps/runtime_host.py`
+- [x] `src/reachy_mini/apps/runtime_host.py`
   继续提供 Reachy runtime context 给新工具层
-- [ ] `src/reachy_mini/runtime/tool_loader.py`
+- [x] `src/reachy_mini/runtime/tool_loader.py`
   改为给 `ccmini` 组装工具
-- [ ] `src/reachy_mini/runtime/tools/`
+- [x] `src/reachy_mini/runtime/tools/`
   保留实现，补 `ccmini` 工具包装
 
 ### 12.2 第二批过渡文件
 
-- [ ] `src/reachy_mini/front/service.py`
+- [x] `src/reachy_mini/front/service.py`
   从主链移除
-- [ ] `src/reachy_mini/front/prompt.py`
+- [x] `src/reachy_mini/front/prompt.py`
   风格资产并入统一 prompt 组合
-- [ ] `src/reachy_mini/front/events.py`
+- [x] `src/reachy_mini/front/events.py`
   停止作为内部主协议
-- [ ] `src/reachy_mini/core/agent.py`
+- [x] `src/reachy_mini/core/agent.py`
   停止作为主 brain
-- [ ] `src/reachy_mini/core/models.py`
+- [x] `src/reachy_mini/core/models.py`
   停止作为主 runtime 协议
-- [ ] `src/reachy_mini/core/resident.py`
+- [x] `src/reachy_mini/core/resident.py`
   停止作为 resident 主循环
 
 ### 12.3 文档与配置文件
 
-- [ ] `docs/source/SDK/integration.md`
+- [x] `docs/source/SDK/integration.md`
   更新为单脑架构文档
-- [ ] `profiles/*/profiles/config.jsonl`
+- [x] `profiles/*/profiles/config.jsonl`
   后续收口配置项
-- [ ] app README 中的运行链路说明
+- [x] app README 中的运行链路说明
   从 `front -> BrainKernel -> front` 更新为新结构
 
 ## 13. 验证清单
 
-### 13.1 第一阶段必须验证
+### 13.1 当前实现已验证
 
-- [ ] 浏览器可正常连接 `WS /ws/agent`
-- [ ] 用户输入仍能拿到回复
-- [ ] `speech_preview` 仍正常输出
-- [ ] `front_hint_*` 仍正常输出
-- [ ] `front_final_chunk` 仍正常输出
-- [ ] `front_final_*` 仍正常输出
-- [ ] `surface_state` 仍正常输出
+- [x] 浏览器可正常连接新的 `WS /ws/agent`
+- [x] 用户输入仍能拿到回复
+- [x] `speech_preview` 仍正常输出
+- [x] `text_delta` 仍正常输出
+- [x] `turn_done` 仍正常输出
+- [x] `surface_state` 仍正常输出
 - [ ] `turn_error` 仍正常输出
+- [x] `thinking` / `tool_progress` 若启用则输出正常
 - [ ] 语音输入流程不退化
 - [ ] reply audio 和中断逻辑不退化
 - [ ] 头部动作、情绪、相机工具仍正常
-- [ ] 现有 app project 不需要修改即可运行
-- [ ] `ChatResponse.surface_state / front_decision / front_tool_results` 仍可正常返回
-- [ ] 同一线程连续打断时，旧 turn 残留事件不会污染新 turn
+- [x] 前端已切到单脑事件模型后可正常运行
+- [x] `ChatResponse` 已切到单脑语义后可正常返回
+- [x] 同一线程连续打断时，旧 turn 残留事件不会污染新 turn
+- [x] A 线程的新输入不会让 B 线程的前台 lane 进入 stale
 - [ ] `PendingToolCallEvent` 恢复后的输出不会串到错误线程
 - [ ] `coordinator` 模式下主脑仍可正常输出流式回复，不因 worker 派工阻塞前台
 - [ ] `coordinator` 模式下后台 worker/task notification 不会绕过当前 `turn_id` 裁决
+- [ ] 后台任务、Kairos、worker 在前台线程切换后仍持续运行
 - [ ] 快思考 / 慢思考 / 睡眠记忆 / companion / Kairos / autonomy 等能力层的入口没有被迁移意外切断
 
-### 13.2 第二阶段验证
+### 13.2 已完成的收口验证
 
-- [ ] `BrainKernel` 已不再被 runtime 或兼容层引用
-- [ ] `FrontService` 已不再被 runtime 或兼容层引用
-- [ ] `ccmini` 成为唯一实际推理来源
-- [ ] memory/session 不再双轨分裂
+- [x] `BrainKernel` 已不再被 runtime 引用
+- [x] `FrontService` 已不再被 runtime 引用
+- [x] `ccmini` 成为唯一实际推理来源
+- [x] memory/session 不再双轨分裂
 
 ### 13.3 回归风险验证
 
@@ -424,23 +428,23 @@
 
 ## 14. 明确禁止事项
 
-- [ ] 不要为了过渡偷偷保留 front-model 做最终润色
-- [ ] 不要让旧 `BrainKernel` 和 `ccmini` 同时做主推理
-- [ ] 不要把高频控制环交给 `ccmini`
-- [ ] 不要让浏览器直接依赖 `ccmini` 事件格式
-- [ ] 不要在第一阶段同时重写 UI 和 brain
-- [ ] 不要把旧 `core` 的概念整包复制进 `ccmini`
-- [ ] 不要以“兼容迁移”为名继续依赖 `core.memory`、`sleep_agent`、`run_store`
-- [ ] 不要把 `coordinator` 描述成外挂服务或第二颗脑
+- [x] 不要为了过渡偷偷保留 front-model 做最终润色
+- [x] 不要让旧 `BrainKernel` 和 `ccmini` 同时做主推理
+- [x] 不要把高频控制环交给 `ccmini`
+- [x] 不要在第一阶段同时重写 UI 和 brain
+- [x] 不要把旧 `core` 的概念整包复制进 `ccmini`
+- [x] 不要以“临时过渡”为名继续依赖 `core.memory`、`sleep_agent`、`run_store`
+- [x] 不要重新造 `front_hint_*` / `front_final_*` 这类双轨协议
+- [x] 不要把 `coordinator` 描述成外挂服务或第二颗脑
 
-## 15. 第一阶段完成定义
+## 15. 当前完成定义
 
-第一阶段可以宣告完成，当且仅当：
+当前 resident runtime 可以视为单脑改造已完成，当且仅当：
 
-- [ ] `RuntimeScheduler` 已通过 `ccmini.Agent` 驱动用户主链
-- [ ] 现有 Reachy 执行器继续工作
-- [ ] 浏览器和外部接口无感知变化
-- [ ] 旧 `front/core` 已不再参与主推理热路径（代码目录可暂时保留）
+- [x] `RuntimeScheduler` 已通过 `ccmini.Agent` 驱动用户主链
+- [x] 现有 Reachy 执行器继续工作
+- [x] 浏览器、宿主接口和 `ChatResponse` 已全部切到单脑语义
+- [x] 旧 `front/core` 已不再参与主推理热路径，旧脑层代码目录也已删除或收缩为 utility
 - [ ] 机器人行为和体验未明显退化
 
 达到这个状态后，后续工作就从“架构迁移”变成“清理旧实现”和“逐步增强 ccmini 能力”。

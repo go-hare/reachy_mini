@@ -1,8 +1,0 @@
-{
-  "stdin": "{\"session_id\": \"hook-session\", \"cwd\": \"D:\\\\work\\\\py\\\\reachy_mini\\\\src\\\\ccmini\\\\.ccmini\\\\manual_feature_checks\\\\20260407_112105\\\\workspace\", \"hook_event_name\": \"PreToolUse\", \"transcript_path\": \"D:\\\\work\\\\py\\\\reachy_mini\\\\src\\\\ccmini\\\\.ccmini\\\\manual_feature_checks\\\\20260407_112105\\\\home\\\\sessions\\\\hook-session.jsonl\", \"tool_name\": \"Bash\", \"tool_input\": {\"command\": \"echo hi\"}}",
-  "env": {
-    "CCMINI_PROJECT_DIR": "D:\\work\\py\\reachy_mini\\src\\ccmini\\.ccmini\\manual_feature_checks\\20260407_112105\\workspace",
-    "CCMINI_SESSION_ID": "hook-session",
-    "CCMINI_HOOK_EVENT": "PreToolUse"
-  }
-}

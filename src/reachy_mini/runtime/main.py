@@ -66,7 +66,7 @@ def parse_args() -> argparse.Namespace:
 
     agent_parser = subparsers.add_parser(
         "agent",
-        help="Run an app through the front -> kernel -> text pipeline.",
+        help="Run an app through the single-brain runtime pipeline.",
     )
     agent_parser.add_argument(
         "app",
@@ -88,12 +88,12 @@ def parse_args() -> argparse.Namespace:
         "--provider",
         choices=["mock", "openai", "ollama"],
         default=None,
-        help="Override the front model provider from config.jsonl.",
+        help="Override the brain model provider from config.jsonl.",
     )
     agent_parser.add_argument(
         "--model",
         default=None,
-        help="Override the front model name from config.jsonl.",
+        help="Override the brain model name from config.jsonl.",
     )
     agent_parser.add_argument(
         "--base-url",
@@ -103,40 +103,13 @@ def parse_args() -> argparse.Namespace:
     agent_parser.add_argument(
         "--api-key",
         default=None,
-        help="Override the front model API key from config.jsonl.",
+        help="Override the brain model API key from config.jsonl.",
     )
     agent_parser.add_argument(
         "--temperature",
         type=float,
         default=None,
-        help="Override the front model temperature.",
-    )
-    agent_parser.add_argument(
-        "--kernel-provider",
-        choices=["mock", "openai", "ollama"],
-        default=None,
-        help="Override the kernel model provider from config.jsonl.",
-    )
-    agent_parser.add_argument(
-        "--kernel-model",
-        default=None,
-        help="Override the kernel model name from config.jsonl.",
-    )
-    agent_parser.add_argument(
-        "--kernel-base-url",
-        default=None,
-        help="Override the kernel provider base URL.",
-    )
-    agent_parser.add_argument(
-        "--kernel-api-key",
-        default=None,
-        help="Override the kernel model API key from config.jsonl.",
-    )
-    agent_parser.add_argument(
-        "--kernel-temperature",
-        type=float,
-        default=None,
-        help="Override the kernel model temperature.",
+        help="Override the brain model temperature.",
     )
     agent_parser.add_argument(
         "--history-limit",
@@ -211,11 +184,6 @@ async def handle_agent(args: argparse.Namespace) -> None:
         base_url=args.base_url,
         api_key=args.api_key,
         temperature=args.temperature,
-        kernel_provider=args.kernel_provider,
-        kernel_model=args.kernel_model,
-        kernel_base_url=args.kernel_base_url,
-        kernel_api_key=args.kernel_api_key,
-        kernel_temperature=args.kernel_temperature,
         history_limit=args.history_limit,
     )
     runtime = RuntimeScheduler.from_profile(
@@ -328,10 +296,10 @@ async def pump_cli_front_outputs(
             try:
                 if packet.thread_id != thread_id:
                     continue
-                if packet.type in {"front_hint_chunk", "front_final_chunk"}:
+                if packet.type == "text_delta":
                     await printer.write_chunk(packet.text)
                     continue
-                if packet.type in {"front_hint_done", "front_final_done"}:
+                if packet.type == "turn_done":
                     if printer.stream_started:
                         printer.finish_stream()
                     elif packet.text:

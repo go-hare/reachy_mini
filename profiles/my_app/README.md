@@ -37,7 +37,8 @@ The dialogue flow is streamed over WebSocket:
 - browser sends `user_text`
 - browser can also emit `user_speech_started` / `user_speech_stopped`
 - supported browsers can turn microphone speech into the final `user_text`
-- runtime emits `front_hint_*`
 - runtime keeps pushing `surface_state`
-- runtime emits `front_final_*`
+- runtime emits `thinking` and `tool_progress` when intermediate state should be visible
+- runtime streams assistant text through `text_delta`
+- runtime closes one turn with `turn_done`
 - errors are emitted as `turn_error`

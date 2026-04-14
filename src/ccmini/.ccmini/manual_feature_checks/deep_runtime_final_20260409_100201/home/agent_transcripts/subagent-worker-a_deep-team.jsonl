@@ -1,8 +1,0 @@
-{"ts": 1775700129.3034005, "role": "user", "content": "Reply with exactly WORKER_A_BOOT_OK", "metadata": {"event": "prompt", "agent_id": "worker-a@deep-team"}}
-{"ts": 1775700132.251843, "role": "assistant", "content": "WORKER_A_BOOT_OK", "metadata": {"event": "completion", "agent_id": "worker-a@deep-team"}}
-{"ts": 1775700132.7563932, "role": "user", "content": "Reply with exactly DIRECT_A_OK", "metadata": {"event": "prompt", "agent_id": "worker-a@deep-team"}}
-{"ts": 1775700135.4271533, "role": "assistant", "content": "DIRECT_A_OK", "metadata": {"event": "completion", "agent_id": "worker-a@deep-team"}}
-{"ts": 1775700135.943028, "role": "user", "content": "Complete task #2: Return TEAM_TASK_B_OK\n\nFinish task B and include the token in the summary.", "metadata": {"event": "prompt", "agent_id": "worker-a@deep-team"}}
-{"ts": 1775700139.514055, "role": "assistant", "content": "TEAM_TASK_B_OK", "metadata": {"event": "completion", "agent_id": "worker-a@deep-team"}}
-{"ts": 1775700139.5186343, "role": "user", "content": "Complete task #3: Return TEAM_TASK_C_OK\n\nOnly start after both dependencies are resolved and include the token in the summary.", "metadata": {"event": "prompt", "agent_id": "worker-a@deep-team"}}
-{"ts": 1775700145.3582766, "role": "assistant", "content": "Completed task #3 after verifying prior dependency tokens were provided:\n- WORKER_A_BOOT_OK\n- DIRECT_A_OK\n- TEAM_TASK_B_OK\n\nSummary: TEAM_TASK_C_OK", "metadata": {"event": "completion", "agent_id": "worker-a@deep-team"}}

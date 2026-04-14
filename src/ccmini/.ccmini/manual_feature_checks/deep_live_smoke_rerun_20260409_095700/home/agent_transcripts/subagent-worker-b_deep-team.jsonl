@@ -1,6 +1,0 @@
-{"ts": 1775699830.4075184, "role": "user", "content": "Reply with exactly WORKER_B_BOOT_OK", "metadata": {"event": "prompt", "agent_id": "worker-b@deep-team"}}
-{"ts": 1775699833.26139, "role": "assistant", "content": "WORKER_B_BOOT_OK", "metadata": {"event": "completion", "agent_id": "worker-b@deep-team"}}
-{"ts": 1775699834.287384, "role": "user", "content": "Reply with exactly DIRECT_B_OK", "metadata": {"event": "prompt", "agent_id": "worker-b@deep-team"}}
-{"ts": 1775699836.0022454, "role": "assistant", "content": "DIRECT_B_OK", "metadata": {"event": "completion", "agent_id": "worker-b@deep-team"}}
-{"ts": 1775699837.0265048, "role": "user", "content": "Complete task #1: Return TEAM_TASK_A_OK\n\nFinish task A and include the token in the summary.", "metadata": {"event": "prompt", "agent_id": "worker-b@deep-team"}}
-{"ts": 1775699840.6640873, "role": "assistant", "content": "Completed task #1. Summary: TEAM_TASK_A_OK", "metadata": {"event": "completion", "agent_id": "worker-b@deep-team"}}

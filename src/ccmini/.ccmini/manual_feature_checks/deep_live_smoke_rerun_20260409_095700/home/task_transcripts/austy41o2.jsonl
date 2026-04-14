@@ -1,2 +1,0 @@
-{"ts": 1775699850.3042207, "task_id": "austy41o2", "role": "user", "content": "Reply with exactly KAIROS_CRON_WAKE_OK", "metadata": {"event": "spawn", "name": "kairos-cron", "task_type": "local_agent", "profile": ""}}
-{"ts": 1775699853.5163236, "task_id": "austy41o2", "role": "assistant", "content": "KAIROS_CRON_WAKE_OK", "metadata": {"event": "completion"}}

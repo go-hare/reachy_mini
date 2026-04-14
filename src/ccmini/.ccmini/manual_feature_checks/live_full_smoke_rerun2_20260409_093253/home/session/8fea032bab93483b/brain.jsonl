@@ -1,4 +1,0 @@
-{"role": "user", "content": "Reply with exactly LIVE_QUERY_OK", "turn_id": "turn-1775698377033", "created_at": "2026-04-09T09:32:57.033481+08:00"}
-{"role": "assistant", "content": "LIVE_QUERY_OK", "turn_id": "turn-1775698377033", "created_at": "2026-04-09T09:32:57.034135+08:00"}
-{"role": "user", "content": "What exact token did you just output? Reply with exactly that token and nothing else.", "turn_id": "turn-1775698379636", "created_at": "2026-04-09T09:32:59.636086+08:00"}
-{"role": "assistant", "content": "LIVE_QUERY_OK", "turn_id": "turn-1775698379636", "created_at": "2026-04-09T09:32:59.636584+08:00"}

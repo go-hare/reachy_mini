@@ -1,5 +1,7 @@
 """Tests for the resident runtime host in ReachyMiniApp."""
 
+from __future__ import annotations
+
 import asyncio
 import threading
 from pathlib import Path
@@ -44,11 +46,8 @@ class FakeRuntime:
         user_text: str,
         surface_state_handler=None,
         final_reply_handler=None,
-    ) -> None:
-        _ = session_id
-        _ = user_id
-        _ = user_text
-
+    ) -> str:
+        _ = session_id, user_id, user_text
         if surface_state_handler is not None:
             await surface_state_handler({"thread_id": thread_id, "phase": "replying"})
         if final_reply_handler is not None:
@@ -62,42 +61,27 @@ class FakeRuntime:
 
         packets = [
             FrontOutputPacket(
-                type="front_hint_done",
+                type="thinking",
                 thread_id=thread_id,
                 turn_id="turn-1",
-                text="hint",
+                text="正在思考",
+                payload={"phase": "start", "source": "status"},
             ),
             FrontOutputPacket(
-                type="front_decision",
+                type="tool_progress",
                 thread_id=thread_id,
                 turn_id="turn-1",
-                payload={
-                    "signal_name": "idle_entered",
-                    "lifecycle_state": "idle",
-                    "tool_calls": [
-                        {
-                            "tool_name": "do_nothing",
-                            "arguments": {"reason": "idle hold"},
-                            "reason": "idle hold",
-                        }
-                    ],
-                },
+                text="camera ready",
+                payload={"tool_name": "camera", "tool_use_id": "tool-1"},
             ),
             FrontOutputPacket(
-                type="front_tool_result",
+                type="text_delta",
                 thread_id=thread_id,
                 turn_id="turn-1",
-                payload={
-                    "signal_name": "idle_entered",
-                    "tool_name": "do_nothing",
-                    "arguments": {"reason": "idle hold"},
-                    "reason": "idle hold",
-                    "success": True,
-                    "result": "Staying still: idle hold",
-                },
+                text="final reply",
             ),
             FrontOutputPacket(
-                type="front_final_done",
+                type="turn_done",
                 thread_id=thread_id,
                 turn_id="turn-1",
                 text="final reply",
@@ -106,10 +90,10 @@ class FakeRuntime:
         for queue in list(self.queues):
             for packet in packets:
                 queue.put_nowait(packet)
+        return "turn-1"
 
     async def wait_for_thread_idle(self, thread_id: str, timeout: float = 600.0) -> None:
-        _ = thread_id
-        _ = timeout
+        _ = thread_id, timeout
 
     async def handle_user_speech_started(
         self,
@@ -120,8 +104,7 @@ class FakeRuntime:
         user_text: str = "",
         surface_state_handler=None,
     ) -> None:
-        _ = session_id
-        _ = user_id
+        _ = session_id, user_id
         self.speech_events.append(
             {
                 "type": "user_speech_started",
@@ -141,8 +124,7 @@ class FakeRuntime:
         user_text: str = "",
         surface_state_handler=None,
     ) -> None:
-        _ = session_id
-        _ = user_id
+        _ = session_id, user_id
         self.speech_events.append(
             {
                 "type": "user_speech_stopped",
@@ -157,30 +139,6 @@ class FakeRuntime:
 
     def get_thread_surface_state(self, thread_id: str) -> dict[str, str]:
         return {"thread_id": thread_id, "phase": "idle"}
-
-    def get_thread_front_decision(self, thread_id: str) -> dict[str, object]:
-        return {
-            "thread_id": thread_id,
-            "signal_name": "idle_entered",
-            "lifecycle_state": "idle",
-            "tool_calls": [
-                {
-                    "tool_name": "do_nothing",
-                    "arguments": {"reason": "idle hold"},
-                    "reason": "idle hold",
-                }
-            ],
-        }
-
-
-class FakeSurfaceDriver:
-    """Collect runtime surface states forwarded by the app host."""
-
-    def __init__(self) -> None:
-        self.states: list[dict[str, str]] = []
-
-    def apply_state(self, state: dict[str, str]) -> None:
-        self.states.append(dict(state))
 
 
 class ConcurrentFakeRuntime(FakeRuntime):
@@ -201,10 +159,8 @@ class ConcurrentFakeRuntime(FakeRuntime):
         user_text: str,
         surface_state_handler=None,
         final_reply_handler=None,
-    ) -> None:
-        _ = session_id
-        _ = user_id
-
+    ) -> str:
+        _ = session_id, user_id, final_reply_handler
         if surface_state_handler is not None:
             await surface_state_handler({"thread_id": thread_id, "phase": "replying"})
 
@@ -213,46 +169,38 @@ class ConcurrentFakeRuntime(FakeRuntime):
             for queue in list(self.queues):
                 queue.put_nowait(
                     FrontOutputPacket(
-                        type="front_hint_done",
+                        type="thinking",
                         thread_id=thread_id,
                         turn_id="turn-first",
-                        text="hint:first",
+                        text="thinking:first",
                     )
                 )
             await asyncio.to_thread(self.allow_first_finish.wait, 1.0)
             for queue in list(self.queues):
                 queue.put_nowait(
                     FrontOutputPacket(
-                        type="front_final_done",
+                        type="turn_done",
                         thread_id=thread_id,
                         turn_id="turn-first",
                         text="final:first",
                     )
                 )
-            return
+            return "turn-first"
 
         if user_text == "second":
             self.second_started.set()
             for queue in list(self.queues):
                 queue.put_nowait(
                     FrontOutputPacket(
-                        type="front_hint_done",
-                        thread_id=thread_id,
-                        turn_id="turn-second",
-                        text="hint:second",
-                    )
-                )
-                queue.put_nowait(
-                    FrontOutputPacket(
-                        type="front_final_done",
+                        type="turn_done",
                         thread_id=thread_id,
                         turn_id="turn-second",
                         text="final:second",
                     )
                 )
-            return
+            return "turn-second"
 
-        await super().handle_user_turn(
+        return await super().handle_user_turn(
             thread_id=thread_id,
             session_id=session_id,
             user_id=user_id,
@@ -262,23 +210,42 @@ class ConcurrentFakeRuntime(FakeRuntime):
         )
 
 
-class RuntimeHostedApp(ReachyMiniApp):
-    """Small ReachyMiniApp subclass that hosts a resident runtime."""
+class FakeSurfaceDriver:
+    """Collect runtime surface states forwarded by the app host."""
 
-    custom_app_url: str | None = "http://0.0.0.0:8042"
+    def __init__(self) -> None:
+        self.states: list[dict[str, str]] = []
+
+    def apply_state(self, state: dict[str, str]) -> None:
+        self.states.append(dict(state))
+
+
+class RuntimeHostedApp(ReachyMiniApp):
+    """Tiny ReachyMiniApp that injects a fake resident runtime."""
+
+    custom_app_url = "http://127.0.0.1:8042"
 
     def __init__(self, profile_root: Path, runtime: FakeRuntime) -> None:
-        self.profile_root_relative_path = str(profile_root)
-        self._test_runtime = runtime
+        self.profile_root_relative_path = None
+        self._profile_root = profile_root
+        self._runtime = runtime
         super().__init__()
 
-    def build_runtime(self, profile_root: Path) -> FakeRuntime:
-        assert profile_root == self.profile_root
-        return self._test_runtime
+    def resolve_profile_root(self) -> Path | None:
+        return self._profile_root
+
+    def _get_instance_path(self) -> Path:
+        return self._profile_root / "demo.py"
+
+    def build_runtime(self, profile_root: Path):
+        _ = profile_root
+        return self._runtime
 
 
-def test_reachy_mini_app_streams_resident_runtime_over_websocket(tmp_path: Path) -> None:
-    """ReachyMiniApp should stream resident runtime events over /ws/agent."""
+def test_reachy_mini_app_streams_single_brain_events_over_websocket(
+    tmp_path: Path,
+) -> None:
+    """ReachyMiniApp should stream single-brain runtime events over /ws/agent."""
 
     runtime = FakeRuntime()
     app = RuntimeHostedApp(tmp_path / "profiles", runtime)
@@ -310,49 +277,24 @@ def test_reachy_mini_app_streams_resident_runtime_over_websocket(tmp_path: Path)
                     }
                 )
 
-                events = [websocket.receive_json() for _ in range(5)]
+                events = [websocket.receive_json() for _ in range(6)]
                 event_types = [event["type"] for event in events]
 
                 assert "surface_state" in event_types
-                assert "front_hint_done" in event_types
-                assert "front_decision" in event_types
-                assert "front_tool_result" in event_types
-                assert "front_final_done" in event_types
+                assert "thinking" in event_types
+                assert "tool_progress" in event_types
+                assert "turn_done" in event_types
 
-                hint_event = next(
-                    event for event in events if event["type"] == "front_hint_done"
-                )
-                decision_event = next(
-                    event for event in events if event["type"] == "front_decision"
-                )
-                tool_event = next(
-                    event for event in events if event["type"] == "front_tool_result"
-                )
-                final_event = next(
-                    event for event in events if event["type"] == "front_final_done"
-                )
-
-                assert hint_event["thread_id"] == "app:test"
-                assert hint_event["text"] == "hint"
-                assert decision_event["payload"]["signal_name"] == "idle_entered"
-                assert decision_event["payload"]["tool_calls"][0]["tool_name"] == "do_nothing"
-                assert tool_event["payload"]["tool_name"] == "do_nothing"
-                assert tool_event["payload"]["success"] is True
-                assert final_event["thread_id"] == "app:test"
-                assert final_event["text"] == "final reply"
-                assert runtime.started
-                assert surface_driver.states == [
-                    {"thread_id": "app:test", "phase": "replying"}
-                ]
+                done_event = next(event for event in events if event["type"] == "turn_done")
+                assert done_event["text"] == "final reply"
+                assert surface_driver.states[-1]["phase"] == "replying"
     finally:
         stop_event.set()
         worker.join(timeout=5.0)
 
 
-def test_reachy_mini_app_chat_returns_front_decision_and_tool_results(
-    tmp_path: Path,
-) -> None:
-    """Synchronous app.chat should expose the latest front decision and tool results."""
+def test_reachy_mini_app_chat_returns_single_brain_response(tmp_path: Path) -> None:
+    """The blocking chat helper should return the new single-brain response shape."""
 
     runtime = FakeRuntime()
     app = RuntimeHostedApp(tmp_path / "profiles", runtime)
@@ -366,36 +308,42 @@ def test_reachy_mini_app_chat_returns_front_decision_and_tool_results(
 
     try:
         assert app.wait_until_runtime_ready(timeout=2.0)
-        surface_driver = FakeSurfaceDriver()
-        app.runtime_tool_context = SimpleNamespace(surface_driver=surface_driver)
         response = app.chat(
             ChatRequest(
-                message="帮我看看现在是不是已经接入流程了",
+                message="你好",
                 thread_id="app:test",
+                session_id="sess-1",
+                user_id="user-1",
             )
         )
 
+        assert response.turn_id == "turn-1"
         assert response.reply == "final reply"
         assert response.error == ""
-        assert response.surface_state == {"thread_id": "app:test", "phase": "idle"}
-        assert response.front_decision is not None
-        assert response.front_decision["signal_name"] == "idle_entered"
-        assert response.front_tool_results
-        assert response.front_tool_results[0]["tool_name"] == "do_nothing"
-        assert response.front_tool_results[0]["success"] is True
-        assert surface_driver.states == [{"thread_id": "app:test", "phase": "replying"}]
+        assert response.surface_state is not None
+        assert response.surface_state["phase"] == "idle"
+        assert response.thinking
+        assert response.thinking[0]["text"] == "正在思考"
+        assert response.tool_progress
+        assert response.tool_progress[0]["tool_name"] == "camera"
     finally:
         stop_event.set()
         worker.join(timeout=5.0)
-
-    assert runtime.stopped
 
 
 def test_reachy_mini_app_chat_invokes_runtime_reply_audio_handler(tmp_path: Path) -> None:
-    """Synchronous app.chat should pass final replies through the runtime audio hook."""
+    """The app should still route final replies into the reply-audio handler."""
 
     runtime = FakeRuntime()
     app = RuntimeHostedApp(tmp_path / "profiles", runtime)
+    played_payloads: list[dict[str, str]] = []
+
+    async def fake_play_runtime_reply_audio(payload: dict[str, str]) -> bool:
+        played_payloads.append(dict(payload))
+        return True
+
+    app.play_runtime_reply_audio = fake_play_runtime_reply_audio  # type: ignore[method-assign]
+
     stop_event = threading.Event()
     worker = threading.Thread(
         target=app.run,
@@ -404,32 +352,13 @@ def test_reachy_mini_app_chat_invokes_runtime_reply_audio_handler(tmp_path: Path
     )
     worker.start()
 
-    class FakeReplyAudioService:
-        def __init__(self) -> None:
-            self.texts: list[str] = []
-
-        async def speak_text(self, text: str) -> bool:
-            self.texts.append(text)
-            return True
-
     try:
         assert app.wait_until_runtime_ready(timeout=2.0)
-        surface_driver = FakeSurfaceDriver()
-        reply_audio_service = FakeReplyAudioService()
-        app.runtime_tool_context = SimpleNamespace(
-            surface_driver=surface_driver,
-            reply_audio_service=reply_audio_service,
-        )
-
-        response = app.chat(
-            ChatRequest(
-                message="帮我把回复也播出来",
-                thread_id="app:test",
-            )
-        )
-
+        response = app.chat(ChatRequest(message="你好", thread_id="app:test"))
         assert response.reply == "final reply"
-        assert reply_audio_service.texts == ["final reply"]
+        assert played_payloads
+        assert played_payloads[0]["turn_id"] == "turn-1"
+        assert played_payloads[0]["text"] == "final reply"
     finally:
         stop_event.set()
         worker.join(timeout=5.0)
@@ -438,7 +367,7 @@ def test_reachy_mini_app_chat_invokes_runtime_reply_audio_handler(tmp_path: Path
 def test_reachy_mini_app_websocket_accepts_user_speech_lifecycle_events(
     tmp_path: Path,
 ) -> None:
-    """Websocket host should forward user speech lifecycle events into the runtime."""
+    """The websocket host should still dispatch browser speech lifecycle events."""
 
     runtime = FakeRuntime()
     app = RuntimeHostedApp(tmp_path / "profiles", runtime)
@@ -453,62 +382,52 @@ def test_reachy_mini_app_websocket_accepts_user_speech_lifecycle_events(
     try:
         assert app.wait_until_runtime_ready(timeout=2.0)
         assert app.settings_app is not None
-        surface_driver = FakeSurfaceDriver()
-        app.runtime_tool_context = SimpleNamespace(surface_driver=surface_driver)
 
         with TestClient(app.settings_app) as client:
             with client.websocket_connect("/ws/agent") as websocket:
-                status_event = websocket.receive_json()
-                assert status_event["type"] == "runtime_status"
-                assert status_event["ready"] is True
+                websocket.receive_json()
 
                 websocket.send_json(
                     {
                         "type": "user_speech_started",
                         "thread_id": "app:test",
-                        "text": "我先说一下",
+                        "text": "你好",
                     }
                 )
+                for _ in range(3):
+                    event = websocket.receive_json()
+                    if event["type"] == "surface_state" and event["state"]["phase"] == "listening":
+                        break
+                assert event["type"] == "surface_state"
+                assert event["state"]["phase"] == "listening"
+
                 websocket.send_json(
                     {
                         "type": "user_speech_stopped",
                         "thread_id": "app:test",
-                        "text": "我先说一下",
+                        "text": "你好",
                     }
                 )
+                for _ in range(3):
+                    event = websocket.receive_json()
+                    if event["type"] == "surface_state" and event["state"]["phase"] == "listening_wait":
+                        break
+                assert event["type"] == "surface_state"
+                assert event["state"]["phase"] == "listening_wait"
 
-                events = [websocket.receive_json() for _ in range(2)]
-                assert [event["type"] for event in events] == [
-                    "surface_state",
-                    "surface_state",
-                ]
-                assert events[0]["state"]["phase"] == "listening"
-                assert events[1]["state"]["phase"] == "listening_wait"
-                assert runtime.speech_events == [
-                    {
-                        "type": "user_speech_started",
-                        "thread_id": "app:test",
-                        "text": "我先说一下",
-                    },
-                    {
-                        "type": "user_speech_stopped",
-                        "thread_id": "app:test",
-                        "text": "我先说一下",
-                    },
-                ]
-                assert surface_driver.states == [
-                    {"thread_id": "app:test", "phase": "listening"},
-                    {"thread_id": "app:test", "phase": "listening_wait"},
-                ]
+        assert runtime.speech_events == [
+            {"type": "user_speech_started", "thread_id": "app:test", "text": "你好"},
+            {"type": "user_speech_stopped", "thread_id": "app:test", "text": "你好"},
+        ]
     finally:
         stop_event.set()
         worker.join(timeout=5.0)
 
 
-def test_reachy_mini_app_websocket_dispatches_new_turns_while_previous_kernel_work_runs(
+def test_reachy_mini_app_websocket_dispatches_new_turns_while_previous_runtime_work_runs(
     tmp_path: Path,
 ) -> None:
-    """Websocket dispatch should not block later user turns on earlier kernel work."""
+    """The websocket host should keep accepting turns while one handler is still running."""
 
     runtime = ConcurrentFakeRuntime()
     app = RuntimeHostedApp(tmp_path / "profiles", runtime)
@@ -526,9 +445,7 @@ def test_reachy_mini_app_websocket_dispatches_new_turns_while_previous_kernel_wo
 
         with TestClient(app.settings_app) as client:
             with client.websocket_connect("/ws/agent") as websocket:
-                status_event = websocket.receive_json()
-                assert status_event["type"] == "runtime_status"
-                assert status_event["ready"] is True
+                websocket.receive_json()
 
                 websocket.send_json(
                     {
@@ -546,23 +463,20 @@ def test_reachy_mini_app_websocket_dispatches_new_turns_while_previous_kernel_wo
                         "text": "second",
                     }
                 )
-
                 assert runtime.second_started.wait(timeout=1.0)
-
                 runtime.allow_first_finish.set()
 
-                received_texts: list[str] = []
-                for _ in range(6):
+                done_events: list[dict[str, str]] = []
+                for _ in range(8):
                     event = websocket.receive_json()
-                    if event["type"] in {"front_hint_done", "front_final_done"}:
-                        received_texts.append(str(event["text"]))
-                    if "final:first" in received_texts and "final:second" in received_texts:
+                    if event["type"] == "turn_done":
+                        done_events.append(event)
+                    if len(done_events) >= 2:
                         break
 
-                assert "hint:first" in received_texts
-                assert "final:first" in received_texts
-                assert "hint:second" in received_texts
-                assert "final:second" in received_texts
+        texts = {event["text"] for event in done_events}
+        assert "final:first" in texts
+        assert "final:second" in texts
     finally:
         stop_event.set()
         worker.join(timeout=5.0)

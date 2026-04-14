@@ -9,8 +9,8 @@ from langchain_core.messages import AIMessage
 from langchain_ollama import ChatOllama
 from langchain_openai import ChatOpenAI
 
-from reachy_mini.core.message_utils import extract_message_text
-from reachy_mini.runtime.config import FrontModelConfig, KernelModelConfig
+from reachy_mini.runtime.config import BrainModelConfig
+from reachy_mini.utils.llm_utils import extract_message_text
 
 
 class MockFrontModel:
@@ -306,7 +306,7 @@ class MockKernelModel:
 
 
 def _build_remote_model(
-    config: FrontModelConfig | KernelModelConfig,
+    config: BrainModelConfig,
     *,
     layer_name: str,
 ) -> Any:
@@ -341,15 +341,8 @@ def _build_remote_model(
     raise RuntimeError(f"Unsupported {layer_name.lower()} provider: {config.provider}")
 
 
-def build_front_model(config: FrontModelConfig) -> Any:
-    """Build the configured front model."""
-    if str(config.provider or "mock").strip().lower() == "mock":
-        return MockFrontModel()
-    return _build_remote_model(config, layer_name="Front")
-
-
-def build_kernel_model(config: KernelModelConfig) -> Any:
-    """Build the configured kernel model."""
+def build_brain_model(config: BrainModelConfig) -> Any:
+    """Build the configured single-brain model."""
     if str(config.provider or "mock").strip().lower() == "mock":
         return MockKernelModel()
-    return _build_remote_model(config, layer_name="Kernel")
+    return _build_remote_model(config, layer_name="Brain")

@@ -529,30 +529,35 @@ document.addEventListener("DOMContentLoaded", () => {
             return;
         }
 
-        if (eventType === "front_hint_chunk") {
+        if (eventType === "thinking") {
             turnCompleted = false;
-            updateStageBubble(payload.turn_id, "hint", payload.text, "append");
-            setStatus("Front 已先回应，后续处理还在继续，你也可以继续发送。", true);
+            updateStageBubble(
+                payload.turn_id,
+                "thinking",
+                payload.text,
+                payload.phase === "delta" ? "append" : "replace"
+            );
+            setStatus("单脑正在思考，你也可以继续发送。", true);
             return;
         }
 
-        if (eventType === "front_hint_done") {
+        if (eventType === "tool_progress") {
             turnCompleted = false;
-            updateStageBubble(payload.turn_id, "hint", payload.text, "replace");
-            setStatus("Front 已先回应，后续处理还在继续，你也可以继续发送。", true);
+            updateStageBubble(payload.turn_id, "tool", payload.content, "append");
+            setStatus("工具正在执行中。", true);
             return;
         }
 
-        if (eventType === "front_final_chunk") {
+        if (eventType === "text_delta") {
             turnCompleted = false;
-            updateStageBubble(payload.turn_id, "final", payload.text, "append");
-            setStatus("Front 正在输出这一轮的最终回复，你也可以继续发送。", true);
+            updateStageBubble(payload.turn_id, "reply", payload.text, "append");
+            setStatus("单脑正在输出这一轮回复，你也可以继续发送。", true);
             return;
         }
 
-        if (eventType === "front_final_done") {
+        if (eventType === "turn_done") {
             turnCompleted = true;
-            updateStageBubble(payload.turn_id, "final", payload.text, "replace");
+            updateStageBubble(payload.turn_id, "reply", payload.text, "replace");
             setStatus("这轮回复已经完成，你也可以继续发送。", true);
             finishTurn();
             return;

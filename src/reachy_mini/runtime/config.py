@@ -35,22 +35,11 @@ def _parse_stream_chunk_size(
 
 
 @dataclass(slots=True)
-class FrontModelConfig:
-    """How the front layer should talk to a model."""
+class BrainModelConfig:
+    """How the single brain should talk to a model provider."""
 
     provider: str = "mock"
-    model: str = "reachy_mini_front_mock"
-    base_url: str = ""
-    api_key: str = ""
-    temperature: float = 0.4
-
-
-@dataclass(slots=True)
-class KernelModelConfig:
-    """How the kernel layer should talk to a model."""
-
-    provider: str = "mock"
-    model: str = "reachy_mini_kernel_mock"
+    model: str = "reachy_mini_brain_mock"
     base_url: str = ""
     api_key: str = ""
     temperature: float = 0.2
@@ -108,15 +97,15 @@ class ProfileRuntimeConfig:
     front_mode: str = "text"
     front_style: str = "friendly_concise"
     history_limit: int = 6
-    front_model: FrontModelConfig = field(default_factory=FrontModelConfig)
-    kernel_model: KernelModelConfig = field(default_factory=KernelModelConfig)
+    brain_model: BrainModelConfig = field(default_factory=BrainModelConfig)
     vision: VisionRuntimeConfig = field(default_factory=VisionRuntimeConfig)
     speech: SpeechRuntimeConfig = field(default_factory=SpeechRuntimeConfig)
     speech_input: SpeechInputRuntimeConfig = field(default_factory=SpeechInputRuntimeConfig)
 
 
 def load_profile_runtime_config(profile: ProfileBundle) -> ProfileRuntimeConfig:
-    """Load stage-2 runtime settings from a profile bundle."""
+    """Load runtime settings from a profile bundle."""
+
     config = ProfileRuntimeConfig()
 
     for record in profile.config_records:
@@ -138,9 +127,7 @@ def load_profile_runtime_config(profile: ProfileBundle) -> ProfileRuntimeConfig:
                     record.get("head_tracker", config.vision.head_tracker)
                     or config.vision.head_tracker
                 ),
-                local_vision=bool(
-                    record.get("local_vision", config.vision.local_vision)
-                ),
+                local_vision=bool(record.get("local_vision", config.vision.local_vision)),
                 local_vision_model=str(
                     record.get("local_vision_model", config.vision.local_vision_model)
                     or config.vision.local_vision_model
@@ -237,57 +224,26 @@ def load_profile_runtime_config(profile: ProfileBundle) -> ProfileRuntimeConfig:
                         )
                     ),
                 ),
-                stream_itn=bool(
-                    record.get(
-                        "stream_itn",
-                        config.speech_input.stream_itn,
-                    )
-                ),
+                stream_itn=bool(record.get("stream_itn", config.speech_input.stream_itn)),
             )
             continue
 
-        if kind not in {"front_model", "kernel_model", "model"}:
+        if kind not in {"brain_model", "model"}:
             continue
 
-        role = str(record.get("role", "") or "").strip()
-        if kind == "front_model" or (kind == "model" and role in {"", "front"}):
-            config.front_model = FrontModelConfig(
-                provider=str(
-                    record.get("provider", config.front_model.provider)
-                    or config.front_model.provider
-                ),
-                model=str(
-                    record.get("model", config.front_model.model)
-                    or config.front_model.model
-                ),
-                base_url=str(record.get("base_url", config.front_model.base_url) or ""),
-                api_key=str(
-                    record.get("api_key", config.front_model.api_key)
-                    or config.front_model.api_key
-                ),
-                temperature=float(record.get("temperature", config.front_model.temperature)),
-            )
-            continue
-
-        if kind == "kernel_model" or (kind == "model" and role == "kernel"):
-            config.kernel_model = KernelModelConfig(
-                provider=str(
-                    record.get("provider", config.kernel_model.provider)
-                    or config.kernel_model.provider
-                ),
-                model=str(
-                    record.get("model", config.kernel_model.model)
-                    or config.kernel_model.model
-                ),
-                base_url=str(record.get("base_url", config.kernel_model.base_url) or ""),
-                api_key=str(
-                    record.get("api_key", config.kernel_model.api_key)
-                    or config.kernel_model.api_key
-                ),
-                temperature=float(
-                    record.get("temperature", config.kernel_model.temperature)
-                ),
-            )
+        config.brain_model = BrainModelConfig(
+            provider=str(
+                record.get("provider", config.brain_model.provider)
+                or config.brain_model.provider
+            ),
+            model=str(
+                record.get("model", config.brain_model.model)
+                or config.brain_model.model
+            ),
+            base_url=str(record.get("base_url", config.brain_model.base_url) or ""),
+            api_key=str(record.get("api_key", config.brain_model.api_key) or ""),
+            temperature=float(record.get("temperature", config.brain_model.temperature)),
+        )
 
     return config
 
@@ -300,37 +256,17 @@ def apply_runtime_overrides(
     base_url: str | None = None,
     api_key: str | None = None,
     temperature: float | None = None,
-    kernel_provider: str | None = None,
-    kernel_model: str | None = None,
-    kernel_base_url: str | None = None,
-    kernel_api_key: str | None = None,
-    kernel_temperature: float | None = None,
     history_limit: int | None = None,
 ) -> ProfileRuntimeConfig:
     """Apply CLI overrides on top of a parsed profile config."""
-    front_model = replace(
-        config.front_model,
-        provider=provider or config.front_model.provider,
-        model=model or config.front_model.model,
-        base_url=base_url if base_url is not None else config.front_model.base_url,
-        api_key=api_key if api_key is not None else config.front_model.api_key,
-        temperature=temperature
-        if temperature is not None
-        else config.front_model.temperature,
-    )
-    resolved_kernel_model = replace(
-        config.kernel_model,
-        provider=kernel_provider or config.kernel_model.provider,
-        model=kernel_model or config.kernel_model.model,
-        base_url=(
-            kernel_base_url if kernel_base_url is not None else config.kernel_model.base_url
-        ),
-        api_key=(
-            kernel_api_key if kernel_api_key is not None else config.kernel_model.api_key
-        ),
-        temperature=kernel_temperature
-        if kernel_temperature is not None
-        else config.kernel_model.temperature,
+
+    brain_model = replace(
+        config.brain_model,
+        provider=provider or config.brain_model.provider,
+        model=model or config.brain_model.model,
+        base_url=base_url if base_url is not None else config.brain_model.base_url,
+        api_key=api_key if api_key is not None else config.brain_model.api_key,
+        temperature=temperature if temperature is not None else config.brain_model.temperature,
     )
     return ProfileRuntimeConfig(
         front_mode=config.front_mode,
@@ -338,8 +274,7 @@ def apply_runtime_overrides(
         history_limit=max(1, history_limit)
         if history_limit is not None
         else config.history_limit,
-        front_model=front_model,
-        kernel_model=resolved_kernel_model,
+        brain_model=brain_model,
         vision=config.vision,
         speech=config.speech,
         speech_input=config.speech_input,

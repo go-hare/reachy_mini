@@ -7,7 +7,7 @@
 - [ccmini 单脑架构设计](ccmini-single-brain-design.md)
 - [ccmini 单脑架构实施清单](ccmini-single-brain-checklist.md)
 
-重点不是补充新的架构方向，而是把“第一阶段应该怎么写 `RuntimeScheduler`”落成可直接编码的状态机约束。
+重点不是补充新的架构方向，而是把当前 `RuntimeScheduler` 单脑模式下的状态约束写清楚，方便继续维护和增强。
 
 术语定义默认沿用 [ccmini 单脑架构设计](ccmini-single-brain-design.md) 里的术语表，尤其是：
 
@@ -26,7 +26,7 @@
 - 明确宿主到底保留哪些最小状态
 - 明确线程相位如何流转
 - 明确 turn / run / tool 恢复怎么关联
-- 明确用户打断、stale 输出和浏览器兼容怎么处理
+- 明确用户打断、stale 输出和浏览器单轨协议怎么处理
 
 它不做这些事：
 
@@ -34,7 +34,7 @@
 - 不重新引入 `core.memory`
 - 不复活 `sleep_agent`
 - 不把高频控制环交给 `ccmini`
-- 不要求浏览器理解 `ccmini` 原生事件名
+- 不要求浏览器直接消费全部 `ccmini` 原生事件对象
 
 ## 2. 为什么需要显式状态机
 
@@ -52,17 +52,31 @@
 - 新 turn 提交后，旧 turn 的流式文本还在往前台冒
 - `PendingToolCallEvent` 恢复到了错误线程
 - 用户已经重新开口，reply audio 还在播
-- `front_hint_*` 和 `front_final_*` 再次语义混乱
+- `text_delta`、`thinking`、`tool_progress` 和 `turn_done` 的职责再次混淆
 
 所以 `RuntimeScheduler` 必须成为唯一的宿主状态裁决点。
 
+这里的“唯一裁决点”需要明确成：
+
+- 它统一负责前台可见性的裁决
+- 但裁决范围是 **per-thread lane**
+- 不是“全局只有一个前台活跃 turn”
+
+换句话说：
+
+- A 线程来了新输入，只会让 A 的旧 turn stale
+- B 线程的前台 lane 不受影响
+- 后台任务、worker、Kairos、memory 等常驻能力也不应因此停止
+
 ## 3. 设计原则
 
-- 一个 `thread_id` 在任意时刻只允许有一个“前台可见的当前 turn”
+- 一个 `thread_id` 在任意时刻只允许有一个“该线程自己的前台可见当前 turn”
+- 不同 `thread_id` 的前台 lane 彼此独立，不做全局前台串行化
 - `ccmini` 负责认知和工具决策，宿主负责相位、打断、互斥、安全和协议翻译
 - `run_id` 永远从属于某个确定的 `turn_id`
 - 旧事件可以继续跑完内部清理，但不能污染新的前台 turn
-- 浏览器兼容优先于内部事件纯度，内部复杂性先在宿主消化
+- 单轨协议清晰度优先于旧浏览器兼容，内部复杂性先在宿主消化
+- 后台任务、worker、Kairos、memory 等能力属于 runtime-level 常驻态，不因某个前台 lane 切换而自动停止
 
 ## 4. 宿主最小状态
 
@@ -138,6 +152,7 @@ tool_calls: list[tool_use_id]
 - 这里描述的是宿主目标态状态模型
 - 如果当前 `ccmini` 实现仍是单 pending-client-run continuation 槽位，第一阶段宿主应按该现状适配
 - 宿主可以先维护 `run_id -> {thread_id, conversation_id, turn_id}` 映射接口，但不要误以为底层已天然支持一个 turn 上多个并发 client-side continuation
+- 这里的 turn / run 状态机是 **per-thread lane** 的，不是全局唯一 turn 状态机
 
 ## 5. 核心不变量
 
@@ -147,7 +162,7 @@ tool_calls: list[tool_use_id]
 - 任意 `TextEvent` / `CompletionEvent` / `ErrorEvent` 都必须先比对 `turn_id`
 - `PendingToolCallEvent` 只能通过其自带 `run_id` 恢复
 - `user_speech_started` 可以抢占 reply audio，但不应该直接把模型内推理状态伪装成“被宿主成功取消”
-- `front_hint_*` 是可选增强，不是主链必需协议
+- `text_delta` 是唯一主回复流，不再并行维护 hint/final 双轨
 - reply audio 被打断后，允许本轮逻辑完成内部清理，但不应再强行进入可见的 settle 动画链
 
 ## 6. 两层状态机
@@ -209,7 +224,7 @@ stateDiagram-v2
 
 - `stale` 不是错误，而是“已经失去前台显示资格”
 - turn 进入 `stale` 后，允许继续内部清理、释放资源、更新统计
-- 但不允许再向浏览器发 `front_final_*` 或覆盖 `surface_state`
+- 但不允许再向浏览器发 `text_delta / turn_done / turn_error` 或覆盖 `surface_state`
 
 ## 7. 关键事件处理规则
 
@@ -273,6 +288,7 @@ stateDiagram-v2
 
 - “新 turn 开始”靠 `submit_user_input(...)` 返回的 `turn_id` 确认
 - 不是靠浏览器本地猜一个 turn id
+- 某个线程建立新 turn 后，只会让该线程自己的旧 turn stale
 
 ### 7.5 `TextEvent`
 
@@ -281,11 +297,11 @@ stateDiagram-v2
 - 先校验 `event.turn_id == current_turn_id`
 - 如果不相等，按 stale 事件处理，不再推浏览器
 - 如果相等，把 `text` append 到 `TurnState.final_text_buffer`
-- 发 `front_final_chunk`
+- 发 `text_delta`
 
 默认不做的事：
 
-- 不把真实回复流发成 `front_hint_chunk`
+- 不再额外并行发一条 hint 文本流
 
 ### 7.6 `PendingToolCallEvent`
 
@@ -318,7 +334,7 @@ stateDiagram-v2
 - 校验 `turn_id`
 - 如果是 stale turn，内部完成清理后丢弃浏览器输出
 - 如果是当前 turn：
-  - 发 `front_final_done`
+  - 发 `turn_done`
   - 把最终全文作为前台收口结果
   - 若 `user_speaking == false` 且未被 reply audio interrupt，则进入 `settling`
   - 否则直接跳过可见 settle，等待后续语音链或回到 idle
@@ -353,13 +369,14 @@ stateDiagram-v2
 - 这些通知属于主脑内部协作事件，不代表出现了第二颗脑
 - 它们可以进入 `ccmini` 当前会话，作为后续综合、继续派工或总结的输入
 - 它们本身不自动生成新的前台 `turn_id`
-- 它们本身也不应直接覆盖当前 `front_final_*`
+- 它们本身也不应直接覆盖当前 `text_delta / turn_done`
 - 如果主脑基于这些通知决定继续对用户说话，仍然要通过当前 turn 规则或一个新的正式 turn 来输出
 
 一句话：
 
 - worker 可以后台跑
 - 但前台输出裁决仍然只认宿主当前 turn 规则
+- 某个线程 stale 不应被解释成后台 worker / Kairos / memory 任务要一起停止
 
 ## 8. stale 事件处理策略
 
@@ -379,6 +396,7 @@ stateDiagram-v2
 
 - stale 不是“强制杀死”
 - stale 是“失去前台可见资格”
+- stale 也是 **线程内语义**，不是“全局所有线程一起作废”
 
 ## 9. reply audio 与打断
 
@@ -424,19 +442,20 @@ idle -> playing -> interrupt_pending -> interrupted -> cooldown -> idle
 第一阶段建议固定如下：
 
 - 宿主 ASR / partial transcript -> `speech_preview`
-- `TextEvent` -> `front_final_chunk`
-- `CompletionEvent` -> `front_final_done`
+- `TextEvent` -> `text_delta`
+- `CompletionEvent` -> `turn_done`
 - `ErrorEvent` -> `turn_error`
 - 相位变化 -> `surface_state`
-- `front_hint_*` 作为兼容保留的宿主即时提示，不承载真实主回复流
+- `ThinkingEvent` -> `thinking`
+- `ToolProgressEvent` -> `tool_progress`
 
-前端兼容要求：
+前端要求：
 
 - `speech_preview` 仍然可用
-- 即使完全收不到 `front_hint_*` 也能正常工作
-- `front_final_done` 到来时，以其全文为准收口
-- 对于 stale turn，前端不应该再收到新的 final 输出
-- coordinator 的后台 worker 通知不应直接伪装成新的 `front_final_*`
+- `text_delta` 是唯一 assistant 文本流
+- `turn_done` 到来时，以其全文为准收口
+- 对于 stale turn，前端不应该再收到新的 `text_delta / turn_done / turn_error`
+- coordinator 的后台 worker 通知不应直接伪装成新的 assistant 回复事件
 
 ## 12. 一条完整 happy path
 
@@ -474,11 +493,16 @@ idle -> playing -> interrupt_pending -> interrupted -> cooldown -> idle
 9. 恢复后的续跑流里，`ccmini` 发出：
    - `TextEvent("我看到")`
    - `TextEvent("你前面站着一个人。")`
-   宿主把它们依次映射成 `front_final_chunk`。
+   宿主把它们依次映射成 `text_delta`。
 10. `ccmini` 发出 `CompletionEvent(text="我看到你前面站着一个人。")`。
-    宿主发 `front_final_done`，以全文收口。
+    宿主发 `turn_done`，以全文收口。
 11. 如果此时用户没有重新开口，且 reply audio 没被打断，宿主进入短暂 `settling`，随后回到 `idle`。
 12. 如果用户在第 9 或第 10 步期间重新开口，当前 turn 会继续完成内部清理，但后续前台输出应按 stale 规则被抑制。
+
+如果此时另一个线程正在进行自己的回复：
+
+- 另一个线程的 `current_turn_id` 不受影响
+- 另一个线程的 `text_delta / turn_done` 不应被当前线程的 stale 裁决吞掉
 
 这个 happy path 体现了三条核心约束：
 
@@ -488,7 +512,7 @@ idle -> playing -> interrupt_pending -> interrupted -> cooldown -> idle
 
 ## 13. 浏览器事件 payload 示例
 
-下面给出第一阶段建议保持兼容的最小 payload 示例。
+下面给出第一阶段建议直接采用的最小 payload 示例。
 
 ### 13.1 `surface_state`
 
@@ -505,22 +529,22 @@ idle -> playing -> interrupt_pending -> interrupted -> cooldown -> idle
 }
 ```
 
-### 13.2 `front_final_chunk`
+### 13.2 `text_delta`
 
 ```json
 {
-  "type": "front_final_chunk",
+  "type": "text_delta",
   "thread_id": "thread-demo",
   "turn_id": "turn_a1b2c3",
   "text": "我看到"
 }
 ```
 
-### 13.3 `front_final_done`
+### 13.3 `turn_done`
 
 ```json
 {
-  "type": "front_final_done",
+  "type": "turn_done",
   "thread_id": "thread-demo",
   "turn_id": "turn_a1b2c3",
   "text": "我看到你前面站着一个人。"
@@ -549,26 +573,27 @@ idle -> playing -> interrupt_pending -> interrupted -> cooldown -> idle
 }
 ```
 
-### 13.6 可选的 `front_hint_*`
+### 13.6 可选的 `thinking`
 
-如果第一阶段保留宿主即时确认，也建议把它严格当成可选增强，而不是主回复流：
+如果前端希望展示单脑思考态，可以直接接 `thinking`：
 
 ```json
 {
-  "type": "front_hint_done",
+  "type": "thinking",
   "thread_id": "thread-demo",
   "turn_id": "turn_a1b2c3",
-  "text": "我先看一下。"
+  "text": "正在观察前方环境"
 }
 ```
 
 约束：
 
 - `speech_preview` 继续服务实时转写 UX，不应被误删
-- `front_hint_*` 可以完全不发
-- `front_final_done` 应始终带整轮最终全文
-- `front_final_chunk` 和 `front_final_done` 的 `turn_id` 必须一致
-- stale turn 不应再发新的 `front_final_*`
+- `turn_done` 应始终带整轮最终全文
+- `text_delta` 和 `turn_done` 的 `turn_id` 必须一致
+- stale turn 不应再发新的 `text_delta / turn_done / turn_error`
+- `thinking` 和 `tool_progress` 只能表达辅助手段，不能承载真实 assistant 文本流
+- 某个线程进入 stale，不应导致其他线程停止发送自己的 `text_delta / turn_done`
 
 ## 14. 建议的宿主伪代码
 
@@ -611,7 +636,7 @@ async def handle_agent_event(event):
     if is_text(event):
         turns[event.turn_id].status = "streaming"
         turns[event.turn_id].final_text_buffer += event.text
-        emit_front_final_chunk(thread_id, event.turn_id, event.text)
+        emit_text_delta(thread_id, event.turn_id, event.text)
         return
 
     if is_pending_tool_call(event):
@@ -624,7 +649,7 @@ async def handle_agent_event(event):
 
     if is_completion(event):
         turns[event.turn_id].status = "completed"
-        emit_front_final_done(thread_id, event.turn_id, event.text)
+        emit_turn_done(thread_id, event.turn_id, event.text)
         await finish_turn_visual_phase(thread_id, event.turn_id)
         return
 
@@ -639,15 +664,16 @@ async def handle_agent_event(event):
 - turn 裁决先于事件翻译
 - stale 过滤先于前台输出
 - tool 恢复围绕 `run_id`
+- stale 和 front 裁决都是 per-thread lane 语义
 
-## 15. 第一阶段建议先做到什么
+## 15. 当前实现的最小稳定面
 
-如果想让第一阶段尽快跑通，建议把目标压缩为：
+当前实现已经按下面这组最小稳定面落地，后续增强建议继续围绕这组约束展开：
 
 - 线程相位只保留 `idle/listening/listening_wait/replying/settling`
 - turn 状态只保留 `submitted/streaming/waiting_tool/completed/failed/stale`
-- `TextEvent` 直接进 `front_final_chunk`
-- `front_hint_*` 暂时不发也没问题
+- `TextEvent` 直接进 `text_delta`
+- `ThinkingEvent` 和 `ToolProgressEvent` 先按需公开，不再补一个 hint 流
 - 长时工具先只做 `dance/head_tracking/stop_motion`
 - stale 过滤必须第一天就做
 
@@ -657,7 +683,7 @@ async def handle_agent_event(event):
 - 不要为了省事，把 stale 事件继续往前端发
 - 不要把 `run_id` 省掉，退回“当前线程猜测恢复”
 - 不要为了复用旧代码，再次把 `FrontService` 或 `BrainKernel` 拉回热路径
-- 不要让 `front_hint_*` 再次承担真正的 assistant 文本流
+- 不要重新发明一条 hint/final 双轨文本协议
 
 ## 17. 一句话总结
 
@@ -666,6 +692,6 @@ async def handle_agent_event(event):
 - 守住线程相位
 - 守住 turn 裁决
 - 守住 run 恢复
-- 守住打断和兼容边界
+- 守住打断和协议边界
 
 只要这四件事写稳，后面的实现复杂度就会明显下降。

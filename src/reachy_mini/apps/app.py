@@ -52,11 +52,12 @@ class ChatResponse(BaseModel):
     """Final reply returned from the resident runtime."""
 
     thread_id: str
+    turn_id: str = ""
     reply: str
     error: str = ""
     surface_state: dict[str, Any] | None = None
-    front_decision: dict[str, Any] | None = None
-    front_tool_results: list[dict[str, Any]] = Field(default_factory=list)
+    thinking: list[dict[str, Any]] = Field(default_factory=list)
+    tool_progress: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class RuntimeStatusResponse(BaseModel):
@@ -798,16 +799,17 @@ class ReachyMiniApp:
         session_id = str(payload.session_id or thread_id)
         user_id = str(payload.user_id or "user")
         queue = runtime.subscribe_front_outputs()
+        turn_id = ""
         final_reply = ""
         final_error = ""
-        front_decision: dict[str, Any] | None = None
-        front_tool_results: list[dict[str, Any]] = []
+        thinking_events: list[dict[str, Any]] = []
+        tool_progress_events: list[dict[str, Any]] = []
 
         async def surface_state_handler(state: dict[str, Any]) -> None:
             self.apply_runtime_surface_state(state)
 
         try:
-            await runtime.handle_user_turn(
+            turn_id = await runtime.handle_user_turn(
                 thread_id=thread_id,
                 session_id=session_id,
                 user_id=user_id,
@@ -823,18 +825,20 @@ class ReachyMiniApp:
                 try:
                     if packet.thread_id != thread_id:
                         continue
-                    if packet.type == "front_final_done":
+                    if packet.type == "turn_done":
                         final_reply = str(packet.text or "").strip()
-                    elif packet.type == "front_decision" and packet.payload is not None:
-                        packet_decision = dict(packet.payload)
-                        if (
-                            front_decision is None
-                            or str(packet_decision.get("signal_name", "") or "") == "user_turn"
-                            or str(front_decision.get("signal_name", "") or "") != "user_turn"
-                        ):
-                            front_decision = packet_decision
-                    elif packet.type == "front_tool_result" and packet.payload is not None:
-                        front_tool_results.append(dict(packet.payload))
+                    elif packet.type == "thinking":
+                        event = {
+                            "text": str(packet.text or ""),
+                            **dict(packet.payload or {}),
+                        }
+                        thinking_events.append(event)
+                    elif packet.type == "tool_progress":
+                        event = {
+                            "content": str(packet.text or ""),
+                            **dict(packet.payload or {}),
+                        }
+                        tool_progress_events.append(event)
                     elif packet.type == "turn_error":
                         final_error = str(packet.error or "").strip()
                 finally:
@@ -844,11 +848,12 @@ class ReachyMiniApp:
 
         return ChatResponse(
             thread_id=thread_id,
+            turn_id=turn_id,
             reply=final_reply,
             error=final_error,
             surface_state=runtime.get_thread_surface_state(thread_id),
-            front_decision=front_decision or runtime.get_thread_front_decision(thread_id),
-            front_tool_results=front_tool_results,
+            thinking=thinking_events,
+            tool_progress=tool_progress_events,
         )
 
     async def _wait_and_publish_runtime_ready(
@@ -886,17 +891,6 @@ class ReachyMiniApp:
                     "type": "surface_state",
                     "thread_id": thread_id,
                     "state": dict(surface_state),
-                }
-            )
-
-        front_decision = runtime.get_thread_front_decision(thread_id)
-        if front_decision is not None:
-            await outbound_queue.put(
-                {
-                    "type": "front_decision",
-                    "thread_id": thread_id,
-                    "turn_id": str(front_decision.get("turn_id", "") or ""),
-                    "payload": dict(front_decision),
                 }
             )
 

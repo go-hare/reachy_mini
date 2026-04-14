@@ -258,6 +258,9 @@ examples/debug/measures/*
 .DS_Store
 
 src/reachy_mini/tools/camera_calibration/images/*
+.ccmini/
+.mini_agent/
+src/ccmini/.ccmini/
 src/reachy_mini/tools/camera_calibration/images_for_crop_analysis/*
 src/reachy_mini/tools/camera_calibration/images_for_crop_analysis_lite/*
 src/reachy_mini/tools/camera_calibration/*.yaml

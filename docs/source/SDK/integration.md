@@ -69,7 +69,7 @@ Suggested responsibilities:
 - `SOUL.md`: stable personality, values, and emotional baseline
 - `TOOLS.md`: tool policy, permissions, and execution boundaries
 - `FRONT.md`: user-visible style and wording constraints
-- `config.jsonl`: runtime configuration for front/kernel models and history
+- `config.jsonl`: runtime configuration for the single `brain_model`, history, and media options
 - `memory/`: durable memory storage
 - `session/`: per-thread session streams such as `front.jsonl` and `brain.jsonl`
 
@@ -80,22 +80,22 @@ Tool loading is layered:
 
 The runtime merges them in that order. System tools cover the common workspace actions for the current app project. Profile tools are where app-specific capabilities should be added.
 
-At startup, the runtime creates a resident kernel and keeps it running in the background for the process lifetime. User turns flow through:
+At startup, the runtime creates one resident single-brain agent and keeps it running in the background for the process lifetime. User turns flow through:
 
-`app project -> front -> BrainKernel -> front`
+`app project -> RuntimeScheduler -> ccmini.Agent -> browser`
 
 The resident lifecycle is:
 
 - `start()`
-- `publish_user_input()`
-- `recv_output()`
+- `submit_user_input()`
+- `on_event()` / `wait_event()` / `drain_events()`
 - `stop()`
 
 Where this happens in code:
 
 - CLI entry: `reachy_mini.runtime.main`
 - Runtime assembly: `RuntimeScheduler.from_profile(...)`
-- Resident kernel bridge: `RuntimeScheduler.start()` and `RuntimeScheduler.stop()`
+- Resident single-brain host: `RuntimeScheduler.start()` and `RuntimeScheduler.stop()`
 
 From the CLI, this runtime stays alive for as long as the `reachy-mini-agent` process stays alive. When the generated app is installed and launched by the daemon, `AppManager` keeps that app process resident in the background.
 
@@ -105,13 +105,23 @@ There are two different launch modes:
 - `reachy-mini-agent web my_app`: browser UI plus `/ws/agent`, without opening a robot connection
 - `python -m my_app.main`: full generated app process, including the normal `ReachyMini(...)` connection path
 
-Use `reachy-mini-agent web` while developing profile/front/kernel behavior on a machine that does not have a daemon or robot connected. Use `python -m my_app.main` when you do want the generated app process to connect to Reachy.
+Use `reachy-mini-agent web` while developing single-brain behavior on a machine that does not have a daemon or robot connected. Use `python -m my_app.main` when you do want the generated app process to connect to Reachy.
 
 For one-shot runs from the terminal:
 
 ```bash
 reachy-mini-agent agent my_app --message "Hello"
 ```
+
+The browser/runtime event contract is now single-track:
+
+- `speech_preview`: live ASR preview
+- `surface_state`: host lifecycle state such as `listening`, `replying`, `idle`
+- `thinking`: optional visible reasoning/thought summaries
+- `tool_progress`: optional visible tool progress
+- `text_delta`: the only streamed assistant text event
+- `turn_done`: the final full reply for one turn
+- `turn_error`: terminal error for one turn
 
 ## Creating App Projects
 

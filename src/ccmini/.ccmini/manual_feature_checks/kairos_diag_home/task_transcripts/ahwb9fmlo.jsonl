@@ -1,2 +1,0 @@
-{"ts": 1775699672.3353274, "task_id": "ahwb9fmlo", "role": "user", "content": "Reply with exactly KAIROS_CRON_WAKE_OK", "metadata": {"event": "spawn", "name": "kairos-cron", "task_type": "local_agent", "profile": ""}}
-{"ts": 1775699677.410041, "task_id": "ahwb9fmlo", "role": "assistant", "content": "KAIROS_CRON_WAKE_OK", "metadata": {"event": "completion"}}

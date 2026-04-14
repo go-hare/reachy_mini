@@ -1,6 +1,0 @@
-{"ts": 1775698725.8817275, "role": "user", "content": "Reply with exactly LIVE_TEAM_BOOT_OK", "metadata": {"event": "prompt", "agent_id": "worker-one@live-team"}}
-{"ts": 1775698728.8726187, "role": "assistant", "content": "LIVE_TEAM_BOOT_OK", "metadata": {"event": "completion", "agent_id": "worker-one@live-team"}}
-{"ts": 1775698729.3864288, "role": "user", "content": "Complete task #1: Return LIVE_TEAM_TASK_OK\n\nClaim and finish this team task", "metadata": {"event": "prompt", "agent_id": "worker-one@live-team"}}
-{"ts": 1775698731.5803888, "role": "assistant", "content": "LIVE_TEAM_TASK_OK", "metadata": {"event": "completion", "agent_id": "worker-one@live-team"}}
-{"ts": 1775698732.0915473, "role": "user", "content": "Reply with exactly LIVE_TEAM_FOLLOWUP_OK", "metadata": {"event": "prompt", "agent_id": "worker-one@live-team"}}
-{"ts": 1775698734.4480054, "role": "assistant", "content": "LIVE_TEAM_FOLLOWUP_OK", "metadata": {"event": "completion", "agent_id": "worker-one@live-team"}}

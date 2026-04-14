@@ -1,4 +1,3 @@
 {"kind":"profile","name":"demo_web"}
 {"kind":"front","mode":"text","style":"friendly_concise","history_limit":6}
-{"kind":"front_model","provider":"mock","model":"reachy_mini_front_mock","temperature":0.4}
-{"kind":"kernel_model","provider":"mock","model":"reachy_mini_kernel_mock","temperature":0.2}
+{"kind":"brain_model","provider":"mock","model":"reachy_mini_brain_mock","temperature":0.2}

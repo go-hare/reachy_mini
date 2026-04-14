@@ -38,9 +38,10 @@ The dialogue flow is streamed over WebSocket:
 - browser microphone streams raw `browser_audio_chunk` PCM16 audio and ends with `browser_audio_stop`
 - runtime turns browser or robot microphone audio into `speech_preview` partial text and then the final `user_text`
 - runtime emits `user_speech_started` / `user_speech_stopped` as surface-state transitions
-- runtime emits `front_hint_*`
 - runtime keeps pushing `surface_state`
-- runtime emits `front_final_*`
+- runtime emits `thinking` and `tool_progress` when intermediate state should be visible
+- runtime streams assistant text through `text_delta`
+- runtime closes one turn with `turn_done`
 - errors are emitted as `turn_error`
 
 For a FunASR-style streaming speech input chain, `profiles/config.jsonl` can use:

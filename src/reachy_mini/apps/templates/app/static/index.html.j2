@@ -70,9 +70,9 @@
                     <ol>
                         <li><code>ReachyMiniApp</code> 常驻托管当前 app 的 runtime</li>
                         <li>页面通过 <code>/ws/agent</code> 把文本或浏览器语音生命周期事件发进 runtime</li>
-                        <li><code>front</code> 先回一轮可见 hint，再把消息投给 <code>kernel</code></li>
-                        <li><code>kernel</code> 处理完成后，再交给 <code>front</code> 输出 final</li>
-                        <li>页面持续监听 <code>surface_state</code>、hint、final 和错误事件</li>
+                        <li><code>ccmini.Agent</code> 作为唯一大脑处理输入、推理和工具调用</li>
+                        <li>宿主把思考态、工具进度和最终回复直接映射到浏览器事件</li>
+                        <li>页面持续监听 <code>surface_state</code>、<code>thinking</code>、<code>tool_progress</code>、<code>text_delta</code>、<code>turn_done</code> 和错误事件</li>
                     </ol>
                 </div>
             </div>

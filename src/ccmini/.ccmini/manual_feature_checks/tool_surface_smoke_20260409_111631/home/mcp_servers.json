@@ -1,9 +1,0 @@
-{
-  "mcpServers": {
-    "demo": {
-      "type": "http",
-      "url": "https://example.com",
-      "headers": {}
-    }
-  }
-}

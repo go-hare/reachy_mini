@@ -136,7 +136,7 @@ class AppRuntimeHostAdapter:
                     config=runtime_config.speech,
                     media=media,
                     speech_driver=speech_driver,
-                    fallback_api_key=runtime_config.front_model.api_key,
+                    fallback_api_key=str(runtime_config.brain_model.api_key or ""),
                 )
                 if reply_audio_service is not None:
                     self.logger.info(

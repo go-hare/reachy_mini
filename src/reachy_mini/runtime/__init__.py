@@ -2,12 +2,9 @@
 
 from typing import Any
 
-from reachy_mini.core.memory import MemoryView
-
 from .embodiment import EmbodimentCoordinator
 from .config import (
-    FrontModelConfig,
-    KernelModelConfig,
+    BrainModelConfig,
     ProfileRuntimeConfig,
     SpeechInputRuntimeConfig,
     SpeechRuntimeConfig,
@@ -16,6 +13,7 @@ from .config import (
 from .moves import MovementManager
 from .project import AppProject, create_app_project, inspect_app_project
 from .profile_loader import ProfileBundle, load_profile_bundle
+from .profile_tools import FunctionTool
 from .reply_audio import RuntimeReplyAudioService
 from .scheduler import FrontOutputPacket, RuntimeScheduler
 from .speech_session import RuntimeMicrophoneBridge
@@ -24,12 +22,11 @@ from .surface_driver import SurfaceDriver
 
 __all__ = [
     "AppProject",
+    "BrainModelConfig",
     "EmbodimentCoordinator",
-    "FrontModelConfig",
+    "FunctionTool",
     "FrontOutputPacket",
     "HostedAppProject",
-    "KernelModelConfig",
-    "MemoryView",
     "MovementManager",
     "ProfileBundle",
     "ProfileRuntimeConfig",
