@@ -1,0 +1,33 @@
+directories:
+  output: release
+  buildResources: build
+appId: com.ccmini.desktop
+productName: ccmini Desktop
+files:
+  - filter:
+      - dist/**/*
+      - electron/**/*
+      - node_modules/**/*
+asarUnpack: []
+extraResources: []
+win:
+  target:
+    - nsis
+  icon: public/favicon.png
+mac:
+  target:
+    - dmg
+    - zip
+  icon: public/favicon.png
+  category: public.app-category.productivity
+linux:
+  target:
+    - AppImage
+    - deb
+  icon: public/favicon.png
+  category: Utility
+nsis:
+  oneClick: true
+  perMachine: false
+  deleteAppDataOnUninstall: false
+electronVersion: 41.2.0

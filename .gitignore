@@ -266,3 +266,9 @@ src/reachy_mini/tools/camera_calibration/images_for_crop_analysis_lite/*
 src/reachy_mini/tools/camera_calibration/*.yaml
 
 src/ccmini/frontend/node_modules/*
+
+src/ccmini/frontend-web/node_modules/*
+
+src/ccmini/frontend-web/dist/*
+
+src/ccmini/frontend-web/.electron-local/*

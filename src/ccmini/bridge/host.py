@@ -16,16 +16,20 @@ from ..config import load_config
 from ..messages import (
     CompletionEvent,
     ErrorEvent,
+    Message,
     PendingToolCallEvent,
     PromptSuggestionEvent,
     RequestStartEvent,
     SpeculationEvent,
+    TextBlock,
     ThinkingEvent,
     TextEvent,
+    ToolResultBlock,
     ToolCallEvent,
     ToolProgressEvent,
     ToolResultEvent,
     ToolUseSummaryEvent,
+    ToolUseBlock,
     UsageEvent,
     tool_result_content_to_text,
 )
@@ -33,6 +37,7 @@ from ..permissions import PermissionDecision, PermissionMode, PermissionRule, bu
 from ..profiles import RuntimeProfile
 from ..prompts import SystemPrompt
 from ..providers import BaseProvider, ProviderConfig
+from ..session.store import SessionMetadata, SessionStore
 from ..tool import ClientTool, Tool, ToolResult, ToolUseContext, find_tool_by_name
 from .api import BridgeAPI
 from .core import BridgeConfig, BridgeServer
@@ -203,8 +208,11 @@ class _ExecutorSessionState:
     agent: Agent
     started: bool = False
     active_query: asyncio.Task[None] | None = None
+    active_stream_since: int = 0
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     unsubscribe: Callable[[], None] | None = None
+    research_mode: bool = False
+    project_id: str = ""
     pending_control_requests: dict[str, asyncio.Future[dict[str, Any]]] = field(
         default_factory=dict,
     )
@@ -280,8 +288,13 @@ class RemoteExecutorHost:
     ) -> None:
         self._agent_factory = agent_factory
         self._sessions: dict[str, _ExecutorSessionState] = {}
+        self._session_store = SessionStore()
         self._api = _ExecutorBridgeAPI(self)
-        self._server = BridgeServer(bridge_config or BridgeConfig(enabled=True), api=self._api)
+        self._server = BridgeServer(
+            bridge_config or BridgeConfig(enabled=True),
+            api=self._api,
+            compat_handler=self,
+        )
         self._webrtc = WebRTCExecutorManager(self._api)
 
     @property
@@ -329,6 +342,399 @@ class RemoteExecutorHost:
             auth_token=self.config.auth_token,
             websocket_url=websocket_url,
         )
+
+    def _load_session_metadata(self, session_id: str) -> SessionMetadata:
+        return self._session_store.load_metadata(session_id) or SessionMetadata(
+            session_id=session_id,
+            created_at=time.time(),
+        )
+
+    def _save_session_metadata(self, meta: SessionMetadata) -> None:
+        meta.session_id = str(meta.session_id or "").strip()
+        if not meta.created_at:
+            meta.created_at = time.time()
+        meta.updated_at = time.time()
+        self._session_store.save_metadata(meta)
+
+    def _sync_session_metadata_from_state(
+        self,
+        session_id: str,
+        state: _ExecutorSessionState | None = None,
+    ) -> SessionMetadata:
+        meta = self._load_session_metadata(session_id)
+        if state is not None:
+            title = str(getattr(state.agent, "_session_name", "") or "").strip()
+            if title:
+                meta.title = title
+            meta.model = str(getattr(getattr(state.agent, "provider", None), "model_name", "") or meta.model)
+            meta.research_mode = bool(state.research_mode)
+            meta.project_id = str(state.project_id or "")
+            meta.cwd = str(getattr(state.agent, "working_directory", "") or meta.cwd)
+        self._save_session_metadata(meta)
+        return meta
+
+    @staticmethod
+    def _iso_timestamp(value: Any) -> str:
+        try:
+            ts = float(value or 0)
+        except (TypeError, ValueError):
+            ts = 0.0
+        if ts <= 0:
+            ts = time.time()
+        return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(ts))
+
+    @staticmethod
+    def _collect_message_text(message: Message) -> str:
+        if isinstance(message.content, str):
+            return message.content
+        parts: list[str] = []
+        for block in message.content:
+            if isinstance(block, TextBlock) and block.text:
+                parts.append(block.text)
+        return "\n".join(part for part in parts if part).strip()
+
+    def _convert_messages_to_compat(self, messages: list[Message]) -> list[dict[str, Any]]:
+        compat_messages: list[dict[str, Any]] = []
+        for message in messages:
+            if message.role == "system":
+                text = self._collect_message_text(message)
+                if text:
+                    compat_messages.append(
+                        {
+                            "role": "assistant",
+                            "content": text,
+                            "created_at": self._iso_timestamp(message.metadata.get("timestamp", time.time())),
+                            "isMeta": True,
+                        }
+                    )
+                continue
+
+            if message.role == "user":
+                tool_results = message.tool_result_blocks
+                if tool_results and compat_messages:
+                    last_assistant = compat_messages[-1]
+                    tool_calls = last_assistant.setdefault("toolCalls", [])
+                    for tool_result in tool_results:
+                        matched = None
+                        for tool_call in tool_calls:
+                            if str(tool_call.get("id", "")) == tool_result.tool_use_id:
+                                matched = tool_call
+                                break
+                        if matched is None:
+                            matched = {
+                                "id": tool_result.tool_use_id,
+                                "name": str(
+                                    tool_result.metadata.get("tool_name", "")
+                                    or tool_result.metadata.get("name", "")
+                                    or "unknown"
+                                ),
+                                "input": {},
+                            }
+                            tool_calls.append(matched)
+                        matched["status"] = "error" if tool_result.is_error else "done"
+                        matched["result"] = tool_result_content_to_text(tool_result.content)
+
+                user_text = self._collect_message_text(message)
+                if user_text.startswith("# Companion\n") or user_text.startswith("[Context attachments]"):
+                    continue
+                if user_text:
+                    compat_messages.append(
+                        {
+                            "role": "user",
+                            "content": user_text,
+                            "created_at": self._iso_timestamp(message.metadata.get("timestamp", time.time())),
+                            "id": message.metadata.get("uuid", ""),
+                        }
+                    )
+                continue
+
+            assistant_text = self._collect_message_text(message)
+            compat_message: dict[str, Any] = {
+                "role": "assistant",
+                "content": assistant_text,
+                "created_at": self._iso_timestamp(message.metadata.get("timestamp", time.time())),
+                "id": message.metadata.get("uuid", ""),
+            }
+            tool_calls: list[dict[str, Any]] = []
+            for block in message.tool_use_blocks:
+                tool_calls.append(
+                    {
+                        "id": block.id,
+                        "name": block.name,
+                        "input": dict(block.input),
+                        "status": "running",
+                    }
+                )
+            if tool_calls:
+                compat_message["toolCalls"] = tool_calls
+            compat_messages.append(compat_message)
+        return compat_messages
+
+    def _get_session_messages(self, session_id: str) -> list[Message]:
+        state = self._sessions.get(session_id)
+        if state is not None:
+            store = getattr(state.agent, "_session_store", None)
+            if store is not None:
+                return store.load_session(session_id)
+        return self._session_store.load_session(session_id)
+
+    def list_compat_conversations(self) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for info in self._session_store.list_sessions():
+            meta = self._load_session_metadata(info.session_id)
+            items.append(
+                {
+                    "id": info.session_id,
+                    "title": meta.title or info.title or "New Chat",
+                    "updated_at": self._iso_timestamp(meta.updated_at or info.updated_at),
+                    "created_at": self._iso_timestamp(meta.created_at),
+                    "model": meta.model,
+                    "research_mode": bool(meta.research_mode),
+                    "project_id": meta.project_id or None,
+                    "message_count": info.message_count,
+                    "preview": info.preview,
+                    "_sort_ts": float(meta.updated_at or 0),
+                }
+            )
+            seen.add(info.session_id)
+
+        for session in self._api.list_sessions():
+            session_id = str(session.get("session_id", "") or "").strip()
+            if not session_id or session_id in seen:
+                continue
+            meta = self._load_session_metadata(session_id)
+            items.append(
+                {
+                    "id": session_id,
+                    "title": meta.title or "New Chat",
+                    "updated_at": self._iso_timestamp(meta.updated_at),
+                    "created_at": self._iso_timestamp(meta.created_at),
+                    "model": meta.model,
+                    "research_mode": bool(meta.research_mode),
+                    "project_id": meta.project_id or None,
+                    "message_count": meta.message_count,
+                    "preview": "",
+                    "_sort_ts": float(meta.updated_at or time.time()),
+                }
+            )
+
+        items.sort(
+            key=lambda item: float(item.get("_sort_ts", 0) or 0),
+            reverse=True,
+        )
+        for item in items:
+            item.pop("_sort_ts", None)
+        return items
+
+    async def create_compat_conversation(
+        self,
+        *,
+        title: str = "",
+        model: str = "",
+        research_mode: bool = False,
+    ) -> dict[str, Any]:
+        handle = await self.create_session({"source": "donor-frontend"})
+        state = self._sessions.get(handle.session_id)
+        if state is not None:
+            if title:
+                setattr(state.agent, "_session_name", title)
+            state.research_mode = bool(research_mode)
+            if model:
+                with contextlib.suppress(Exception):
+                    state.agent.provider._config.model = model  # type: ignore[attr-defined]
+        meta = self._load_session_metadata(handle.session_id)
+        meta.title = title or meta.title or "New Chat"
+        if model:
+            meta.model = model
+        elif state is not None:
+            meta.model = str(getattr(state.agent.provider, "model_name", "") or meta.model)
+        meta.research_mode = bool(research_mode)
+        self._save_session_metadata(meta)
+        return {
+            "id": handle.session_id,
+            "title": meta.title,
+            "model": meta.model,
+            "research_mode": meta.research_mode,
+            "created_at": self._iso_timestamp(meta.created_at),
+            "updated_at": self._iso_timestamp(meta.updated_at),
+        }
+
+    def get_compat_conversation(self, session_id: str) -> dict[str, Any] | None:
+        meta = self._load_session_metadata(session_id)
+        exists = self._session_store.session_exists(session_id) or session_id in self._sessions
+        if not exists:
+            return None
+        state = self._sessions.get(session_id)
+        if state is not None:
+            meta = self._sync_session_metadata_from_state(session_id, state)
+        messages = self._convert_messages_to_compat(self._get_session_messages(session_id))
+        return {
+            "id": session_id,
+            "title": meta.title or "New Chat",
+            "model": meta.model,
+            "research_mode": bool(meta.research_mode),
+            "project_id": meta.project_id or None,
+            "messages": messages,
+            "created_at": self._iso_timestamp(meta.created_at),
+            "updated_at": self._iso_timestamp(meta.updated_at),
+        }
+
+    def update_compat_conversation(self, session_id: str, data: dict[str, Any]) -> dict[str, Any] | None:
+        conversation = self.get_compat_conversation(session_id)
+        if conversation is None:
+            return None
+        state = self._sessions.get(session_id)
+        meta = self._load_session_metadata(session_id)
+        if "title" in data:
+            title = str(data.get("title", "") or "").strip()
+            meta.title = title
+            if state is not None:
+                setattr(state.agent, "_session_name", title)
+        if "research_mode" in data:
+            meta.research_mode = bool(data.get("research_mode"))
+            if state is not None:
+                state.research_mode = meta.research_mode
+        if "project_id" in data:
+            meta.project_id = str(data.get("project_id", "") or "").strip()
+            if state is not None:
+                state.project_id = meta.project_id
+        if "model" in data:
+            model = str(data.get("model", "") or "").strip()
+            if model:
+                meta.model = model
+                if state is not None:
+                    with contextlib.suppress(Exception):
+                        state.agent.provider._config.model = model  # type: ignore[attr-defined]
+        self._save_session_metadata(meta)
+        return self.get_compat_conversation(session_id)
+
+    async def delete_compat_conversation(self, session_id: str) -> bool:
+        if session_id in self._sessions:
+            await self._shutdown_session_async(session_id)
+        else:
+            self._api.remove_session(session_id)
+        self._session_store.delete_session(session_id)
+        return True
+
+    async def stop_compat_generation(self, session_id: str) -> dict[str, Any]:
+        state = self._sessions.get(session_id)
+        if state is None or state.active_query is None or state.active_query.done():
+            return {"ok": True, "status": "idle"}
+        with contextlib.suppress(Exception):
+            state.agent.cancel_submit()
+        state.active_query.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await state.active_query
+        state.active_query = None
+        return {"ok": True, "status": "stopped"}
+
+    def _stream_events_since(self, session_id: str, since: int) -> list[dict[str, Any]]:
+        events = self._api.get_events(session_id, since=since, limit=1000) or []
+        return [
+            event for event in events
+            if str(event.get("type", "")) == "stream_event"
+        ]
+
+    def get_compat_stream_status(self, session_id: str) -> dict[str, Any]:
+        state = self._sessions.get(session_id)
+        if state is None:
+            return {"active": False, "eventCount": 0}
+        events = self._stream_events_since(session_id, state.active_stream_since)
+        return {"active": bool(state.active_query and not state.active_query.done()), "eventCount": len(events)}
+
+    def get_compat_generation_status(self, session_id: str) -> dict[str, Any]:
+        state = self._sessions.get(session_id)
+        if state is None:
+            return {"active": False, "status": "idle", "text": "", "thinking": ""}
+
+        text_parts: list[str] = []
+        thinking_parts: list[str] = []
+        thinking_summary = ""
+        for event in self._stream_events_since(session_id, state.active_stream_since):
+            payload = event.get("payload", {})
+            event_type = str(payload.get("event_type", "") or "")
+            if event_type in {"text", "assistant_delta", "text_delta"}:
+                chunk = str(payload.get("text", "") or "")
+                if chunk:
+                    text_parts.append(chunk)
+            elif event_type == "thinking":
+                chunk = str(payload.get("text", "") or "")
+                if chunk:
+                    thinking_parts.append(chunk)
+            elif event_type == "thinking_summary":
+                thinking_summary = str(payload.get("text", "") or payload.get("summary", "") or "")
+            elif event_type == "completion":
+                chunk = str(payload.get("text", "") or "")
+                if chunk:
+                    text_parts = [chunk]
+            elif event_type == "executor_error":
+                return {
+                    "active": False,
+                    "status": "error",
+                    "text": "".join(text_parts),
+                    "thinking": "".join(thinking_parts),
+                    "thinkingSummary": thinking_summary,
+                    "error": str(payload.get("error", "") or ""),
+                }
+
+        return {
+            "active": bool(state.active_query and not state.active_query.done()),
+            "status": "generating" if state.active_query and not state.active_query.done() else "idle",
+            "text": "".join(text_parts),
+            "thinking": "".join(thinking_parts),
+            "thinkingSummary": thinking_summary,
+            "crossProcess": False,
+        }
+
+    def get_compat_context_size(self, session_id: str) -> dict[str, int]:
+        meta = self._load_session_metadata(session_id)
+        cfg = load_config()
+        limit = int(getattr(cfg, "compact_threshold", 160000) or 160000) + 33000
+        return {"tokens": int(meta.total_tokens or 0), "limit": limit}
+
+    async def start_compat_chat(
+        self,
+        *,
+        session_id: str,
+        message: str,
+        attachments: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        state = await self._ensure_started(session_id)
+        status = self._api.get_session_status(session_id)
+        state.active_stream_since = max(0, int(status.get("next_sequence_num", 1) or 1) - 1)
+        result = await self._handle_query(
+            session_id,
+            message,
+            metadata={"source": "donor-frontend"},
+            attachments=attachments,
+        )
+        return {
+            "status": result,
+            "stream_since": state.active_stream_since,
+        }
+
+    async def answer_compat_question(
+        self,
+        *,
+        session_id: str,
+        request_id: str,
+        tool_use_id: str,
+        answers: dict[str, Any],
+    ) -> dict[str, Any]:
+        del tool_use_id
+        normalized = " ".join(str(value or "") for value in answers.values()).strip().lower()
+        allow = normalized in {"y", "yes", "allow", "ok", "true", "1", "继续", "允许", "同意"}
+        result = await self._handle_control_response(
+            session_id,
+            request_id,
+            {
+                "id": request_id,
+                "decision": "allow" if allow else "deny",
+                "allow": allow,
+            },
+        )
+        return {"ok": result == "accepted"}
 
     def _ensure_session_state(self, session_id: str) -> _ExecutorSessionState:
         state = self._sessions.get(session_id)
@@ -862,9 +1268,13 @@ class RemoteExecutorHost:
         state = await self._ensure_started(session_id)
         if state.active_query is not None and not state.active_query.done():
             return "busy"
+        session_status = self._api.get_session_status(session_id)
+        state.active_stream_since = max(
+            0,
+            int(session_status.get("next_sequence_num", 1) or 1) - 1,
+        )
 
         query_metadata = dict(metadata or {})
-        session_status = self._api.get_session_status(session_id)
         session_metadata = session_status.get("metadata", {}) if isinstance(session_status, dict) else {}
         if isinstance(session_metadata, dict):
             source = str(session_metadata.get("source", "") or "").strip()
@@ -895,6 +1305,11 @@ class RemoteExecutorHost:
         state = await self._ensure_started(session_id)
         if state.active_query is not None and not state.active_query.done():
             return "busy"
+        session_status = self._api.get_session_status(session_id)
+        state.active_stream_since = max(
+            0,
+            int(session_status.get("next_sequence_num", 1) or 1) - 1,
+        )
 
         state.active_query = asyncio.create_task(
             self._run_submit_tool_results(session_id, state, run_id, results_payload),

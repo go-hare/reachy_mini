@@ -481,6 +481,8 @@ def _run_git_snapshot(*args: str, cwd: str) -> str | None:
             check=False,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
     except (FileNotFoundError, OSError):
         return None

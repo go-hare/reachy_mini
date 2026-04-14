@@ -47,6 +47,8 @@ class SessionMetadata:
     total_tokens: int = 0
     total_cost_usd: float = 0.0
     model: str = ""
+    research_mode: bool = False
+    project_id: str = ""
     parent_session: str = ""
     last_stop_reason: str = ""
     turn_phase: str = ""
@@ -88,6 +90,8 @@ class SessionStore:
             "total_tokens": meta.total_tokens,
             "total_cost_usd": meta.total_cost_usd,
             "model": meta.model,
+            "research_mode": meta.research_mode,
+            "project_id": meta.project_id,
             "parent_session": meta.parent_session,
             "last_stop_reason": meta.last_stop_reason,
             "turn_phase": meta.turn_phase,
@@ -95,6 +99,20 @@ class SessionStore:
             "pending_tool_count": meta.pending_tool_count,
         }
         path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    def set_title(self, session_id: str, title: str) -> None:
+        meta = self.load_metadata(session_id) or SessionMetadata(
+            session_id=session_id,
+            created_at=datetime.now().timestamp(),
+        )
+        meta.session_id = session_id
+        meta.title = title
+        meta.updated_at = datetime.now().timestamp()
+        self.save_metadata(meta)
+
+    def delete_session(self, session_id: str) -> None:
+        self._session_path(session_id).unlink(missing_ok=True)
+        self._meta_path(session_id).unlink(missing_ok=True)
 
     def load_session(self, session_id: str) -> list[Message]:
         path = self._session_path(session_id)
