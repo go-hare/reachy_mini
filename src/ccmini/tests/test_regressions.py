@@ -4427,7 +4427,6 @@ def test_agent_host_api_isolates_kairos_and_buddy_state_per_instance(
 
     asyncio.run(run())
 
-
 def test_agent_team_peer_and_tool_profile_host_api(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

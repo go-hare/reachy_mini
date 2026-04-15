@@ -795,6 +795,9 @@ export function reconnectStream(
             if (parsed.type === 'ask_user' && onSystem) {
               onSystem('ask_user', '', parsed);
             }
+            if (parsed.type === 'control_request_resolved' && onSystem) {
+              onSystem('control_request_resolved', '', parsed);
+            }
             if (parsed.type === 'task_event' && onSystem) {
               onSystem('task_event', '', parsed);
             }
@@ -1390,6 +1393,13 @@ export async function sendMessage(
           if (parsed.type === 'ask_user') {
             if (onSystem) {
               onSystem('ask_user', '', parsed);
+            }
+            continue;
+          }
+
+          if (parsed.type === 'control_request_resolved') {
+            if (onSystem) {
+              onSystem('control_request_resolved', '', parsed);
             }
             continue;
           }

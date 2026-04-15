@@ -146,6 +146,12 @@ function isThinkingModel(model: string) {
   return typeof model === 'string' && model.endsWith('-thinking');
 }
 
+function deriveConversationTitleFromFirstUserMessage(text: string): string {
+  const normalized = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!normalized) return 'New Chat';
+  return normalized.length > 50 ? `${normalized.slice(0, 50)}...` : normalized;
+}
+
 // ─── Cross-mode override helpers ──────────────────────────────────────────────
 // When a conversation's model belongs to a different mode than the user is
 // currently in, we let the user opt to "keep using the cross-mode model".
@@ -954,6 +960,11 @@ const MessageList = React.memo<MessageListProps>(({
                             {pendingWorkText_ui}
                           </div>
                         )}
+                        {isCurrentlyStreaming && (
+                          <div className="flex items-center pt-1 pb-1">
+                            <ClaudeLogo autoAnimate style={{ width: '32px', height: '32px', display: 'inline-block' }} />
+                          </div>
+                        )}
                         {allDone && !isCurrentlyStreaming && (
                           <div className="flex items-center gap-2 text-claude-textSecondary pt-1 pb-1">
                             <Check size={14} />
@@ -1338,9 +1349,19 @@ const MainContent = ({ onNewChat, resetKey, tunerConfig, onOpenDocument, onArtif
   const [askUserDialog, setAskUserDialog] = useState<{
     request_id: string;
     tool_use_id: string;
-    questions: Array<{ question: string; header?: string; options?: Array<{ label: string; description?: string }>; multiSelect?: boolean }>;
+    questions: Array<{ question: string; header?: string; options?: Array<string | { label: string; description?: string }>; multiSelect?: boolean }>;
     answers: Record<string, string>;
   } | null>(null);
+
+  const submitAskUserDialogAnswers = useCallback(async (dialog: NonNullable<typeof askUserDialog>, answers: Record<string, string>) => {
+    if (!activeId) return;
+    setAskUserDialog(null);
+    try {
+      await answerUserQuestion(activeId, dialog.request_id, dialog.tool_use_id, answers);
+    } catch (err) {
+      console.error('Failed to send answer:', err);
+    }
+  }, [activeId]);
 
   // Task/Agent progress state
   const [activeTasks, setActiveTasks] = useState<Map<string, { description: string; status?: string; summary?: string; last_tool_name?: string }>>(new Map());
@@ -1738,6 +1759,9 @@ const MainContent = ({ onNewChat, resetKey, tunerConfig, onOpenDocument, onArtif
               (event, message, data) => {
                 if (event === 'ask_user' && data) {
                   setAskUserDialog({ request_id: data.request_id, tool_use_id: data.tool_use_id, questions: data.questions || [], answers: {} });
+                }
+                if (event === 'control_request_resolved' && data) {
+                  setAskUserDialog(prev => prev && prev.request_id === data.request_id ? null : prev);
                 }
                 if (event === 'task_event' && data) {
                   setActiveTasks(prev => {
@@ -2200,6 +2224,10 @@ const MainContent = ({ onNewChat, resetKey, tunerConfig, onOpenDocument, onArtif
     }
 
     const userMessageText = effectiveText;
+    const firstUserTitle = deriveConversationTitleFromFirstUserMessage(userMessageText);
+    const shouldAssignFirstUserTitle =
+      (!activeId && messages.length === 0)
+      || (!!activeId && !messages.some((msg: any) => msg?.role === 'user') && (!conversationTitle || conversationTitle === 'New Chat'));
     setInputText(""); // Clear input
 
     // 收集已上传的附件
@@ -2318,7 +2346,15 @@ const MainContent = ({ onNewChat, resetKey, tunerConfig, onOpenDocument, onArtif
         if (newConv.model) {
           setCurrentModelString(newConv.model);
         }
-        setConversationTitle(newConv.title || 'New Chat');
+        const createdTitle = newConv.title || 'New Chat';
+        setConversationTitle(createdTitle);
+
+        if (shouldAssignFirstUserTitle && firstUserTitle !== 'New Chat') {
+          setConversationTitle(firstUserTitle);
+          updateConversation(conversationId, { title: firstUserTitle })
+            .then(() => window.dispatchEvent(new CustomEvent('conversationTitleUpdated')))
+            .catch((err) => console.error('Failed to set first user title:', err));
+        }
 
         onNewChat(); // Refresh sidebar
       } catch (err: any) {
@@ -2334,6 +2370,13 @@ const MainContent = ({ onNewChat, resetKey, tunerConfig, onOpenDocument, onArtif
         });
         return;
       }
+    }
+
+    if (conversationId && shouldAssignFirstUserTitle && firstUserTitle !== 'New Chat') {
+      setConversationTitle(firstUserTitle);
+      updateConversation(conversationId, { title: firstUserTitle })
+        .then(() => window.dispatchEvent(new CustomEvent('conversationTitleUpdated')))
+        .catch((err) => console.error('Failed to update conversation title from first user message:', err));
     }
 
     // Call streaming API — seed buffer with current messages so background streaming works
@@ -2523,6 +2566,9 @@ const MainContent = ({ onNewChat, resetKey, tunerConfig, onOpenDocument, onArtif
             questions: data.questions || [],
             answers: {},
           });
+        }
+        if (event === 'control_request_resolved' && data) {
+          setAskUserDialog(prev => prev && prev.request_id === data.request_id ? null : prev);
         }
         // Task/Agent progress
         if (event === 'task_event' && data) {
@@ -4213,12 +4259,23 @@ const MainContent = ({ onNewChat, resetKey, tunerConfig, onOpenDocument, onArtif
                   <label className="text-[13px] font-medium text-claude-text">{q.question}</label>
                   {q.options && q.options.length > 0 ? (
                     <div className="flex flex-col gap-1">
-                      {q.options.map((opt, oi) => {
+                      {q.options.map((rawOpt, oi) => {
+                        const opt = typeof rawOpt === 'string'
+                          ? { label: rawOpt, description: undefined }
+                          : rawOpt;
                         const selected = askUserDialog.answers[q.question] === opt.label;
+                        const singleChoiceAutoSubmit = !q.multiSelect && askUserDialog.questions.length === 1;
                         return (
                           <button
                             key={oi}
-                            onClick={() => setAskUserDialog(prev => prev ? { ...prev, answers: { ...prev.answers, [q.question]: opt.label } } : null)}
+                            onClick={() => {
+                              const nextAnswers = { ...askUserDialog.answers, [q.question]: opt.label };
+                              if (singleChoiceAutoSubmit) {
+                                void submitAskUserDialogAnswers(askUserDialog, nextAnswers);
+                                return;
+                              }
+                              setAskUserDialog(prev => prev ? { ...prev, answers: nextAnswers } : null);
+                            }}
                             className={`text-left px-3 py-2 rounded-lg border text-[13px] transition-colors ${selected ? 'border-[#C6613F] bg-[#C6613F]/10 text-claude-text' : 'border-claude-border hover:bg-claude-hover text-claude-textSecondary'}`}
                           >
                             <div className="font-medium text-claude-text">{opt.label}</div>
@@ -4249,16 +4306,7 @@ const MainContent = ({ onNewChat, resetKey, tunerConfig, onOpenDocument, onArtif
             <div className="flex items-center justify-end gap-2 px-5 pb-4">
               <button
                 id="ask-user-submit-btn"
-                onClick={async () => {
-                  if (!askUserDialog || !activeId) return;
-                  const { request_id, tool_use_id, answers } = askUserDialog;
-                  setAskUserDialog(null);
-                  try {
-                    await answerUserQuestion(activeId, request_id, tool_use_id, answers);
-                  } catch (err) {
-                    console.error('Failed to send answer:', err);
-                  }
-                }}
+                onClick={() => askUserDialog ? void submitAskUserDialogAnswers(askUserDialog, askUserDialog.answers) : undefined}
                 className="px-4 py-1.5 text-[13px] text-white bg-[#C6613F] hover:bg-[#D97757] rounded-lg transition-colors font-medium"
               >
                 Submit

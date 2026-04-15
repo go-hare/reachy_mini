@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from ccmini.agent import AgentConfig
 from ccmini.delegation.multi_agent import AgentPool, SubAgentConfig, run_sub_agent
 from ccmini.factory import create_coding_agent
-from ccmini.kairos.core import GateConfig, is_kairos_active
+from ccmini.kairos.core import GateConfig
 from ccmini.kairos.inbox import get_inbox_snapshot
 from ccmini.messages import CompletionEvent, ErrorEvent, TextEvent
 from ccmini.providers import ProviderConfig, create_provider
@@ -93,7 +93,6 @@ def _tool_context(agent: object) -> ToolUseContext:
         messages=agent.messages,  # type: ignore[attr-defined]
         extras=extras,
     )
-
 
 async def _wait_for(predicate: Callable[[], bool], *, timeout: float = 80.0, interval: float = 0.5) -> None:
     deadline = time.monotonic() + timeout
@@ -292,7 +291,7 @@ def test_live_kairos_query_cron_and_push(
             reply, errors = await _collect_reply(kairos_agent, "Reply with exactly LIVE_KAIROS_OK")
             assert errors == []
             assert reply == "LIVE_KAIROS_OK"
-            assert is_kairos_active()
+            assert kairos_agent.is_kairos_active()
 
         tools_agent = create_coding_agent(
             provider=provider,

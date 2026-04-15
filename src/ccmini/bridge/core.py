@@ -877,14 +877,24 @@ class BridgeServer:
             return [{
                 "type": "ask_user",
                 "request_id": str(payload.get("request_id", "") or ""),
-                "tool_use_id": str(payload.get("request_id", "") or ""),
+                "tool_use_id": str(payload.get("tool_use_id", "") or payload.get("request_id", "") or ""),
                 "questions": [
                     {
                         "id": "decision",
                         "question": question,
-                        "options": ["allow", "deny"],
+                        "options": [
+                            {"label": "allow", "description": "Approve this tool request"},
+                            {"label": "deny", "description": "Reject this tool request"},
+                        ],
                     }
                 ],
+            }]
+        if event_type == "control_request_resolved":
+            return [{
+                "type": "control_request_resolved",
+                "request_id": str(payload.get("request_id", "") or ""),
+                "decision": str(payload.get("decision", "") or ""),
+                "reason": str(payload.get("reason", "") or ""),
             }]
         if event_type.startswith("research_"):
             next_payload = dict(payload)
@@ -1340,9 +1350,8 @@ class BridgeServer:
         compat = self._compat_handler
         if compat is not None and hasattr(compat, "get_compat_skill"):
             skill = compat.get_compat_skill(skill_id)
-            if skill is None:
-                return web.json_response({"error": "Skill not found"}, status=404)
-            return web.json_response(skill)
+            if skill is not None:
+                return web.json_response(skill)
         _, skill = self._compat_find_skill(skill_id)
         if skill is None:
             return web.json_response({"error": "Skill not found"}, status=404)
@@ -1356,9 +1365,8 @@ class BridgeServer:
         compat = self._compat_handler
         if compat is not None and hasattr(compat, "get_compat_skill_file"):
             content = compat.get_compat_skill_file(skill_id, file_path)
-            if content is None:
-                return web.json_response({"error": "Skill file not found"}, status=404)
-            return web.json_response({"content": content})
+            if content is not None:
+                return web.json_response({"content": content})
         _, skill = self._compat_find_skill(skill_id)
         if skill is None:
             return web.json_response({"error": "Skill not found"}, status=404)
