@@ -67,6 +67,29 @@ def test_load_profile_runtime_config_reads_kernel_settings(tmp_path: Path) -> No
     assert config.kernel_model.temperature == 0.1
 
 
+def test_load_profile_runtime_config_resolves_env_api_key(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Parse env-based API key references for migrated profiles."""
+    monkeypatch.setenv("DEMO_RUNTIME_KEY", "resolved-runtime-secret")
+    profile_root = tmp_path / "demo"
+    profile_root.mkdir()
+    _write_profile(
+        profile_root,
+        config_jsonl=(
+            '{"kind":"front_model","provider":"openai","model":"front","api_key":"env:DEMO_RUNTIME_KEY"}\n'
+            '{"kind":"kernel_model","provider":"openai","model":"kernel","api_key":"env:DEMO_RUNTIME_KEY"}\n'
+        ),
+    )
+
+    profile = load_profile_bundle(profile_root)
+    config = load_profile_runtime_config(profile)
+
+    assert config.front_model.api_key == "resolved-runtime-secret"
+    assert config.kernel_model.api_key == "resolved-runtime-secret"
+
+
 def test_load_profile_runtime_config_reads_vision_settings(tmp_path: Path) -> None:
     """Parse legacy-style vision startup settings from config.jsonl."""
     profile_root = tmp_path / "demo"

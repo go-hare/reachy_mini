@@ -577,11 +577,6 @@ class ReachyMiniApp:
         outbound_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         tracked_thread_ids: set[str] = {"app:main"}
         await outbound_queue.put(self._build_runtime_status_event())
-        if self.runtime_ready.is_set():
-            await self._publish_runtime_snapshot(
-                outbound_queue,
-                thread_id="app:main",
-            )
         ready_task: asyncio.Task[None] | None = None
         if not self.runtime_ready.is_set():
             ready_task = asyncio.create_task(
@@ -863,10 +858,6 @@ class ReachyMiniApp:
             if self.runtime_ready.is_set():
                 break
         await outbound_queue.put(self._build_runtime_status_event())
-        await self._publish_runtime_snapshot(
-            outbound_queue,
-            thread_id=thread_id,
-        )
 
     async def _publish_runtime_snapshot(
         self,

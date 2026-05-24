@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field, replace
 
 from reachy_mini.runtime.profile_loader import ProfileBundle
@@ -12,7 +13,6 @@ def _parse_stream_chunk_size(
     default: tuple[int, int, int],
 ) -> tuple[int, int, int]:
     """Parse one FunASR chunk-size triple from JSONL config."""
-
     if isinstance(value, str):
         raw_parts = [part.strip() for part in value.split(",")]
     elif isinstance(value, (list, tuple)):
@@ -32,6 +32,15 @@ def _parse_stream_chunk_size(
         except (TypeError, ValueError):
             return default
     return (parsed[0], parsed[1], parsed[2])
+
+
+def _resolve_api_key(value: object) -> str:
+    """Resolve env-based API key references while preserving inline legacy keys."""
+    raw = str(value or "").strip()
+    if raw.startswith("env:"):
+        env_name = raw.removeprefix("env:").strip()
+        return os.environ.get(env_name, "")
+    return raw
 
 
 @dataclass(slots=True)
@@ -159,7 +168,7 @@ def load_profile_runtime_config(profile: ProfileBundle) -> ProfileRuntimeConfig:
                 ),
                 model=str(record.get("model", config.speech.model) or config.speech.model),
                 base_url=str(record.get("base_url", config.speech.base_url) or ""),
-                api_key=str(record.get("api_key", config.speech.api_key) or ""),
+                api_key=_resolve_api_key(record.get("api_key", config.speech.api_key)),
                 voice=str(record.get("voice", config.speech.voice) or config.speech.voice),
                 instructions=str(
                     record.get("instructions", config.speech.instructions)
@@ -186,7 +195,9 @@ def load_profile_runtime_config(profile: ProfileBundle) -> ProfileRuntimeConfig:
                     or config.speech_input.model
                 ),
                 base_url=str(record.get("base_url", config.speech_input.base_url) or ""),
-                api_key=str(record.get("api_key", config.speech_input.api_key) or ""),
+                api_key=_resolve_api_key(
+                    record.get("api_key", config.speech_input.api_key)
+                ),
                 language=str(
                     record.get("language", config.speech_input.language)
                     or config.speech_input.language
@@ -261,7 +272,7 @@ def load_profile_runtime_config(profile: ProfileBundle) -> ProfileRuntimeConfig:
                     or config.front_model.model
                 ),
                 base_url=str(record.get("base_url", config.front_model.base_url) or ""),
-                api_key=str(
+                api_key=_resolve_api_key(
                     record.get("api_key", config.front_model.api_key)
                     or config.front_model.api_key
                 ),
@@ -280,7 +291,7 @@ def load_profile_runtime_config(profile: ProfileBundle) -> ProfileRuntimeConfig:
                     or config.kernel_model.model
                 ),
                 base_url=str(record.get("base_url", config.kernel_model.base_url) or ""),
-                api_key=str(
+                api_key=_resolve_api_key(
                     record.get("api_key", config.kernel_model.api_key)
                     or config.kernel_model.api_key
                 ),

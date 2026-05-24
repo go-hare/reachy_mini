@@ -11,12 +11,12 @@ from reachy_mini.runtime.config import (
     load_profile_runtime_config,
 )
 from reachy_mini.runtime.profile_loader import load_profile_bundle
-from reachy_mini.runtime.scheduler import FrontOutputPacket, RuntimeScheduler
 from reachy_mini.runtime.project import (
     create_app_project,
     inspect_app_project,
     normalize_app_name,
 )
+from reachy_mini.runtime.scheduler import FrontOutputPacket, RuntimeScheduler
 from reachy_mini.runtime.web import build_web_host, resolve_web_binding, run_web_host
 
 EXIT_COMMANDS = {"exit", "quit", "/exit", "/quit", ":q"}
@@ -171,6 +171,50 @@ def parse_args() -> argparse.Namespace:
         default=10.0,
         help="Seconds to wait for the resident runtime before failing.",
     )
+
+    v4_parser = subparsers.add_parser(
+        "v4",
+        help="Run an app through the opt-in v4 Brain/Pipeline/Action runtime.",
+    )
+    v4_parser.add_argument(
+        "app",
+        help="App name or explicit app/profile path.",
+    )
+    _add_apps_root_argument(v4_parser)
+    v4_parser.add_argument(
+        "--mode",
+        choices=["live", "text", "mock"],
+        default="text",
+        help="v4 input mode. Phase 1 supports text/mock smoke paths.",
+    )
+    v4_parser.add_argument(
+        "--message",
+        "-m",
+        default="",
+        help="Send one text message and exit.",
+    )
+    v4_parser.add_argument(
+        "--no-camera",
+        action="store_true",
+        help="Override profile vision.no_camera for this run.",
+    )
+    v4_parser.add_argument(
+        "--override",
+        action="append",
+        default=[],
+        help="Override AgentConfig with key=value, e.g. model.temperature=0.0.",
+    )
+    v4_parser.add_argument(
+        "--trace-file",
+        type=Path,
+        default=None,
+        help="Write v4 frame trace JSONL.",
+    )
+    v4_parser.add_argument(
+        "--log-level",
+        default="INFO",
+        help="Logging level for the v4 runner.",
+    )
     return parser.parse_args()
 
 
@@ -185,6 +229,9 @@ def main() -> None:
         return
     if args.command == "web":
         handle_web(args)
+        return
+    if args.command == "v4":
+        asyncio.run(handle_v4(args))
         return
 
 
@@ -257,6 +304,36 @@ def handle_web(args: argparse.Namespace) -> None:
         port=binding.port,
         startup_timeout=args.startup_timeout,
     )
+
+
+async def handle_v4(args: argparse.Namespace) -> None:
+    """Run the explicit opt-in v4 runtime path."""
+    if getattr(args, "mode", "text") not in {"text", "mock"}:
+        raise SystemExit("Phase 1 v4 entrypoint supports --mode text/mock.")
+
+    from reachy_mini.pipeline.runner import (
+        _parse_overrides,
+        _print_frames,
+        _write_trace,
+        run_text_turn,
+    )
+
+    app_path = resolve_app_path(args.app, _get_apps_root(args))
+    overrides = _parse_overrides(list(args.override or []))
+    if args.no_camera:
+        overrides["vision.no_camera"] = True
+    user_text = str(args.message or "").strip()
+    if not user_text:
+        user_text = await asyncio.to_thread(input, "You: ")
+        user_text = user_text.strip()
+    frames = await run_text_turn(
+        profile_path=app_path,
+        text=user_text,
+        overrides=overrides,
+    )
+    if args.trace_file is not None:
+        _write_trace(args.trace_file, frames)
+    _print_frames(frames)
 
 
 def resolve_app_path(app: str, apps_root: Path) -> Path:

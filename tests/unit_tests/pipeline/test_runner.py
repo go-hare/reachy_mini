@@ -1,0 +1,97 @@
+"""Tests for the v4 opt-in runner and CLI hook."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from reachy_mini.pipeline.frames import ActionResultFrame, ActionSpecFrame, BrainReplyFrame
+from reachy_mini.pipeline.runner import run_text_turn
+from reachy_mini.runtime.main import handle_v4
+
+
+def _write_profile(root: Path) -> Path:
+    profile_root = root / "demo_app" / "profiles"
+    profile_root.mkdir(parents=True)
+    (profile_root / "config.jsonl").write_text(
+        "\n".join(
+            [
+                '{"kind":"profile","name":"demo_app"}',
+                '{"kind":"speech","enabled":true,"provider":"kokoro","voice":"zf_001"}',
+                '{"kind":"speech_input","enabled":false,"provider":"funasr"}',
+                '{"kind":"vision","no_camera":true,"head_tracker":"none"}',
+                '{"kind":"kernel_model","provider":"mock","model":"mock"}',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return profile_root.parent
+
+
+@pytest.mark.asyncio
+async def test_run_text_turn_emits_reply_action_and_result(tmp_path: Path) -> None:
+    """Runner executes one v4 text turn through the mock path."""
+    app_root = _write_profile(tmp_path)
+
+    frames = await run_text_turn(profile_path=app_root, text="你好")
+
+    assert any(isinstance(frame, BrainReplyFrame) for frame in frames)
+    assert any(isinstance(frame, ActionSpecFrame) for frame in frames)
+    assert any(
+        isinstance(frame, ActionResultFrame) and frame.status == "ok"
+        for frame in frames
+    )
+
+
+@pytest.mark.asyncio
+async def test_handle_v4_prints_and_writes_trace(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """reachy-mini-agent v4 is an explicit opt-in entrypoint."""
+    app_root = _write_profile(tmp_path)
+    trace_file = tmp_path / "trace" / "v4.jsonl"
+    args = SimpleNamespace(
+        app=str(app_root),
+        apps_root=tmp_path,
+        override=[],
+        no_camera=False,
+        message="你好",
+        trace_file=trace_file,
+    )
+
+    await handle_v4(args)
+
+    output = capsys.readouterr().out
+    assert "action: nod" in output
+    assert "action_result: nod ok" in output
+    rows = [
+        json.loads(line)
+        for line in trace_file.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert any(row["type"] == "BrainReplyFrame" for row in rows)
+    assert any(row["type"] == "ActionResultFrame" for row in rows)
+
+
+@pytest.mark.asyncio
+async def test_handle_v4_rejects_live_mode_in_phase1(tmp_path: Path) -> None:
+    """The opt-in v4 CLI should not silently pretend live audio is wired."""
+    app_root = _write_profile(tmp_path)
+    args = SimpleNamespace(
+        app=str(app_root),
+        apps_root=tmp_path,
+        override=[],
+        no_camera=False,
+        mode="live",
+        message="你好",
+        trace_file=None,
+    )
+
+    with pytest.raises(SystemExit, match="text/mock"):
+        await handle_v4(args)

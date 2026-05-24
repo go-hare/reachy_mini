@@ -53,6 +53,10 @@
       title: JavaScript SDK & Web Apps
     - local: SDK/integration
       title: AI Integrations
+    - local: SDK/v4-brain-action-architecture
+      title: V4 大脑与动作架构
+    - local: SDK/v4-phase1-implementation-plan
+      title: V4 Phase 1 落地计划
     - local: SDK/core-concept
       title: Core Concepts
     - local: SDK/media-architecture
