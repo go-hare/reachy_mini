@@ -49,30 +49,34 @@ def test_host_only_web_launcher_streams_generated_app(tmp_path: Path) -> None:
             assert "Reachy Mini" in response.text
 
             with client.websocket_connect("/ws/agent") as websocket:
-                status_event = websocket.receive_json()
-                assert status_event["type"] == "runtime_status"
-                assert status_event["ready"] is True
-
                 websocket.send_json(
                     {
-                        "type": "user_text",
-                        "thread_id": "app:test",
-                        "text": "帮我看看日志",
+                        "type": "browser_input",
+                        "ts_ms": 1,
+                        "payload": {
+                            "kind": "text",
+                            "session_id": "app:test",
+                            "payload": {"text": "帮我看看日志", "turn_id": "T1"},
+                        },
                     }
                 )
 
-                seen_types: list[str] = []
+                seen_brain = False
+                seen_action = False
                 final_text = ""
-                for _ in range(10):
-                    event = websocket.receive_json()
-                    seen_types.append(str(event["type"]))
-                    if event["type"] == "front_final_done":
-                        final_text = str(event["text"])
+                for _ in range(40):
+                    envelope = websocket.receive_json()
+                    if envelope["type"] == "brain_reply":
+                        seen_brain = True
+                        final_text = str(envelope["payload"]["reply_text"])
+                    if envelope["type"] == "action_result":
+                        seen_action = True
+                    if seen_brain and seen_action:
                         break
 
-                assert "surface_state" in seen_types
-                assert "front_hint_done" in seen_types
-                assert final_text == "需要先查看和“帮我看看日志”相关的文件或日志，确认后才能给你准确结论。"
+                assert seen_brain
+                assert seen_action
+                assert final_text == "我听到了：帮我看看日志"
     finally:
         stop_event.set()
         worker.join(timeout=5.0)
