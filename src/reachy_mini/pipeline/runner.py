@@ -72,7 +72,7 @@ async def run_text_turn(
     overrides: dict[str, Any] | None = None,
 ) -> list[object]:
     """Run one text turn through the opt-in v4 path."""
-    config = from_profile(profile_path, overrides=overrides)
+    config = from_profile(profile_path, overrides=_text_mode_overrides(overrides or {}))
     registry = create_builtin_registry()
     agent = BrainAgent(config=config, registry=registry)
     executor = ActionExecutor(registry=registry, mini=NoopMini())
@@ -100,6 +100,21 @@ async def run_text_turn(
         for action_frame in action_frames:
             frames.extend(await actions.process(action_frame))
     return frames
+
+
+def _text_mode_overrides(overrides: dict[str, Any]) -> dict[str, Any]:
+    """Force local Phase 1 text/mock smoke runs onto the deterministic model."""
+    merged = dict(overrides)
+    merged.update(
+        {
+            "model.provider": "mock",
+            "model.model": "reachy_mini_v4_text_mock",
+            "model.base_url": None,
+            "model.api_key_ref": "",
+            "model.api_key": "",
+        }
+    )
+    return merged
 
 
 def parse_args() -> argparse.Namespace:

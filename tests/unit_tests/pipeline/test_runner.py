@@ -11,6 +11,7 @@ import pytest
 
 from reachy_mini.pipeline.frames import ActionResultFrame, ActionSpecFrame, BrainReplyFrame
 from reachy_mini.pipeline.runner import run_text_turn
+from reachy_mini.runtime.project import create_app_project
 from reachy_mini.runtime.main import handle_v4
 
 
@@ -33,6 +34,25 @@ def _write_profile(root: Path) -> Path:
     return profile_root.parent
 
 
+def _write_env_key_profile(root: Path) -> Path:
+    profile_root = root / "env_key_app" / "profiles"
+    profile_root.mkdir(parents=True)
+    (profile_root / "config.jsonl").write_text(
+        "\n".join(
+            [
+                '{"kind":"profile","name":"env_key_app"}',
+                '{"kind":"kernel_model","provider":"openai","model":"demo","api_key":"env:DEMO_KEY"}',
+                '{"kind":"speech","enabled":true,"provider":"kokoro","voice":"zf_001"}',
+                '{"kind":"speech_input","enabled":false}',
+                '{"kind":"vision","no_camera":true}',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return profile_root.parent
+
+
 @pytest.mark.asyncio
 async def test_run_text_turn_emits_reply_action_and_result(tmp_path: Path) -> None:
     """Runner executes one v4 text turn through the mock path."""
@@ -42,6 +62,38 @@ async def test_run_text_turn_emits_reply_action_and_result(tmp_path: Path) -> No
 
     assert any(isinstance(frame, BrainReplyFrame) for frame in frames)
     assert any(isinstance(frame, ActionSpecFrame) for frame in frames)
+    assert any(
+        isinstance(frame, ActionResultFrame) and frame.status == "ok"
+        for frame in frames
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_text_turn_does_not_require_profile_api_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Text/mock smoke uses deterministic config even when profile secrets are absent."""
+    monkeypatch.delenv("DEMO_KEY", raising=False)
+    app_root = _write_env_key_profile(tmp_path)
+
+    frames = await run_text_turn(profile_path=app_root, text="你好")
+
+    assert any(isinstance(frame, BrainReplyFrame) for frame in frames)
+    assert any(
+        isinstance(frame, ActionResultFrame) and frame.status == "ok"
+        for frame in frames
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_text_turn_supports_generated_app_project(tmp_path: Path) -> None:
+    """Phase 2 entry requires v4 compatibility with generated app projects."""
+    app_root = create_app_project(tmp_path / "generated_demo", "generated_demo")
+
+    frames = await run_text_turn(profile_path=app_root, text="你好")
+
+    assert any(isinstance(frame, BrainReplyFrame) for frame in frames)
     assert any(
         isinstance(frame, ActionResultFrame) and frame.status == "ok"
         for frame in frames
