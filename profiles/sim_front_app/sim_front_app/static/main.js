@@ -1281,6 +1281,10 @@ document.addEventListener("DOMContentLoaded", () => {
         return true;
     }
 
+    function sendEnvelope(type, payload) {
+        return sendSocketEvent({ type, ts_ms: Date.now(), payload: payload || {} });
+    }
+
     function stopBrowserCameraBridge() {
         if (cameraFrameTimer !== null) {
             window.clearInterval(cameraFrameTimer);
@@ -1289,90 +1293,28 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     function pushBrowserCameraFrame() {
-        if (!cameraActive || !cameraPreview || !isSocketOpen()) {
-            return;
-        }
-        if (cameraPreview.readyState < 2) {
-            return;
-        }
-
-        const width = 320;
-        const height = Math.max(180, Math.round(width * 9 / 16));
-        const canvas = document.createElement("canvas");
-        canvas.width = width;
-        canvas.height = height;
-        const context = canvas.getContext("2d");
-        if (!context) {
-            return;
-        }
-        context.drawImage(cameraPreview, 0, 0, width, height);
-        const imageB64 = canvas.toDataURL("image/jpeg", 0.6);
-        sendSocketEvent({
-            type: "browser_camera_frame",
-            thread_id: THREAD_ID,
-            image_b64: imageB64,
-        });
+        // v4 has no browser_camera_frame inbound; the runtime owns the camera.
+        // Keep the toggle UI for visual continuity but stop streaming frames out.
     }
 
     function startBrowserCameraBridge() {
         stopBrowserCameraBridge();
-        cameraFrameTimer = window.setInterval(() => {
-            pushBrowserCameraFrame();
-        }, 450);
     }
 
-    function emitUserSpeechStarted(text = "") {
-        if (speechLifecycleActive) {
-            return true;
-        }
-        const delivered = sendSocketEvent({
-            type: "user_speech_started",
-            thread_id: THREAD_ID,
-            text: compactText(text),
-        });
-        speechLifecycleActive = delivered;
-        if (delivered) {
-            lastStoppedText = "";
-        }
-        return delivered;
+    function emitUserSpeechStarted(_text = "") {
+        // v4 wire protocol: VAD lifecycle is implicit via audio_chunk + speech_activity.
+        // The browser already announces speech_activity(start) when the mic opens.
+        return false;
     }
 
-    function emitUserSpeechPartial(text = "") {
-        const normalized = compactText(text);
-        if (!normalized || speechCaptureEnded) {
-            return false;
-        }
-        if (!speechLifecycleActive) {
-            emitUserSpeechStarted(normalized);
-        }
-        if (!speechLifecycleActive || lastPartialSentText === normalized) {
-            return speechLifecycleActive;
-        }
-        const delivered = sendSocketEvent({
-            type: "user_speech_partial",
-            thread_id: THREAD_ID,
-            text: normalized,
-        });
-        if (delivered) {
-            lastPartialSentText = normalized;
-        }
-        return delivered;
+    function emitUserSpeechPartial(_text = "") {
+        // v4 wire protocol does not carry partial transcripts inbound.
+        return false;
     }
 
-    function emitUserSpeechStopped(text = "", options = {}) {
-        const normalized = compactText(text);
-        const allowRepeat = Boolean(options.allowRepeat);
-        if (!speechLifecycleActive && (!allowRepeat || lastStoppedText === normalized)) {
-            return false;
-        }
-        sendSocketEvent({
-            type: "user_speech_stopped",
-            thread_id: THREAD_ID,
-            text: normalized,
-        });
-        speechLifecycleActive = false;
-        lastStoppedText = normalized;
-        return true;
+    function emitUserSpeechStopped(_text = "", _options = {}) {
+        // v4 wire protocol: stopping the mic emits audio_stop + speech_activity(end).
+        return false;
     }
 
     function submitUserText(rawText, options = {}) {
@@ -1403,10 +1345,10 @@ document.addEventListener("DOMContentLoaded", () => {
             true
         );
 
-        sendSocketEvent({
-            type: "user_text",
-            thread_id: THREAD_ID,
-            text: message,
+        sendEnvelope("browser_input", {
+            kind: "text",
+            session_id: THREAD_ID,
+            payload: { text: message, turn_id: `T${Date.now().toString(36)}` },
         });
         syncDesktopPetChatVisibility({ preferOpen: true });
         scheduleDesktopPetChatHide(4200);
@@ -1715,85 +1657,90 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
-    function handleSocketEvent(payload) {
-        const eventType = String(payload?.type || "");
+    function handleSocketEvent(envelope) {
+        const eventType = String(envelope?.type || "");
+        const payload = envelope?.payload || {};
 
-        if (eventType === "runtime_status") {
-            runtimeReady = Boolean(payload.ready);
-            setStatus(
-                runtimeReady
-                    ? "App runtime ready"
-                    : "App runtime is starting...",
-                runtimeReady
-            );
-            if (runtimeReady) {
-                setPetPose("idle", {
-                    label: "桌宠已上线",
-                    copy: "runtime 已经准备好了，可以直接和我对话。",
-                    speech: "我已经连上内核了。",
-                });
-            } else {
-                setPetPose("sleep", {
-                    label: "连接中",
-                    copy: "runtime 还在启动，这会儿我先安静待命。",
-                });
-            }
-            syncComposerState();
-            return;
-        }
-
-        if (eventType === "surface_state") {
-            const phase = String(payload?.state?.phase || "");
-            if (turnCompleted && (phase === "settling" || phase === "idle")) {
-                return;
-            }
-            setStatus(formatSurfaceStatus(payload.state), runtimeReady);
-            applySurfaceStateToPet(phase);
-            return;
-        }
-
-        if (eventType === "front_decision") {
-            handleFrontDecision(payload);
-            return;
-        }
-
-        if (eventType === "front_hint_chunk") {
-            turnCompleted = false;
-            updateStageBubble(payload.turn_id, "hint", payload.text, "append");
-            setStatus("Front 已先回应，后续处理还在继续，你也可以继续发送。", true);
-            return;
-        }
-
-        if (eventType === "front_hint_done") {
-            turnCompleted = false;
-            updateStageBubble(payload.turn_id, "hint", payload.text, "replace");
-            setStatus("Front 已先回应，后续处理还在继续，你也可以继续发送。", true);
-            return;
-        }
-
-        if (eventType === "front_final_chunk") {
-            turnCompleted = false;
-            updateStageBubble(payload.turn_id, "final", payload.text, "append");
-            setStatus("Front 正在输出这一轮的最终回复，你也可以继续发送。", true);
-            return;
-        }
-
-        if (eventType === "front_final_done") {
+        if (eventType === "brain_reply") {
             turnCompleted = true;
-            updateStageBubble(payload.turn_id, "final", payload.text, "replace");
-            setStatus("这轮回复已经完成，你也可以继续发送。", true);
+            const turnId = String(payload.turn_id || "");
+            updateStageBubble(turnId, "final", payload.reply_text, "replace");
+            const actionsCount = Array.isArray(payload.actions) ? payload.actions.length : 0;
+            setStatus(
+                actionsCount > 0
+                    ? "Brain 已生成回复，动作排队执行中。"
+                    : "Brain 已生成回复。",
+                true,
+            );
             finishTurn();
             return;
         }
 
-        if (eventType === "turn_error") {
+        if (eventType === "action_result") {
+            const status = String(payload.status || "");
+            const verb = status === "ok" ? "完成" : status === "cancelled" ? "已取消" : "失败";
+            setStatus(`${payload.name || "action"} ${verb}（${payload.duration_ms || 0}ms）`, true);
+            if (status !== "ok" && payload.error) {
+                appendMessage("assistant", `动作 ${payload.name} ${verb}：${payload.error}`);
+                setPetRuntimeState("动作出错", "error");
+            }
+            return;
+        }
+
+        if (eventType === "worker_event") {
+            if (payload.task_id === "__surface__") {
+                const phase = String(payload.payload?.state?.phase || "");
+                if (turnCompleted && (phase === "settling" || phase === "idle")) {
+                    return;
+                }
+                setStatus(formatSurfaceStatus({ phase }), runtimeReady);
+                applySurfaceStateToPet(phase);
+                return;
+            }
+            return;
+        }
+
+        if (eventType === "transcription") {
+            const text = compactText(payload.text);
+            if (payload.is_final) {
+                setSpeechPreview("");
+                if (text) {
+                    appendMessage("user", text);
+                }
+            } else {
+                setSpeechPreview(text);
+            }
+            return;
+        }
+
+        if (eventType === "vision_event") {
+            handleFrontDecision({
+                payload: {
+                    signal_name: payload.event === "attention_released"
+                        ? "idle_entered"
+                        : "vision_attention_updated",
+                    signal_metadata: payload.payload || {},
+                },
+            });
+            return;
+        }
+
+        if (eventType === "tts_audio" || eventType === "speech_presenter" || eventType === "tts_stop" || eventType === "interrupt") {
+            // v4 streams these for ancillary UI; sim_front_app does not render them.
+            return;
+        }
+
+        if (eventType === "pipeline_error") {
             turnCompleted = false;
-            appendMessage("assistant", `请求失败：${payload.error || "unknown error"}`);
+            appendMessage(
+                "assistant",
+                `runtime error (${payload.component || "pipeline"}): ${payload.reason || "unknown"}`,
+            );
             setStatus("Runtime error", false);
             setPetRuntimeState("运行出错", "error");
             setPetPose("idle", {
                 label: "这轮出错了",
-                copy: payload.error || "runtime 返回了错误，可以直接再试一轮。",
+                copy: payload.reason || "runtime 返回了错误，可以直接再试一轮。",
             });
             finishTurn();
             return;
@@ -1820,10 +1767,13 @@ document.addEventListener("DOMContentLoaded", () => {
         socket = new WebSocket(buildSocketUrl());
         socket.addEventListener("open", () => {
             socketReady = true;
-            setStatus("WebSocket connected, waiting runtime...", false);
-            setPetPose("sleep", {
-                label: "等待 runtime",
-                copy: "WebSocket 已连上，正在等 runtime 报 ready。",
+            runtimeReady = true;
+            setStatus("Runtime 已就绪。", true);
+            setPetRuntimeState("已连接", "ready");
+            setPetPose("idle", {
+                label: "桌宠已上线",
+                copy: "runtime 已经准备好了，可以直接和我对话。",
+                speech: "我已经连上 v4 内核了。",
             });
             if (cameraActive) {
                 startBrowserCameraBridge();

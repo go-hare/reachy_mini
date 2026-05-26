@@ -5,6 +5,7 @@ from .brain_processor import BrainProcessor
 from .frames import (
     ActionResultFrame,
     ActionSpecFrame,
+    AudioFrame,
     BrainReplyFrame,
     BrowserInputFrame,
     InterruptFrame,
@@ -13,19 +14,37 @@ from .frames import (
     TranscriptionFrame,
     TTSAudioFrame,
 )
+from .live_io import CallableSpeakerSink, MicrophoneSource, SpeakerSink
+from .output_bus import OutputBus, OutputSubscription
+from .session import RuntimeSession
 from .speech_presenter import SpeechPresenter
+from .wire import WireDecodeError, WireSerializationError, decode_inbound, encode_frame
+from .ws_app import WS_PATH, build_ws_app
 
 __all__ = [
     "ActionDispatcher",
     "ActionResultFrame",
     "ActionSpecFrame",
+    "AudioFrame",
     "BrainProcessor",
     "BrainReplyFrame",
     "BrowserInputFrame",
+    "CallableSpeakerSink",
     "InterruptFrame",
+    "MicrophoneSource",
+    "OutputBus",
+    "OutputSubscription",
+    "RuntimeSession",
+    "SpeakerSink",
     "SpeechActivityFrame",
     "SpeechPresenter",
     "SpeechPresenterFrame",
     "TranscriptionFrame",
     "TTSAudioFrame",
+    "WireDecodeError",
+    "WireSerializationError",
+    "WS_PATH",
+    "build_ws_app",
+    "decode_inbound",
+    "encode_frame",
 ]

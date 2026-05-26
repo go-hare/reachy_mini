@@ -8,7 +8,17 @@ try:
 except PackageNotFoundError:
     __version__ = "0+local"
 
-__all__ = ["ReachyMini", "ReachyMiniApp", "__version__"]
+__all__ = [
+    "ActionExecutor",
+    "ActionRegistry",
+    "ActionSpec",
+    "AgentConfig",
+    "BrainAgent",
+    "ReachyMini",
+    "ReachyMiniApp",
+    "RuntimeSession",
+    "__version__",
+]
 
 
 def __getattr__(name: str) -> Any:
@@ -21,4 +31,25 @@ def __getattr__(name: str) -> Any:
         from reachy_mini.apps.app import ReachyMiniApp
 
         return ReachyMiniApp
+    if name == "RuntimeSession":
+        from reachy_mini.pipeline.session import RuntimeSession
+
+        return RuntimeSession
+    if name == "BrainAgent":
+        from reachy_mini.reachy_brain.agent import BrainAgent
+
+        return BrainAgent
+    if name == "AgentConfig":
+        from reachy_mini.reachy_brain.config import AgentConfig
+
+        return AgentConfig
+    if name in {"ActionExecutor", "ActionRegistry", "ActionSpec"}:
+        from reachy_mini.action_runtime import ActionExecutor, ActionRegistry, ActionSpec
+
+        exports = {
+            "ActionExecutor": ActionExecutor,
+            "ActionRegistry": ActionRegistry,
+            "ActionSpec": ActionSpec,
+        }
+        return exports[name]
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

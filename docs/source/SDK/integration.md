@@ -80,22 +80,22 @@ Tool loading is layered:
 
 The runtime merges them in that order. System tools cover the common workspace actions for the current app project. Profile tools are where app-specific capabilities should be added.
 
-At startup, the runtime creates a resident kernel and keeps it running in the background for the process lifetime. User turns flow through:
+At startup, the runtime creates a resident `RuntimeSession` (the v4 Brain + ActionRuntime + Pipeline pipeline) and keeps it running in the background for the process lifetime. User turns flow through:
 
-`app project -> front -> BrainKernel -> front`
+`browser/CLI -> BrainAgent -> ActionRuntime -> SDK`
 
 The resident lifecycle is:
 
-- `start()`
-- `publish_user_input()`
-- `recv_output()`
-- `stop()`
+- `RuntimeSession.start()`
+- `RuntimeSession.submit_text()` / `submit_browser_input()` / `submit_audio_chunk()`
+- `RuntimeSession.subscribe()` (drain output frames)
+- `RuntimeSession.stop()`
 
 Where this happens in code:
 
 - CLI entry: `reachy_mini.runtime.main`
-- Runtime assembly: `RuntimeScheduler.from_profile(...)`
-- Resident kernel bridge: `RuntimeScheduler.start()` and `RuntimeScheduler.stop()`
+- Runtime assembly: `RuntimeSession.from_profile(...)`
+- WebSocket lifecycle: `pipeline.ws_app.build_ws_app(session)`
 
 From the CLI, this runtime stays alive for as long as the `reachy-mini-agent` process stays alive. When the generated app is installed and launched by the daemon, `AppManager` keeps that app process resident in the background.
 

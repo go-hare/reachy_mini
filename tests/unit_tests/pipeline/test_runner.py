@@ -1,4 +1,4 @@
-"""Tests for the v4 opt-in runner and CLI hook."""
+"""Tests for the v4 pipeline runner and CLI hook."""
 
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ import pytest
 
 from reachy_mini.pipeline.frames import ActionResultFrame, ActionSpecFrame, BrainReplyFrame
 from reachy_mini.pipeline.runner import run_text_turn
+from reachy_mini.runtime.main import handle_agent
 from reachy_mini.runtime.project import create_app_project
-from reachy_mini.runtime.main import handle_v4
 
 
 def _write_profile(root: Path) -> Path:
@@ -101,49 +101,22 @@ async def test_run_text_turn_supports_generated_app_project(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
-async def test_handle_v4_prints_and_writes_trace(
+async def test_handle_agent_runs_one_text_turn(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """reachy-mini-agent v4 is an explicit opt-in entrypoint."""
+    """`reachy-mini-agent agent` defaults to the v4 RuntimeSession."""
     app_root = _write_profile(tmp_path)
-    trace_file = tmp_path / "trace" / "v4.jsonl"
     args = SimpleNamespace(
         app=str(app_root),
         apps_root=tmp_path,
-        override=[],
-        no_camera=False,
         message="你好",
-        trace_file=trace_file,
+        turn_id="",
+        override=[],
+        log_level="INFO",
     )
 
-    await handle_v4(args)
+    await handle_agent(args)
 
     output = capsys.readouterr().out
-    assert "action: nod" in output
     assert "action_result: nod ok" in output
-    rows = [
-        json.loads(line)
-        for line in trace_file.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
-    assert any(row["type"] == "BrainReplyFrame" for row in rows)
-    assert any(row["type"] == "ActionResultFrame" for row in rows)
-
-
-@pytest.mark.asyncio
-async def test_handle_v4_rejects_live_mode_in_phase1(tmp_path: Path) -> None:
-    """The opt-in v4 CLI should not silently pretend live audio is wired."""
-    app_root = _write_profile(tmp_path)
-    args = SimpleNamespace(
-        app=str(app_root),
-        apps_root=tmp_path,
-        override=[],
-        no_camera=False,
-        mode="live",
-        message="你好",
-        trace_file=None,
-    )
-
-    with pytest.raises(SystemExit, match="text/mock"):
-        await handle_v4(args)

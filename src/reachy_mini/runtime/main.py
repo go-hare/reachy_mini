@@ -4,19 +4,22 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
+import logging
 from pathlib import Path
+from typing import Any
 
-from reachy_mini.runtime.config import (
-    apply_runtime_overrides,
-    load_profile_runtime_config,
+from reachy_mini.pipeline.frames import (
+    ActionResultFrame,
+    BrainReplyFrame,
+    PipelineErrorFrame,
 )
-from reachy_mini.runtime.profile_loader import load_profile_bundle
+from reachy_mini.pipeline.session import RuntimeSession
 from reachy_mini.runtime.project import (
     create_app_project,
     inspect_app_project,
     normalize_app_name,
 )
-from reachy_mini.runtime.scheduler import FrontOutputPacket, RuntimeScheduler
 from reachy_mini.runtime.web import build_web_host, resolve_web_binding, run_web_host
 
 EXIT_COMMANDS = {"exit", "quit", "/exit", "/quit", ":q"}
@@ -66,7 +69,7 @@ def parse_args() -> argparse.Namespace:
 
     agent_parser = subparsers.add_parser(
         "agent",
-        help="Run an app through the front -> kernel -> text pipeline.",
+        help="Run an app through the v4 RuntimeSession in text mode.",
     )
     agent_parser.add_argument(
         "app",
@@ -80,74 +83,25 @@ def parse_args() -> argparse.Namespace:
         help="Send one message and exit.",
     )
     agent_parser.add_argument(
-        "--thread-id",
-        default="cli:main",
-        help="Thread id used for session memory.",
+        "--turn-id",
+        default="",
+        help="Override the generated turn id for one-shot mode.",
     )
     agent_parser.add_argument(
-        "--provider",
-        choices=["mock", "openai", "ollama"],
-        default=None,
-        help="Override the front model provider from config.jsonl.",
+        "--override",
+        action="append",
+        default=[],
+        help="Override AgentConfig with key=value, e.g. model.temperature=0.0.",
     )
     agent_parser.add_argument(
-        "--model",
-        default=None,
-        help="Override the front model name from config.jsonl.",
-    )
-    agent_parser.add_argument(
-        "--base-url",
-        default=None,
-        help="Override the provider base URL.",
-    )
-    agent_parser.add_argument(
-        "--api-key",
-        default=None,
-        help="Override the front model API key from config.jsonl.",
-    )
-    agent_parser.add_argument(
-        "--temperature",
-        type=float,
-        default=None,
-        help="Override the front model temperature.",
-    )
-    agent_parser.add_argument(
-        "--kernel-provider",
-        choices=["mock", "openai", "ollama"],
-        default=None,
-        help="Override the kernel model provider from config.jsonl.",
-    )
-    agent_parser.add_argument(
-        "--kernel-model",
-        default=None,
-        help="Override the kernel model name from config.jsonl.",
-    )
-    agent_parser.add_argument(
-        "--kernel-base-url",
-        default=None,
-        help="Override the kernel provider base URL.",
-    )
-    agent_parser.add_argument(
-        "--kernel-api-key",
-        default=None,
-        help="Override the kernel model API key from config.jsonl.",
-    )
-    agent_parser.add_argument(
-        "--kernel-temperature",
-        type=float,
-        default=None,
-        help="Override the kernel model temperature.",
-    )
-    agent_parser.add_argument(
-        "--history-limit",
-        type=int,
-        default=None,
-        help="Override how many recent turns the front sees.",
+        "--log-level",
+        default="INFO",
+        help="Logging level for the v4 runner.",
     )
 
     web_parser = subparsers.add_parser(
         "web",
-        help="Run an app's web UI and resident runtime without connecting hardware.",
+        help="Run an app's web UI and resident v4 runtime without connecting hardware.",
     )
     web_parser.add_argument(
         "app",
@@ -171,50 +125,6 @@ def parse_args() -> argparse.Namespace:
         default=10.0,
         help="Seconds to wait for the resident runtime before failing.",
     )
-
-    v4_parser = subparsers.add_parser(
-        "v4",
-        help="Run an app through the opt-in v4 Brain/Pipeline/Action runtime.",
-    )
-    v4_parser.add_argument(
-        "app",
-        help="App name or explicit app/profile path.",
-    )
-    _add_apps_root_argument(v4_parser)
-    v4_parser.add_argument(
-        "--mode",
-        choices=["live", "text", "mock"],
-        default="text",
-        help="v4 input mode. Phase 1 supports text/mock smoke paths.",
-    )
-    v4_parser.add_argument(
-        "--message",
-        "-m",
-        default="",
-        help="Send one text message and exit.",
-    )
-    v4_parser.add_argument(
-        "--no-camera",
-        action="store_true",
-        help="Override profile vision.no_camera for this run.",
-    )
-    v4_parser.add_argument(
-        "--override",
-        action="append",
-        default=[],
-        help="Override AgentConfig with key=value, e.g. model.temperature=0.0.",
-    )
-    v4_parser.add_argument(
-        "--trace-file",
-        type=Path,
-        default=None,
-        help="Write v4 frame trace JSONL.",
-    )
-    v4_parser.add_argument(
-        "--log-level",
-        default="INFO",
-        help="Logging level for the v4 runner.",
-    )
     return parser.parse_args()
 
 
@@ -229,9 +139,6 @@ def main() -> None:
         return
     if args.command == "web":
         handle_web(args)
-        return
-    if args.command == "v4":
-        asyncio.run(handle_v4(args))
         return
 
 
@@ -248,40 +155,24 @@ def handle_create(args: argparse.Namespace) -> None:
 
 
 async def handle_agent(args: argparse.Namespace) -> None:
-    """Run the text app command."""
+    """Run a v4 RuntimeSession turn (or a small REPL)."""
+    logging.basicConfig(level=getattr(logging, str(args.log_level).upper(), logging.INFO))
     app_path = resolve_app_path(args.app, _get_apps_root(args))
-    profile_bundle = load_profile_bundle(app_path)
-    config = apply_runtime_overrides(
-        load_profile_runtime_config(profile_bundle),
-        provider=args.provider,
-        model=args.model,
-        base_url=args.base_url,
-        api_key=args.api_key,
-        temperature=args.temperature,
-        kernel_provider=args.kernel_provider,
-        kernel_model=args.kernel_model,
-        kernel_base_url=args.kernel_base_url,
-        kernel_api_key=args.kernel_api_key,
-        kernel_temperature=args.kernel_temperature,
-        history_limit=args.history_limit,
-    )
-    runtime = RuntimeScheduler.from_profile(
-        profile=profile_bundle,
-        config=config,
-    )
-    await runtime.start()
+    profile_path = _resolve_profile_path(app_path)
+    overrides = _parse_overrides(list(args.override or []))
+    session = RuntimeSession.from_profile(profile_path, overrides=overrides)
+    await session.start()
     try:
         if str(args.message or "").strip():
-            await run_one_turn(
-                runtime,
-                thread_id=args.thread_id,
+            await _run_one_turn(
+                session,
                 user_text=args.message.strip(),
+                turn_id=str(args.turn_id or "") or None,
             )
             return
-
-        await run_interactive(runtime, thread_id=args.thread_id)
+        await _run_interactive(session)
     finally:
-        await runtime.stop()
+        await session.stop()
 
 
 def handle_web(args: argparse.Namespace) -> None:
@@ -306,36 +197,6 @@ def handle_web(args: argparse.Namespace) -> None:
     )
 
 
-async def handle_v4(args: argparse.Namespace) -> None:
-    """Run the explicit opt-in v4 runtime path."""
-    if getattr(args, "mode", "text") not in {"text", "mock"}:
-        raise SystemExit("Phase 1 v4 entrypoint supports --mode text/mock.")
-
-    from reachy_mini.pipeline.runner import (
-        _parse_overrides,
-        _print_frames,
-        _write_trace,
-        run_text_turn,
-    )
-
-    app_path = resolve_app_path(args.app, _get_apps_root(args))
-    overrides = _parse_overrides(list(args.override or []))
-    if args.no_camera:
-        overrides["vision.no_camera"] = True
-    user_text = str(args.message or "").strip()
-    if not user_text:
-        user_text = await asyncio.to_thread(input, "You: ")
-        user_text = user_text.strip()
-    frames = await run_text_turn(
-        profile_path=app_path,
-        text=user_text,
-        overrides=overrides,
-    )
-    if args.trace_file is not None:
-        _write_trace(args.trace_file, frames)
-    _print_frames(frames)
-
-
 def resolve_app_path(app: str, apps_root: Path) -> Path:
     """Resolve an app name or explicit path."""
     explicit = Path(app).expanduser()
@@ -344,117 +205,79 @@ def resolve_app_path(app: str, apps_root: Path) -> Path:
     return (apps_root.expanduser().resolve() / app).resolve()
 
 
-async def run_one_turn(
-    runtime: RuntimeScheduler,
+def _resolve_profile_path(app_path: Path) -> Path:
+    """Find the v4 profile directory under an app project."""
+    candidate = app_path / "profiles"
+    if candidate.is_dir():
+        return candidate
+    return app_path
+
+
+def _parse_overrides(values: list[str]) -> dict[str, Any]:
+    overrides: dict[str, Any] = {}
+    for value in values:
+        key, sep, raw = value.partition("=")
+        if not sep:
+            raise SystemExit(f"Invalid override, expected key=value: {value}")
+        overrides[key] = _coerce(raw)
+    return overrides
+
+
+def _coerce(raw: str) -> Any:
+    if raw.lower() in {"true", "false"}:
+        return raw.lower() == "true"
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return raw
+
+
+async def _run_one_turn(
+    session: RuntimeSession,
     *,
-    thread_id: str,
     user_text: str,
+    turn_id: str | None,
 ) -> None:
-    """Send one user message and print the reply."""
-    printer = CliPrinter()
-    queue = runtime.subscribe_front_outputs()
-    pump_task = asyncio.create_task(
-        pump_cli_front_outputs(queue=queue, printer=printer, thread_id=thread_id)
+    """Submit one message and print the brain reply + action results."""
+    sub = session.subscribe(
+        filter=lambda frame: isinstance(
+            frame, (BrainReplyFrame, ActionResultFrame, PipelineErrorFrame)
+        )
     )
     try:
-        await runtime.handle_user_turn(
-            thread_id=thread_id,
-            session_id=thread_id,
-            user_id="user",
-            user_text=user_text,
-        )
-        await runtime.wait_for_thread_idle(thread_id)
-        await asyncio.wait_for(queue.join(), timeout=1.0)
+        actual_turn = await session.submit_text(user_text, turn_id=turn_id)
+        await session.wait_for_turn_idle(actual_turn, timeout=30.0)
+        # Drain whatever the bus collected for that turn.
+        while not sub.queue.empty():
+            frame = await sub.queue.get()
+            if isinstance(frame, BrainReplyFrame):
+                if frame.turn_id and frame.turn_id != actual_turn:
+                    continue
+                if frame.reply_text:
+                    print(frame.reply_text)
+            elif isinstance(frame, ActionResultFrame):
+                print(f"action_result: {frame.name} {frame.status} ({frame.duration_ms}ms)")
+            elif isinstance(frame, PipelineErrorFrame):
+                print(f"pipeline_error: {frame.component}: {frame.reason}")
     finally:
-        runtime.unsubscribe_front_outputs(queue)
-        pump_task.cancel()
-        try:
-            await pump_task
-        except asyncio.CancelledError:
-            pass
+        session.unsubscribe(sub)
 
 
-async def run_interactive(runtime: RuntimeScheduler, *, thread_id: str) -> None:
-    """Run a small interactive REPL."""
-    print("Reachy Mini interactive text mode (type exit or Ctrl+C to quit)")
+async def _run_interactive(session: RuntimeSession) -> None:
+    """Run a small text REPL backed by the v4 RuntimeSession."""
+    print("Reachy Mini v4 interactive text mode (type exit or Ctrl+C to quit)")
     while True:
         try:
             raw = await asyncio.to_thread(input, "You: ")
         except (EOFError, KeyboardInterrupt):
             print()
             return
-
         user_text = str(raw or "").strip()
         if not user_text:
             continue
         if user_text.lower() in EXIT_COMMANDS:
             return
-        await run_one_turn(runtime, thread_id=thread_id, user_text=user_text)
-
-
-async def pump_cli_front_outputs(
-    *,
-    queue: asyncio.Queue[FrontOutputPacket],
-    printer: "CliPrinter",
-    thread_id: str,
-) -> None:
-    """Render runtime output packets to the CLI."""
-    try:
-        while True:
-            packet = await queue.get()
-            try:
-                if packet.thread_id != thread_id:
-                    continue
-                if packet.type in {"front_hint_chunk", "front_final_chunk"}:
-                    await printer.write_chunk(packet.text)
-                    continue
-                if packet.type in {"front_hint_done", "front_final_done"}:
-                    if printer.stream_started:
-                        printer.finish_stream()
-                    elif packet.text:
-                        printer.print_reply(packet.text)
-                    continue
-                if packet.type == "turn_error":
-                    printer.print_error(packet.error)
-            finally:
-                queue.task_done()
-    except asyncio.CancelledError:
-        raise
-
-
-class CliPrinter:
-    """Print streaming and final replies safely."""
-
-    def __init__(self) -> None:
-        """Track whether chunked output has started."""
-        self.stream_started = False
-
-    async def write_chunk(self, chunk: str) -> None:
-        """Write one streamed chunk to stdout."""
-        if not chunk:
-            return
-        self.stream_started = True
-        print(chunk, end="", flush=True)
-
-    def finish_stream(self) -> None:
-        """Finish the streamed output block cleanly."""
-        if not self.stream_started:
-            return
-        print()
-        print()
-        self.stream_started = False
-
-    def print_reply(self, text: str) -> None:
-        """Print one non-streamed reply."""
-        print(text or "")
-        print()
-
-    def print_error(self, text: str) -> None:
-        """Print one error block."""
-        if self.stream_started:
-            self.finish_stream()
-        print(text or "")
-        print()
+        await _run_one_turn(session, user_text=user_text, turn_id=None)
 
 
 if __name__ == "__main__":

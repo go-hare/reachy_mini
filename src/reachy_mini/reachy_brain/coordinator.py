@@ -31,11 +31,13 @@ class WorkerCoordinator:
         emit_action: Callable[[ActionSpec], Awaitable[ActionResult]],
         memory_root: Path | None = None,
         clock: Callable[[], float] = time.monotonic,
+        event_sink: Callable[[WorkerEvent], Awaitable[None]] | None = None,
     ) -> None:
         """Create a worker coordinator."""
         self.emit_action = emit_action
         self.memory_root = memory_root_for(memory_root)
         self.clock = clock
+        self.event_sink = event_sink
         self.worker_types: dict[str, Callable[[], Worker]] = {
             "patrol": FakePatrolWorker,
         }
@@ -81,19 +83,19 @@ class WorkerCoordinator:
                 raise ValueError(f"Cannot update unknown worker: {task_id}")
             params = dict(decision.get("task_params", {}) or {})
             self.updates.setdefault(task_id, []).append(params)
-            self.events.append(
-                WorkerEvent(
-                    task_id=task_id,
-                    event="progress",
-                    payload={
-                        "note": str(decision.get("summary", "worker updated") or ""),
-                        "progress": None,
-                        "metrics": {"updated": True},
-                        "task_params": params,
-                    },
-                    ts_ms=int(self.clock() * 1000),
-                )
+            event = WorkerEvent(
+                task_id=task_id,
+                event="progress",
+                payload={
+                    "note": str(decision.get("summary", "worker updated") or ""),
+                    "progress": None,
+                    "metrics": {"updated": True},
+                    "task_params": params,
+                },
+                ts_ms=int(self.clock() * 1000),
             )
+            self.events.append(event)
+            await self._dispatch_event(event)
             return task_id
         if op == "cancel":
             self.cancel(task_id)
@@ -137,6 +139,21 @@ class WorkerCoordinator:
         task = self._tasks[task_id]
         return await asyncio.wait_for(task, timeout=timeout)
 
+    def cancel_all(self) -> None:
+        """Cancel every running worker."""
+        for token in self._tokens.values():
+            token.cancel()
+
+    async def wait_all(self, *, timeout: float | None = None) -> None:
+        """Wait until all worker tasks finish."""
+        pending = [task for task in self._tasks.values() if not task.done()]
+        if not pending:
+            return
+        await asyncio.wait_for(
+            asyncio.gather(*pending, return_exceptions=True),
+            timeout=timeout,
+        )
+
     def _worker_emit_action(
         self,
         spec: TaskSpec,
@@ -173,8 +190,15 @@ class WorkerCoordinator:
             WorkerMemory(self.memory_root, spec.memory_namespace).append(
                 {"type": "worker_event", "event": event, "payload": payload}
             )
+            await self._dispatch_event(frame)
 
         return emit
+
+    async def _dispatch_event(self, event: WorkerEvent) -> None:
+        sink = self.event_sink
+        if sink is None:
+            return
+        await sink(event)
 
     async def _run_worker(self, worker: Worker, context: WorkerContext) -> WorkerResult:
         task_id = context.spec.task_id

@@ -19,7 +19,6 @@ The editable app profile files live in `profiles/`:
 - `USER.md`
 - `SOUL.md`
 - `TOOLS.md`
-- `FRONT.md`
 - `config.jsonl`
 - `memory/`
 - `session/`
@@ -27,21 +26,32 @@ The editable app profile files live in `profiles/`:
 - `prompts/`
 - `skills/`
 
-When this app is running, `ReachyMiniApp` hosts the resident runtime directly and exposes:
+When this app is running, `ReachyMiniApp` hosts the resident v4 RuntimeSession and exposes:
 
 - `GET /`
 - `WS /ws/agent`
 
-The dialogue flow is streamed over WebSocket:
+The dialogue flow is streamed over WebSocket using the v4 wire protocol. Each
+message is a JSON envelope `{type, ts_ms, payload}`.
 
-- browser sends `user_text`
-- browser microphone streams raw `browser_audio_chunk` PCM16 audio and ends with `browser_audio_stop`
-- runtime turns browser or robot microphone audio into `speech_preview` partial text and then the final `user_text`
-- runtime emits `user_speech_started` / `user_speech_stopped` as surface-state transitions
-- runtime emits `front_hint_*`
-- runtime keeps pushing `surface_state`
-- runtime emits `front_final_*`
-- errors are emitted as `turn_error`
+Inbound (browser → runtime):
+
+- `browser_input` with `payload={kind:"text", session_id, payload:{text, turn_id}}` for text turns
+- `audio_chunk` with `payload={pcm_b64, sample_rate, channels}` for raw PCM16 mic audio
+- `audio_stop` to signal the browser stopped pushing audio
+- `speech_activity` with `payload={state:"start"|"end"}` for browser-side VAD (optional)
+- `ping` for keepalive
+
+Outbound (runtime → browser):
+
+- `brain_reply` carries the full Brain decision (`reply_text`, `actions`, `worker_decision`, `turn_id`)
+- `action_spec` and `action_result` reflect the action runtime
+- `worker_event` carries worker progress; `task_id="__surface__"` carries surface-state transitions
+- `transcription` carries STT previews and final user utterances
+- `tts_audio` carries synthesized PCM
+- `vision_event` carries vision tracker output
+- `pipeline_error` reports adapter failures
+- `pong` answers `ping`
 
 For a FunASR-style streaming speech input chain, `profiles/config.jsonl` can use:
 
@@ -49,4 +59,4 @@ For a FunASR-style streaming speech input chain, `profiles/config.jsonl` can use
 {"kind":"speech_input","enabled":true,"provider":"funasr","base_url":"ws://127.0.0.1:10096","model":"2pass","language":"zh","stream_chunk_size":[5,10,5],"stream_chunk_interval":10,"stream_encoder_chunk_look_back":4,"stream_decoder_chunk_look_back":0,"stream_finish_timeout_s":6.0,"stream_itn":true}
 ```
 
-The speech-input lane is now streaming-first. The current provider is `funasr`, and future streaming ASR backends should reuse the same provider/session contract in `runtime/speech_session.py`.
+The speech-input lane is streaming-first. The current provider is `funasr`; the v4 pipeline streams audio as `audio_chunk` envelopes and consumes transcripts via `pipeline/stt_funasr.py`.

@@ -167,11 +167,11 @@
                 <div class="card">
                     <h2>Flow</h2>
                     <ol>
-                        <li><code>ReachyMiniApp</code> 常驻托管当前 app 的 runtime</li>
-                        <li>页面通过 <code>/ws/agent</code> 把文本或浏览器语音生命周期事件发进 runtime</li>
-                        <li><code>front</code> 先回一轮可见 hint，再把消息投给 <code>kernel</code></li>
-                        <li><code>kernel</code> 处理完成后，再交给 <code>front</code> 输出 final</li>
-                        <li>页面持续监听 <code>surface_state</code>、hint、final 和错误事件</li>
+                        <li><code>ReachyMiniApp</code> 常驻当前 app 的 v4 RuntimeSession</li>
+                        <li>页面通过 <code>/ws/agent</code> 把文本或浏览器音频帧发进 runtime</li>
+                        <li>Brain 产出 <code>brain_reply</code>（含 reply_text、actions、worker_decision）</li>
+                        <li>ActionRuntime 执行动作并回 <code>action_result</code>；worker 状态走 <code>worker_event</code></li>
+                        <li>页面持续监听 <code>worker_event(task_id="__surface__")</code> 渲染 surface 状态</li>
                     </ol>
                 </div>
             </div>

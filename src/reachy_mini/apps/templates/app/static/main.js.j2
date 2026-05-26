@@ -1,5 +1,5 @@
 document.addEventListener("DOMContentLoaded", () => {
-    const THREAD_ID = "app:main";
+    const SESSION_ID = "app:main";
     const status = document.getElementById("status");
     const statusDot = document.getElementById("status-dot");
     const chatLog = document.getElementById("chat-log");
@@ -17,19 +17,21 @@ document.addEventListener("DOMContentLoaded", () => {
         window.navigator?.mediaDevices &&
         typeof window.navigator.mediaDevices.getUserMedia === "function"
     );
+    const ttsPlayer = createTtsPlayer();
 
     let socket = null;
     let socketReady = false;
-    let runtimeReady = false;
-    let runtimeSpeechInputEnabled = false;
+    let runtimeReady = true;
     let reconnectTimer = null;
-    let turnCompleted = false;
     let microphoneActive = false;
     let microphoneStream = null;
     let microphoneContext = null;
     let microphoneSourceNode = null;
     let microphoneProcessorNode = null;
     let microphoneSilentGainNode = null;
+    let surfacePhase = "idle";
+    let pingTimer = null;
+    let nextTurnSeq = 1;
 
     function compactText(text) {
         return String(text || "")
@@ -42,8 +44,13 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     function setStatus(text, ready) {
+        if (!status) {
+            return;
+        }
         status.textContent = text;
-        statusDot.dataset.ready = ready ? "true" : "false";
+        if (statusDot) {
+            statusDot.dataset.ready = ready ? "true" : "false";
+        }
     }
 
     function setMicStatus(text, state = "idle") {
@@ -71,25 +78,18 @@ document.addEventListener("DOMContentLoaded", () => {
             setMicStatus("当前浏览器不支持原始麦克风流，请继续使用文本输入。", "unsupported");
             return;
         }
-        if (!runtimeReady) {
-            setMicStatus("等待 runtime 就绪后即可使用麦克风。", "processing");
-            return;
-        }
-        if (!runtimeSpeechInputEnabled) {
-            setMicStatus("当前 runtime 未开启语音输入。", "unsupported");
-            return;
-        }
-        setMicStatus("麦克风待命，点击 Talk 发送原始语音。", "idle");
+        setMicStatus("麦克风待命，点击 Talk 把音频送给 runtime。", "idle");
     }
 
     function createMessage(role, text = "") {
+        if (!chatLog) {
+            return null;
+        }
         const wrapper = document.createElement("div");
         wrapper.className = `message ${role}`;
-
         const bubble = document.createElement("div");
         bubble.className = "bubble";
         bubble.textContent = text;
-
         wrapper.appendChild(bubble);
         chatLog.appendChild(wrapper);
         chatLog.scrollTop = chatLog.scrollHeight;
@@ -97,16 +97,19 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     function appendMessage(role, text) {
-        createMessage(role, text);
+        return createMessage(role, text);
     }
 
     function setComposerEnabled(enabled) {
-        sendButton.disabled = !enabled;
-        messageInput.disabled = !enabled;
+        if (sendButton) {
+            sendButton.disabled = !enabled;
+        }
+        if (messageInput) {
+            messageInput.disabled = !enabled;
+        }
         if (micButton) {
             micButton.disabled =
                 !audioCaptureSupported ||
-                !runtimeSpeechInputEnabled ||
                 (!enabled && !microphoneActive);
         }
     }
@@ -117,11 +120,6 @@ document.addEventListener("DOMContentLoaded", () => {
         }
         if (!audioCaptureSupported) {
             micButton.textContent = "Mic N/A";
-            micButton.dataset.active = "false";
-            return;
-        }
-        if (!runtimeSpeechInputEnabled) {
-            micButton.textContent = "Mic Off";
             micButton.dataset.active = "false";
             return;
         }
@@ -139,76 +137,76 @@ document.addEventListener("DOMContentLoaded", () => {
         return `${protocol}://${window.location.host}/ws/agent`;
     }
 
+    function makeTurnId() {
+        const seq = nextTurnSeq;
+        nextTurnSeq += 1;
+        return `T${Date.now().toString(36)}_${seq}`;
+    }
+
     function getTurnView(turnId) {
         const key = turnId || "turn:pending";
         if (!turnViews.has(key)) {
             turnViews.set(key, {
-                hintBubble: null,
-                hintText: "",
-                finalBubble: null,
-                finalText: "",
+                replyBubble: null,
+                replyText: "",
             });
         }
         return turnViews.get(key);
     }
 
-    function ensureStageBubble(turnId, stage) {
+    function ensureReplyBubble(turnId) {
         const turnView = getTurnView(turnId);
-        const bubbleKey = `${stage}Bubble`;
-        if (!turnView[bubbleKey]) {
-            turnView[bubbleKey] = createMessage("assistant");
+        if (!turnView.replyBubble) {
+            turnView.replyBubble = createMessage("assistant");
         }
-        return turnView[bubbleKey];
+        return turnView.replyBubble;
     }
 
-    function updateStageBubble(turnId, stage, text, mode) {
-        const normalized = String(text || "");
+    function setReplyText(turnId, text) {
         const turnView = getTurnView(turnId);
-        const textKey = `${stage}Text`;
-
-        if (mode === "append") {
-            turnView[textKey] += normalized;
-        } else {
-            turnView[textKey] = normalized;
-        }
-
-        if (!turnView[textKey]) {
+        turnView.replyText = String(text || "");
+        if (!turnView.replyText) {
             return;
         }
-
-        const bubble = ensureStageBubble(turnId, stage);
-        bubble.textContent = turnView[textKey];
-        chatLog.scrollTop = chatLog.scrollHeight;
-    }
-
-    function finishTurn() {
-        syncComposerState();
-        if (!microphoneActive) {
-            messageInput.focus();
+        const bubble = ensureReplyBubble(turnId);
+        if (!bubble) {
+            return;
+        }
+        bubble.textContent = turnView.replyText;
+        if (chatLog) {
+            chatLog.scrollTop = chatLog.scrollHeight;
         }
     }
 
-    function formatSurfaceStatus(state) {
-        const phase = String(state?.phase || "");
+    function formatSurfaceStatus(phase) {
         if (phase === "listening") {
-            return "Front 正在接收你的输入...";
-        }
-        if (phase === "attending") {
-            return "Front 已注意到你，正在保持关注...";
+            return "Runtime 正在接收你的输入...";
         }
         if (phase === "listening_wait") {
             return "已收到语音，正在等待最终文本...";
         }
         if (phase === "replying") {
-            return "Front 正在处理这一轮并组织回复...";
+            return "Brain 正在生成回复...";
+        }
+        if (phase === "acting") {
+            return "正在执行动作...";
         }
         if (phase === "settling") {
-            return "回复内容已经生成，正在做最后收尾...";
+            return "回复已完成，正在收尾...";
         }
-        if (phase === "idle") {
-            return "Runtime ready";
+        return "Runtime ready";
+    }
+
+    function applySurfacePhase(phase) {
+        surfacePhase = phase || "idle";
+        setStatus(formatSurfaceStatus(surfacePhase), true);
+        if (surfacePhase === "listening") {
+            setMicStatus("Runtime 检测到你在说话。", "listening");
+        } else if (surfacePhase === "listening_wait") {
+            setMicStatus("正在等待转写...", "processing");
+        } else if (!microphoneActive && surfacePhase === "idle") {
+            setDefaultMicStatus();
         }
-        return "Runtime connected";
     }
 
     function formatMicrophoneError(error) {
@@ -228,41 +226,40 @@ document.addEventListener("DOMContentLoaded", () => {
         return "麦克风启动失败，请再试一次。";
     }
 
-    function sendSocketEvent(payload) {
+    function sendEnvelope(type, payload) {
         if (!isSocketOpen()) {
             return false;
         }
-        socket.send(JSON.stringify(payload));
+        const envelope = {
+            type,
+            ts_ms: Date.now(),
+            payload: payload || {},
+        };
+        socket.send(JSON.stringify(envelope));
         return true;
     }
 
-    function submitUserText(rawText, options = {}) {
+    function submitUserText(rawText) {
         const message = compactText(rawText);
         if (!message) {
             return false;
         }
-
         if (!isSocketOpen()) {
             connectSocket();
             appendMessage("assistant", "WebSocket 还没连上，请稍等一下再发送。");
             return false;
         }
-
-        turnCompleted = false;
+        const turnId = makeTurnId();
         appendMessage("user", message);
-        if (!options.keepComposerText) {
+        if (messageInput) {
             messageInput.value = "";
         }
         syncComposerState();
-        setStatus(
-            options.statusText || "消息已送达，Front 正在处理；你也可以继续发送。",
-            true
-        );
-
-        sendSocketEvent({
-            type: "user_text",
-            thread_id: THREAD_ID,
-            text: message,
+        setStatus("消息已送达，Brain 正在处理。", true);
+        sendEnvelope("browser_input", {
+            kind: "text",
+            session_id: SESSION_ID,
+            payload: { text: message, turn_id: turnId },
         });
         return true;
     }
@@ -278,6 +275,16 @@ document.addEventListener("DOMContentLoaded", () => {
         return window.btoa(binary);
     }
 
+    function base64ToArrayBuffer(value) {
+        const binary = window.atob(String(value || ""));
+        const buffer = new ArrayBuffer(binary.length);
+        const view = new Uint8Array(buffer);
+        for (let index = 0; index < binary.length; index += 1) {
+            view[index] = binary.charCodeAt(index);
+        }
+        return buffer;
+    }
+
     function float32ToPcm16Buffer(floatSamples) {
         const buffer = new ArrayBuffer(floatSamples.length * 2);
         const view = new DataView(buffer);
@@ -287,6 +294,70 @@ document.addEventListener("DOMContentLoaded", () => {
             view.setInt16(index * 2, value, true);
         }
         return buffer;
+    }
+
+    function pcm16BufferToFloat32(buffer) {
+        const view = new DataView(buffer);
+        const length = Math.floor(buffer.byteLength / 2);
+        const samples = new Float32Array(length);
+        for (let index = 0; index < length; index += 1) {
+            const value = view.getInt16(index * 2, true);
+            samples[index] = value < 0 ? value / 0x8000 : value / 0x7fff;
+        }
+        return samples;
+    }
+
+    function createTtsPlayer() {
+        let context = null;
+        let nextStartAt = 0;
+
+        function ensureContext() {
+            if (!AudioContextCtor) {
+                return null;
+            }
+            if (!context) {
+                context = new AudioContextCtor();
+            }
+            return context;
+        }
+
+        return {
+            async enqueue(envelopePayload) {
+                const ctx = ensureContext();
+                if (!ctx) {
+                    return;
+                }
+                if (ctx.state === "suspended") {
+                    try {
+                        await ctx.resume();
+                    } catch (_error) {
+                        // Some browsers require a user gesture; ignore.
+                    }
+                }
+                const buffer = base64ToArrayBuffer(envelopePayload.pcm_b64);
+                if (buffer.byteLength === 0) {
+                    return;
+                }
+                const sampleRate = Number(envelopePayload.sample_rate) || ctx.sampleRate;
+                const samples = pcm16BufferToFloat32(buffer);
+                if (samples.length === 0) {
+                    return;
+                }
+                const audioBuffer = ctx.createBuffer(1, samples.length, sampleRate);
+                audioBuffer.copyToChannel(samples, 0);
+                const source = ctx.createBufferSource();
+                source.buffer = audioBuffer;
+                source.connect(ctx.destination);
+                const startAt = Math.max(ctx.currentTime, nextStartAt);
+                source.start(startAt);
+                nextStartAt = startAt + audioBuffer.duration;
+            },
+            stop() {
+                if (context) {
+                    nextStartAt = context.currentTime;
+                }
+            },
+        };
     }
 
     async function releaseMicrophoneResources() {
@@ -312,32 +383,27 @@ document.addEventListener("DOMContentLoaded", () => {
             microphoneContext = null;
             try {
                 await context.close();
-            } catch (error) {
+            } catch (_error) {
                 // Ignore close failures from torn-down browser contexts.
             }
         }
     }
 
-    function sendBrowserAudioChunk(floatSamples) {
+    function sendAudioChunk(floatSamples) {
         if (!isSocketOpen() || !microphoneContext) {
             return false;
         }
         const pcm16Buffer = float32ToPcm16Buffer(floatSamples);
-        return sendSocketEvent({
-            type: "browser_audio_chunk",
-            thread_id: THREAD_ID,
-            sample_rate_hz: microphoneContext.sampleRate,
-            audio_b64: arrayBufferToBase64(pcm16Buffer),
+        return sendEnvelope("audio_chunk", {
+            pcm_b64: arrayBufferToBase64(pcm16Buffer),
+            sample_rate: microphoneContext.sampleRate,
+            channels: 1,
         });
     }
 
     async function startMicrophoneCapture() {
         if (!audioCaptureSupported) {
             setMicStatus("当前浏览器不支持原始麦克风流，请继续使用文本输入。", "unsupported");
-            return;
-        }
-        if (!runtimeSpeechInputEnabled) {
-            setMicStatus("当前 runtime 未开启语音输入。", "unsupported");
             return;
         }
         if (microphoneActive) {
@@ -357,26 +423,21 @@ document.addEventListener("DOMContentLoaded", () => {
                 audio: true,
                 video: false,
             });
-            const context = new AudioContextCtor({
-                latencyHint: "interactive",
-            });
+            const context = new AudioContextCtor({ latencyHint: "interactive" });
             const source = context.createMediaStreamSource(stream);
             const processor = context.createScriptProcessor(2048, 1, 1);
             const silentGain = context.createGain();
             silentGain.gain.value = 0;
 
             processor.onaudioprocess = (audioEvent) => {
-                if (!microphoneActive) {
-                    return;
-                }
-                if (!isSocketOpen()) {
+                if (!microphoneActive || !isSocketOpen()) {
                     return;
                 }
                 const channelData = audioEvent.inputBuffer.getChannelData(0);
                 if (!channelData || channelData.length === 0) {
                     return;
                 }
-                sendBrowserAudioChunk(channelData);
+                sendAudioChunk(channelData);
             };
 
             source.connect(processor);
@@ -390,10 +451,10 @@ document.addEventListener("DOMContentLoaded", () => {
             microphoneProcessorNode = processor;
             microphoneSilentGainNode = silentGain;
             microphoneActive = true;
-            turnCompleted = false;
             syncComposerState();
-            setStatus("浏览器麦克风已接入，runtime 将自行判断语音起止。", true);
+            setStatus("浏览器麦克风已接入，runtime 将处理音频流。", true);
             setMicStatus("麦克风已开启，请开始说话。", "listening");
+            sendEnvelope("speech_activity", { state: "start" });
         } catch (error) {
             await releaseMicrophoneResources();
             microphoneActive = false;
@@ -418,10 +479,8 @@ document.addEventListener("DOMContentLoaded", () => {
         microphoneActive = false;
         syncComposerState();
         if (shouldNotifyRuntime) {
-            sendSocketEvent({
-                type: "browser_audio_stop",
-                thread_id: THREAD_ID,
-            });
+            sendEnvelope("audio_stop", {});
+            sendEnvelope("speech_activity", { state: "end" });
             setMicStatus("已停止收音，正在等待转写...", "processing");
         } else if (errorText) {
             setMicStatus(errorText, "error");
@@ -433,99 +492,105 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
-    function handleSocketEvent(payload) {
-        const eventType = String(payload?.type || "");
+    function handleEnvelope(envelope) {
+        const type = String(envelope?.type || "");
+        const payload = envelope?.payload || {};
 
-        if (eventType === "runtime_status") {
-            runtimeReady = Boolean(payload.ready);
-            runtimeSpeechInputEnabled = Boolean(payload.speech_input_enabled);
+        if (type === "brain_reply") {
+            setReplyText(payload.turn_id, payload.reply_text);
             setStatus(
-                runtimeReady
-                    ? "App runtime ready"
-                    : "App runtime is starting...",
-                runtimeReady
+                Array.isArray(payload.actions) && payload.actions.length > 0
+                    ? "Brain 已生成回复，动作排队执行中。"
+                    : "Brain 已生成回复。",
+                true,
             );
-            syncComposerState();
-            setDefaultMicStatus();
             return;
         }
-
-        if (eventType === "surface_state") {
-            const phase = String(payload?.state?.phase || "");
-            if (turnCompleted && (phase === "settling" || phase === "idle")) {
-                if (!microphoneActive && phase === "idle") {
-                    setDefaultMicStatus();
-                }
+        if (type === "action_result") {
+            const status = String(payload.status || "");
+            const verb = status === "ok" ? "完成" : status === "cancelled" ? "已取消" : "失败";
+            const detail = `${payload.name || "action"} ${verb}（${payload.duration_ms || 0}ms）`;
+            if (status !== "ok" && payload.error) {
+                appendMessage("assistant", `动作 ${payload.name} ${verb}：${payload.error}`);
+            }
+            setStatus(detail, true);
+            return;
+        }
+        if (type === "worker_event") {
+            if (payload.task_id === "__surface__") {
+                const phase = String(payload.payload?.state?.phase || "");
+                applySurfacePhase(phase);
                 return;
             }
-            if (phase === "listening") {
-                setMicStatus("runtime 已检测到你开始说话。", "listening");
-            } else if (phase === "listening_wait") {
-                setMicStatus("已收到语音，正在等待转写...", "processing");
-            } else if (!microphoneActive && phase === "idle") {
-                setDefaultMicStatus();
-            }
-            setStatus(formatSurfaceStatus(payload.state), runtimeReady);
-            return;
-        }
-
-        if (eventType === "speech_preview") {
-            const previewText = compactText(payload.text);
-            setSpeechPreview(previewText);
-            if (previewText) {
-                setMicStatus("runtime 正在流式转写...", "listening");
-            } else if (!microphoneActive) {
-                setDefaultMicStatus();
+            const note = compactText(payload.payload?.note);
+            if (note) {
+                setStatus(`worker:${payload.task_id} ${payload.event} - ${note}`, true);
             }
             return;
         }
-
-        if (eventType === "front_hint_chunk") {
-            turnCompleted = false;
-            updateStageBubble(payload.turn_id, "hint", payload.text, "append");
-            setStatus("Front 已先回应，后续处理还在继续，你也可以继续发送。", true);
-            return;
-        }
-
-        if (eventType === "front_hint_done") {
-            turnCompleted = false;
-            updateStageBubble(payload.turn_id, "hint", payload.text, "replace");
-            setStatus("Front 已先回应，后续处理还在继续，你也可以继续发送。", true);
-            return;
-        }
-
-        if (eventType === "front_final_chunk") {
-            turnCompleted = false;
-            updateStageBubble(payload.turn_id, "final", payload.text, "append");
-            setStatus("Front 正在输出这一轮的最终回复，你也可以继续发送。", true);
-            return;
-        }
-
-        if (eventType === "front_final_done") {
-            turnCompleted = true;
-            updateStageBubble(payload.turn_id, "final", payload.text, "replace");
-            setStatus("这轮回复已经完成，你也可以继续发送。", true);
-            if (!microphoneActive) {
-                setDefaultMicStatus();
+        if (type === "transcription") {
+            const text = compactText(payload.text);
+            if (payload.is_final) {
+                setSpeechPreview("");
+                if (text) {
+                    appendMessage("user", text);
+                }
+            } else {
+                setSpeechPreview(text);
             }
-            finishTurn();
             return;
         }
+        if (type === "tts_audio") {
+            void ttsPlayer.enqueue(payload);
+            return;
+        }
+        if (type === "tts_stop") {
+            ttsPlayer.stop();
+            return;
+        }
+        if (type === "speech_presenter") {
+            // Optional debug stream; safe to ignore.
+            return;
+        }
+        if (type === "vision_event") {
+            // Default UI does not render vision events; profiles can extend.
+            return;
+        }
+        if (type === "interrupt") {
+            ttsPlayer.stop();
+            return;
+        }
+        if (type === "pipeline_error") {
+            setStatus(`pipeline error: ${payload.reason || "unknown"}`, false);
+            appendMessage(
+                "assistant",
+                `runtime error (${payload.component || "pipeline"}): ${payload.reason || "unknown"}`,
+            );
+            return;
+        }
+        if (type === "pong") {
+            return;
+        }
+    }
 
-        if (eventType === "turn_error") {
-            turnCompleted = false;
-            appendMessage("assistant", `请求失败：${payload.error || "unknown error"}`);
-            setStatus("Runtime error", false);
-            if (!microphoneActive) {
-                setDefaultMicStatus();
+    function startPingTimer() {
+        if (pingTimer !== null) {
+            return;
+        }
+        pingTimer = window.setInterval(() => {
+            if (!isSocketOpen()) {
+                return;
             }
-            finishTurn();
-            return;
-        }
+            sendEnvelope("ping", {});
+        }, 10000);
+    }
 
-        if (eventType === "pong") {
+    function stopPingTimer() {
+        if (pingTimer === null) {
             return;
         }
+        window.clearInterval(pingTimer);
+        pingTimer = null;
     }
 
     function connectSocket() {
@@ -538,20 +603,22 @@ document.addEventListener("DOMContentLoaded", () => {
 
         socketReady = false;
         runtimeReady = false;
-        runtimeSpeechInputEnabled = false;
         syncComposerState();
-        setStatus("Connecting app runtime WebSocket...", false);
+        setStatus("连接 runtime WebSocket...", false);
 
         socket = new WebSocket(buildSocketUrl());
         socket.addEventListener("open", () => {
             socketReady = true;
-            setStatus("WebSocket connected, waiting runtime...", false);
+            runtimeReady = true;
+            setStatus("Runtime 已就绪。", true);
             syncComposerState();
+            setDefaultMicStatus();
+            startPingTimer();
         });
         socket.addEventListener("message", (event) => {
             try {
-                handleSocketEvent(JSON.parse(event.data));
-            } catch (error) {
+                handleEnvelope(JSON.parse(event.data));
+            } catch (_error) {
                 appendMessage("assistant", "收到了一条无法解析的运行时消息。");
             }
         });
@@ -559,10 +626,9 @@ document.addEventListener("DOMContentLoaded", () => {
             socket = null;
             socketReady = false;
             runtimeReady = false;
-            runtimeSpeechInputEnabled = false;
-            turnCompleted = false;
+            stopPingTimer();
             syncComposerState();
-            setStatus("WebSocket disconnected, retrying...", false);
+            setStatus("WebSocket 已断开，正在重连...", false);
             if (microphoneActive) {
                 void stopMicrophoneCapture({
                     notifyRuntime: false,
@@ -584,22 +650,27 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     }
 
-    chatForm.addEventListener("submit", (event) => {
-        event.preventDefault();
-        const message = compactText(messageInput.value);
-        if (!message) {
-            return;
-        }
-
-        submitUserText(message);
-    });
-
-    messageInput.addEventListener("keydown", (event) => {
-        if (event.key === "Enter" && !event.shiftKey) {
+    if (chatForm) {
+        chatForm.addEventListener("submit", (event) => {
             event.preventDefault();
-            chatForm.requestSubmit();
-        }
-    });
+            const message = compactText(messageInput?.value);
+            if (!message) {
+                return;
+            }
+            submitUserText(message);
+        });
+    }
+
+    if (messageInput) {
+        messageInput.addEventListener("keydown", (event) => {
+            if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                if (chatForm) {
+                    chatForm.requestSubmit();
+                }
+            }
+        });
+    }
 
     if (micButton) {
         micButton.addEventListener("click", () => {
@@ -614,7 +685,7 @@ document.addEventListener("DOMContentLoaded", () => {
     setComposerEnabled(false);
     if (composerHint) {
         composerHint.textContent = audioCaptureSupported
-            ? "Enter 发送，Shift+Enter 换行；Talk 会把原始麦克风音频送到 runtime。"
+            ? "Enter 发送，Shift+Enter 换行；Talk 把音频流送到 runtime。"
             : "Enter 发送，Shift+Enter 换行；当前浏览器不支持原始麦克风流。";
     }
     setSpeechPreview("");
