@@ -1,105 +1,90 @@
-"""Tests for the multi-turn RuntimeSession."""
+"""Tests for the SDK-first RuntimeSession."""
 
 from __future__ import annotations
 
 import asyncio
+import sys
+from pathlib import Path
 from typing import Any
 
 import pytest
 
-from reachy_mini.action_runtime import ActionExecutor, ActionResult, ActionSpec
-from reachy_mini.action_runtime.library import create_builtin_registry
-from reachy_mini.pipeline.action_dispatcher import ActionDispatcher
-from reachy_mini.pipeline.frames import (
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from sdk_fakes import (  # noqa: E402
+    FakeMini,
+    ScriptedSDKClient,
+    agent_config,
+    assistant_message,
+    result_message,
+    task_completed,
+    task_progress,
+    task_started,
+)
+
+from reachy_mini.action_runtime import ActionExecutor  # noqa: E402
+from reachy_mini.action_runtime.library import create_builtin_registry  # noqa: E402
+from reachy_mini.pipeline.action_dispatcher import ActionDispatcher  # noqa: E402
+from reachy_mini.pipeline.frames import (  # noqa: E402
     ActionResultFrame,
-    ActionSpecFrame,
-    BrainReplyFrame,
+    SDKMessageFrame,
     SpeechActivityFrame,
-    SpeechPresenterFrame,
-    TTSAudioFrame,
     TTSStopFrame,
     WorkerEventFrame,
 )
-from reachy_mini.pipeline.session import SURFACE_TASK_ID, RuntimeSession
-from reachy_mini.pipeline.speech_presenter import SpeechPresenter
-from reachy_mini.pipeline.tts_kokoro import KokoroAdapter
-from reachy_mini.reachy_brain.agent import BrainAgent, BrainTurnInput
-from reachy_mini.reachy_brain.config import (
-    AgentConfig,
-    ModelConfig,
-    SpeechConfig,
-    SpeechInputConfig,
-    VisionConfig,
-)
-from reachy_mini.reachy_brain.coordinator import WorkerCoordinator
-
-
-def _agent_config(*, speech_enabled: bool = False) -> AgentConfig:
-    return AgentConfig(
-        model=ModelConfig(provider="mock", model="mock"),
-        speech=SpeechConfig(enabled=speech_enabled),
-        speech_input=SpeechInputConfig(enabled=False),
-        vision=VisionConfig(),
-        extras={},
-    )
-
-
-class _FakeMini:
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, dict[str, Any]]] = []
-        self.antennas = [0.0, 0.0]
-
-    def goto_target(self, **kwargs: Any) -> None:
-        self.calls.append(("goto_target", kwargs))
-
-    def look_at_world(self, x, y, z, duration, perform_movement) -> None:
-        self.calls.append(("look_at_world", {"x": x, "y": y, "z": z}))
-
-    def get_present_antenna_joint_positions(self) -> list[float]:
-        return list(self.antennas)
-
-
-class _ScriptedModel:
-    def __init__(self, scripted: list[dict[str, Any]]) -> None:
-        self._scripted = list(scripted)
-        self.last_inputs: list[BrainTurnInput] = []
-
-    async def run(self, turn_input, *, config, registry):
-        self.last_inputs.append(turn_input)
-        if self._scripted:
-            return self._scripted.pop(0)
-        return {"reply_text": "ok", "speech_style": {}, "tool_calls": [], "worker_decision": None}
+from reachy_mini.pipeline.session import SURFACE_TASK_ID, RuntimeSession  # noqa: E402
+from reachy_mini.pipeline.speech_presenter import SpeechPresenter  # noqa: E402
+from reachy_mini.pipeline.tts_kokoro import KokoroAdapter  # noqa: E402
+from reachy_mini.reachy_brain.agent import BrainAgent  # noqa: E402
+from reachy_mini.reachy_brain.offline_sdk_client import OfflineSDKClient  # noqa: E402
 
 
 def _build_session(
     *,
-    scripted: list[dict[str, Any]] | None = None,
+    scripts: list[list[Any]] | None = None,
+    offline: bool = False,
     speech_enabled: bool = False,
 ) -> RuntimeSession:
-    config = _agent_config(speech_enabled=speech_enabled)
+    config = agent_config(speech_enabled=speech_enabled)
     registry = create_builtin_registry()
-    model = _ScriptedModel(scripted or [])
-    agent = BrainAgent(config=config, registry=registry, model=model)
-    mini = _FakeMini()
-    executor = ActionExecutor(registry=registry, mini=mini)
+    executor = ActionExecutor(registry=registry, mini=FakeMini())
+    published: list[ActionResultFrame] = []
 
-    async def emit_action(spec: ActionSpec) -> ActionResult:
-        return await executor.submit(spec)
+    async def publish_result(frame: ActionResultFrame) -> None:
+        published.append(frame)
 
-    coordinator = WorkerCoordinator(emit_action=emit_action)
-    speech = SpeechPresenter()
-    tts = KokoroAdapter(config.speech)
-    actions = ActionDispatcher(executor)
-    return RuntimeSession(
+    actions = ActionDispatcher(executor, publish=publish_result)
+
+    def client_factory(options: Any) -> Any:
+        if offline:
+            return OfflineSDKClient(options, action_runner=actions.run_action)
+        return ScriptedSDKClient(
+            options,
+            scripts=scripts or [],
+            action_runner=actions.run_action,
+        )
+
+    agent = BrainAgent(
+        config=config,
+        registry=registry,
+        run_action=actions.run_action,
+        client_factory=client_factory,
+    )
+    session = RuntimeSession(
         config=config,
         registry=registry,
         agent=agent,
         executor=executor,
-        speech=speech,
-        tts=tts,
+        speech=SpeechPresenter(),
+        tts=KokoroAdapter(config.speech),
         actions=actions,
-        coordinator=coordinator,
     )
+
+    async def publish_to_session(frame: ActionResultFrame) -> None:
+        await session.bus.publish(frame)
+
+    actions._publish = publish_to_session  # test wiring mirrors from_profile()
+    return session
 
 
 async def _drain(sub) -> list[Any]:
@@ -110,12 +95,12 @@ async def _drain(sub) -> list[Any]:
 
 
 @pytest.mark.asyncio
-async def test_two_turns_share_brain_memory_and_publish_replies() -> None:
-    """Two consecutive turns produce two BrainReplyFrames and the second sees the first."""
+async def test_two_turns_publish_sdk_messages_and_share_context() -> None:
+    """Two turns produce SDKMessageFrames and the second sees accumulated context."""
     session = _build_session(
-        scripted=[
-            {"reply_text": "hello", "speech_style": {}, "tool_calls": [], "worker_decision": None},
-            {"reply_text": "again", "speech_style": {}, "tool_calls": [], "worker_decision": None},
+        scripts=[
+            [assistant_message("hello", session_id="T1"), result_message(session_id="T1")],
+            [assistant_message("again", session_id="T2"), result_message(session_id="T2")],
         ]
     )
     await session.start()
@@ -127,33 +112,25 @@ async def test_two_turns_share_brain_memory_and_publish_replies() -> None:
     await session.wait_for_turn_idle(turn2, timeout=2.0)
 
     frames = await _drain(sub)
-    replies = [frame for frame in frames if isinstance(frame, BrainReplyFrame)]
-    assert [reply.reply_text for reply in replies] == ["hello", "again"]
+    sdk_frames = [frame for frame in frames if isinstance(frame, SDKMessageFrame)]
+    assert [frame.turn_id for frame in sdk_frames[:2]] == ["T1", "T1"]
+    assert any(
+        type(frame.message).__name__ == "AssistantMessage" and frame.turn_id == "T2"
+        for frame in sdk_frames
+    )
 
-    model_inputs = session.agent.model.last_inputs  # type: ignore[attr-defined]
-    second_context = model_inputs[1].context["recent_frames"]
-    # Memory carries forward: the brain processor's context buffer accumulates
-    # across turns, so the second call must observe more context than the first.
-    assert len(second_context) >= len(model_inputs[0].context["recent_frames"])
+    client = session.agent._client
+    assert isinstance(client, ScriptedSDKClient)
+    assert "recent_frames': []" in client.turn_inputs[0].context["formatted_prompt"]
+    assert "SDKMessageFrame" in client.turn_inputs[1].context["formatted_prompt"]
 
     await session.stop()
 
 
 @pytest.mark.asyncio
-async def test_action_runs_and_publishes_spec_and_result_frames() -> None:
-    """A reply with a tool call yields ActionSpecFrame + ActionResultFrame."""
-    session = _build_session(
-        scripted=[
-            {
-                "reply_text": "ok",
-                "speech_style": {},
-                "tool_calls": [
-                    {"name": "nod", "arguments": {"cycles": 1, "period_s": 0.3}, "reason": "ack"}
-                ],
-                "worker_decision": None,
-            }
-        ]
-    )
+async def test_offline_sdk_action_tool_path_publishes_result_frame() -> None:
+    """Explicit offline SDK fake can exercise MCP action execution."""
+    session = _build_session(offline=True)
     await session.start()
     sub = session.subscribe()
 
@@ -161,10 +138,7 @@ async def test_action_runs_and_publishes_spec_and_result_frames() -> None:
     await session.wait_for_turn_idle(turn_id, timeout=3.0)
 
     frames = await _drain(sub)
-    spec_frames = [frame for frame in frames if isinstance(frame, ActionSpecFrame)]
     result_frames = [frame for frame in frames if isinstance(frame, ActionResultFrame)]
-    assert len(spec_frames) == 1
-    assert spec_frames[0].spec.name == "nod"
     assert len(result_frames) == 1
     assert result_frames[0].status == "ok"
     assert result_frames[0].name == "nod"
@@ -173,22 +147,17 @@ async def test_action_runs_and_publishes_spec_and_result_frames() -> None:
 
 
 @pytest.mark.asyncio
-async def test_worker_decision_spawns_worker_and_publishes_events() -> None:
-    """Brain worker_decision spawns coordinator worker; events surface as WorkerEventFrames."""
+async def test_sdk_task_messages_publish_worker_events() -> None:
+    """SDK task messages surface as WorkerEventFrames without a Reachy-side worker."""
     session = _build_session(
-        scripted=[
-            {
-                "reply_text": "patrolling",
-                "speech_style": {},
-                "tool_calls": [],
-                "worker_decision": {
-                    "op": "spawn",
-                    "task_id": "w1",
-                    "task_type": "patrol",
-                    "task_params": {"rounds": 1},
-                    "summary": "start patrol",
-                },
-            }
+        scripts=[
+            [
+                assistant_message("patrolling", session_id="T1"),
+                task_started("w1", session_id="T1"),
+                task_progress("w1", session_id="T1"),
+                task_completed("w1", session_id="T1"),
+                result_message(session_id="T1"),
+            ]
         ]
     )
     await session.start()
@@ -203,24 +172,20 @@ async def test_worker_decision_spawns_worker_and_publishes_events() -> None:
         for frame in frames
         if isinstance(frame, WorkerEventFrame) and frame.task_id == "w1"
     ]
-    events = [frame.event for frame in worker_events]
-    assert "started" in events
-    assert "completed" in events
+    assert [frame.event for frame in worker_events] == ["started", "progress", "completed"]
 
     await session.stop()
 
 
 @pytest.mark.asyncio
 async def test_barge_in_publishes_tts_stop_and_cancels_actions() -> None:
-    """SpeechActivityFrame(start) during TTS yields TTSStopFrame and cancels actions."""
+    """SpeechActivityFrame(start) during TTS yields TTSStopFrame and interrupts SDK."""
     session = _build_session(
-        scripted=[
-            {
-                "reply_text": "讲个故事吧。一只小狗。",
-                "speech_style": {},
-                "tool_calls": [],
-                "worker_decision": None,
-            }
+        scripts=[
+            [
+                assistant_message("讲个故事吧。一只小狗。", session_id="T1"),
+                result_message(session_id="T1"),
+            ]
         ],
         speech_enabled=True,
     )
@@ -228,12 +193,7 @@ async def test_barge_in_publishes_tts_stop_and_cancels_actions() -> None:
     sub = session.subscribe()
 
     turn_id = await session.submit_text("tell story", turn_id="T1")
-    # Drain a bit so TTSAudioFrame flips brain.tts_active to True.
     await asyncio.sleep(0.05)
-
-    # The TTS frames feed back into BrainProcessor; if the last chunk was final
-    # we still want to verify the routing path. Force tts_active to True so the
-    # barge-in branch is exercised regardless of timing.
     session.brain.tts_active = True
 
     await session.submit_speech_activity(SpeechActivityFrame(state="start", ts_ms=1000))
@@ -242,19 +202,20 @@ async def test_barge_in_publishes_tts_stop_and_cancels_actions() -> None:
     frames = await _drain(sub)
     stop_frames = [frame for frame in frames if isinstance(frame, TTSStopFrame)]
     assert stop_frames, "expected TTSStopFrame after barge-in"
+    assert turn_id == "T1"
+
+    client = session.agent._client
+    assert isinstance(client, ScriptedSDKClient)
+    assert client.interrupted is True
 
     await session.stop()
-    # turn cleanup
-    assert turn_id not in session._turn_actions
 
 
 @pytest.mark.asyncio
 async def test_surface_phase_transitions_published() -> None:
     """Surface state moves idle -> replying -> idle for a no-op turn."""
     session = _build_session(
-        scripted=[
-            {"reply_text": "ok", "speech_style": {}, "tool_calls": [], "worker_decision": None}
-        ]
+        scripts=[[assistant_message("ok", session_id="T1"), result_message(session_id="T1")]]
     )
     await session.start()
     sub = session.subscribe(
@@ -275,45 +236,20 @@ async def test_surface_phase_transitions_published() -> None:
 
 
 @pytest.mark.asyncio
-async def test_stop_cancels_running_workers_quickly() -> None:
-    """stop() returns within 1 s even with active workers."""
-
-    class _SlowWorker:
-        async def run(self, ctx) -> Any:  # pragma: no cover - cancellation only
-            from reachy_mini.reachy_brain.worker import WorkerResult
-
-            await ctx.emit_event("started", {"note": "slow", "progress": 0.0})
-            try:
-                while True:
-                    await ctx.cancel_token.checkpoint()
-                    await asyncio.sleep(0.05)
-            except Exception:
-                return WorkerResult(status="cancelled", summary="stopped")
-            return WorkerResult(status="completed", summary="never")
-
+async def test_stop_disconnects_sdk_quickly() -> None:
+    """stop() stops tracked SDK tasks and disconnects the SDK client."""
     session = _build_session(
-        scripted=[
-            {
-                "reply_text": "go",
-                "speech_style": {},
-                "tool_calls": [],
-                "worker_decision": {
-                    "op": "spawn",
-                    "task_id": "slow1",
-                    "task_type": "slow",
-                    "task_params": {},
-                    "summary": "slow",
-                },
-            }
-        ]
+        scripts=[[task_started("slow1", session_id="T1"), result_message(session_id="T1")]]
     )
-    session.coordinator.register_worker("slow", _SlowWorker)
     await session.start()
 
     await session.submit_text("go", turn_id="T1")
-    await asyncio.sleep(0.05)
-
+    client = session.agent._client
+    assert isinstance(client, ScriptedSDKClient)
     start = asyncio.get_event_loop().time()
     await session.stop()
     elapsed = asyncio.get_event_loop().time() - start
+
     assert elapsed < 2.0
+    assert client.stopped_tasks == ["slow1"]
+    assert client.connected is False

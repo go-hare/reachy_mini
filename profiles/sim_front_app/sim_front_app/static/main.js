@@ -1572,9 +1572,18 @@ document.addEventListener("DOMContentLoaded", () => {
                         label: "正在听",
                         copy: "继续说，我会把它实时转成文字。",
                         speech: previewText,
-                    });
-                }
-            }
+            });
+        }
+    }
+
+    function sdkMessageText(payload) {
+        const content = Array.isArray(payload.content) ? payload.content : [];
+        return content
+            .filter((block) => block && block.type === "text")
+            .map((block) => compactText(block.text))
+            .filter(Boolean)
+            .join("\n");
+    }
         });
 
         instance.addEventListener("nomatch", () => {
@@ -1661,17 +1670,16 @@ document.addEventListener("DOMContentLoaded", () => {
         const eventType = String(envelope?.type || "");
         const payload = envelope?.payload || {};
 
-        if (eventType === "brain_reply") {
+        if (eventType === "sdk_message") {
+            const text = sdkMessageText(payload);
+            if (!text) {
+                setStatus(`SDK message: ${payload.message_type || "unknown"}`, true);
+                return;
+            }
             turnCompleted = true;
             const turnId = String(payload.turn_id || "");
-            updateStageBubble(turnId, "final", payload.reply_text, "replace");
-            const actionsCount = Array.isArray(payload.actions) ? payload.actions.length : 0;
-            setStatus(
-                actionsCount > 0
-                    ? "Brain 已生成回复，动作排队执行中。"
-                    : "Brain 已生成回复。",
-                true,
-            );
+            updateStageBubble(turnId, "final", text, "replace");
+            setStatus("Brain 已生成 SDK 回复。", true);
             finishTurn();
             return;
         }
@@ -1743,6 +1751,11 @@ document.addEventListener("DOMContentLoaded", () => {
                 copy: payload.reason || "runtime 返回了错误，可以直接再试一轮。",
             });
             finishTurn();
+            return;
+        }
+
+        if (eventType === "ping") {
+            sendEnvelope("pong", {});
             return;
         }
 

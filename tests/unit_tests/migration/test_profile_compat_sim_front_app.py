@@ -7,8 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from reachy_mini.pipeline.frames import BrainReplyFrame, WorkerEventFrame
+from reachy_mini.pipeline.frames import SDKMessageFrame, WorkerEventFrame
 from reachy_mini.pipeline.session import SURFACE_TASK_ID, RuntimeSession
+from reachy_mini.reachy_brain.offline_sdk_client import OfflineSDKClient
 from reachy_mini.reachy_brain.config import from_profile
 
 
@@ -47,17 +48,18 @@ async def test_sim_front_app_runtime_session_starts_and_handles_text_turn() -> N
     session = RuntimeSession.from_profile(
         SIM_FRONT_APP_PROFILE,
         overrides=dict(_MOCK_OVERRIDES),
+        client_factory=lambda options: OfflineSDKClient(options),
     )
     await session.start()
-    sub = session.subscribe(filter=lambda frame: isinstance(frame, BrainReplyFrame))
+    sub = session.subscribe(filter=lambda frame: isinstance(frame, SDKMessageFrame))
     try:
         turn_id = await session.submit_text("你好", turn_id="T1")
         await session.wait_for_turn_idle(turn_id, timeout=3.0)
-        # Drain at least one BrainReplyFrame for the turn we just submitted.
+        # Drain at least one SDKMessageFrame for the turn we just submitted.
         reply = await asyncio.wait_for(sub.queue.get(), timeout=1.0)
-        assert isinstance(reply, BrainReplyFrame)
+        assert isinstance(reply, SDKMessageFrame)
         assert reply.turn_id == "T1"
-        assert reply.reply_text != ""
+        assert type(reply.message).__name__ == "AssistantMessage"
     finally:
         await session.stop()
 
@@ -68,6 +70,7 @@ async def test_sim_front_app_surface_state_flows_through_session() -> None:
     session = RuntimeSession.from_profile(
         SIM_FRONT_APP_PROFILE,
         overrides=dict(_MOCK_OVERRIDES),
+        client_factory=lambda options: OfflineSDKClient(options),
     )
     await session.start()
     sub = session.subscribe(

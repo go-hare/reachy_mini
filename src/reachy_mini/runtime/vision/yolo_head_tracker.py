@@ -6,8 +6,8 @@ import logging
 from typing import Any
 
 import numpy as np
-from numpy.typing import NDArray
 from huggingface_hub import hf_hub_download
+from numpy.typing import NDArray
 
 logger = logging.getLogger(__name__)
 

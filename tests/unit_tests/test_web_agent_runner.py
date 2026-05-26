@@ -6,6 +6,8 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
+from reachy_mini.pipeline.session import RuntimeSession
+from reachy_mini.reachy_brain.offline_sdk_client import OfflineSDKClient
 from reachy_mini.runtime.project import create_app_project, inspect_app_project
 from reachy_mini.runtime.web import build_web_host, resolve_web_binding
 
@@ -30,6 +32,14 @@ def test_host_only_web_launcher_streams_generated_app(tmp_path: Path) -> None:
     app_project = inspect_app_project(app_root)
     binding = resolve_web_binding(app_project)
     app = build_web_host(app_project, bind_url=binding.bind_url)
+
+    def build_runtime_with_offline_client(profile_root: Path):
+        return RuntimeSession.from_profile(
+            profile_root,
+            client_factory=lambda options: OfflineSDKClient(options),
+        )
+
+    app.build_runtime = build_runtime_with_offline_client  # type: ignore[method-assign]
 
     stop_event = threading.Event()
     worker = threading.Thread(
@@ -61,21 +71,16 @@ def test_host_only_web_launcher_streams_generated_app(tmp_path: Path) -> None:
                     }
                 )
 
-                seen_brain = False
-                seen_action = False
+                seen_sdk = False
                 final_text = ""
                 for _ in range(40):
                     envelope = websocket.receive_json()
-                    if envelope["type"] == "brain_reply":
-                        seen_brain = True
-                        final_text = str(envelope["payload"]["reply_text"])
-                    if envelope["type"] == "action_result":
-                        seen_action = True
-                    if seen_brain and seen_action:
+                    if envelope["type"] == "sdk_message":
+                        seen_sdk = True
+                        final_text = str(envelope["payload"]["content"][0]["text"])
                         break
 
-                assert seen_brain
-                assert seen_action
+                assert seen_sdk
                 assert final_text == "我听到了：帮我看看日志"
     finally:
         stop_event.set()

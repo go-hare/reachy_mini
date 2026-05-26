@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from reachy_mini.action_runtime import ActionResult, ActionSpec
+from reachy_mini.action_runtime import ActionResult
 
 
 @dataclass(frozen=True)
@@ -63,16 +63,11 @@ class BrowserInputFrame:
 
 
 @dataclass(frozen=True)
-class BrainReplyFrame:
-    """Complete Brain decision for one turn."""
+class SDKMessageFrame:
+    """Claude Agent SDK message forwarded through the pipeline."""
 
-    reply_text: str
-    speech_style: dict[str, Any] = field(default_factory=dict)
-    actions: list[ActionSpec] = field(default_factory=list)
-    worker_decision: dict[str, Any] | None = None
+    message: Any
     turn_id: str = ""
-    request_id: str = ""
-    is_final: bool = True
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -95,19 +90,12 @@ class TTSAudioFrame:
 
 
 @dataclass(frozen=True)
-class ActionSpecFrame:
-    """Pipeline wrapper for one action spec."""
-
-    spec: ActionSpec
-    turn_id: str
-
-
-@dataclass(frozen=True)
 class ActionResultFrame:
     """Pipeline action execution result."""
 
     request_id: str
     name: str
+    owner_id: str
     status: str
     error: str | None
     duration_ms: int
@@ -118,6 +106,7 @@ class ActionResultFrame:
         return cls(
             request_id=result.request_id,
             name=result.name,
+            owner_id=result.owner_id,
             status=result.status,
             error=result.error,
             duration_ms=result.duration_ms,

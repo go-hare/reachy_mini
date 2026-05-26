@@ -5,8 +5,6 @@ MCPTool: MCP 远程工具调用
 
 from __future__ import annotations
 
-import asyncio
-import json
 from typing import Any
 
 from reachy_mini.runtime.tools.base import Tool

@@ -4,12 +4,12 @@
 
 核心结论：
 
-> `profiles/` 提供 app/profile 配置；Pipecat 统一实时事件流；Brain 使用单一 agent loop 做决策并按需派 worker；Action Runtime 把动作意图解析成一等机器人动作，完成锁仲裁后落到现有 Reachy Mini Python SDK。
+> `profiles/` 提供 app/profile 配置；Pipecat 统一实时事件流；Brain 使用 Claude Code Python SDK 跑单一 agent loop 并按需派 worker；Action Runtime 把动作意图解析成一等机器人动作，完成锁仲裁后落到现有 Reachy Mini Python SDK。
 
 ## 目标
 
 - 保留 `profiles/<app>/` 作为 app、persona、tools、runtime config 的产品边界。
-- 用单一 Brain agent loop 替换当前 front/kernel 双 LLM 分层。
+- 用 Claude Code Python SDK 提供的单一 Brain agent loop 替换当前 front/kernel 双 LLM 分层。
 - 用 Pipecat 承担 VAD、turn detection、barge-in、streaming、STT、TTS 和 frame routing。
 - 把机器人动作做成 SDK 侧一等对象，使动作可以脱离 LLM 独立运行。
 - 保持底层 SDK 稳定：`reachy_mini.py`、`motion`、`kinematics`、`io`、`embodiment`、安全限位、media、tracking 不在 Phase 1 重写。
@@ -17,10 +17,31 @@
 ## 非目标
 
 - 不把 Claude Code 内部代码翻译成 Python。
+- 不用 mock brain 替代 Claude Code Python SDK 接入；mock 只能用于测试和离线 smoke。
 - 不让 Brain 直接调用电机或 SDK 运动接口。
 - 不把 LLM tool call 作为动作执行的唯一入口。
 - 不在 Phase 1 重写现有 Reachy Mini SDK。
 - 不在 Phase 1 修改现有 profile 文件格式。
+
+## Claude Code Python SDK 边界
+
+L3 Brain 的 source of truth 是 Claude Code Python SDK 的官方文档和源码：
+
+- Docs: `https://code.claude.com/docs/en/agent-sdk/python`
+- GitHub: `https://github.com/anthropics/claude-agent-sdk-python`
+- Package: `claude-agent-sdk`
+- Import: `claude_agent_sdk`
+
+v4 Brain 只能通过 SDK 公开接口接入 Claude Code：
+
+- `ClaudeSDKClient` 承载主 agent loop、streaming、interrupt、session 和 tool call；
+- `ClaudeAgentOptions` 承载 profile 映射后的 model、system prompt、cwd、tools、agents、permission、hooks；
+- `tool()` + `create_sdk_mcp_server()` 把 `ActionRegistry` 暴露成同进程 SDK MCP tools；
+- `AgentDefinition` 定义 worker/sub-agent；
+- `query()` 只用于最小 smoke，不作为主运行时；
+- `RuntimeAgent` / `RuntimeKernelClient` 是可选 resident runtime 路线，不能和 `ClaudeSDKClient` 路线混写而不说明。
+
+如果环境里没有 `claude-agent-sdk`，v4 Brain 必须启动失败并提示安装命令，不能静默退回 mock。离线 smoke 和单元测试只能显式注入 `OfflineSDKClient` / fake SDK client，不能让 mock 成为默认 fallback。
 
 ## 三层模型
 
@@ -34,18 +55,21 @@
 │                                                                  │
 │ AgentConfig 适配层只读 profiles                                  │
 │                                                                  │
-│ Main Agent Loop                                                  │
-│ - 消费 frame                                                     │
-│ - 决定 reply_text                                                │
-│ - 产出 ActionSpec[]                                              │
-│ - 长任务 spawn worker                                            │
+│ Claude Code Python SDK                                           │
+│   package: claude-agent-sdk                                      │
+│   import : claude_agent_sdk                                      │
 │                                                                  │
-│ Workers                                                          │
-│ - 异步执行长任务                                                  │
-│ - 回传 task result                                               │
-│ - 只产出 ActionSpec 意图，不直接调用 SDK                          │
+│ ClaudeSDKClient                                                  │
+│ - 接收 prompt / streaming input                                  │
+│ - 输出 SDK Message stream                                        │
+│ - 调用 SDK MCP tools                                             │
+│ - 长任务交给 SDK background subagent                             │
+│                                                                  │
+│ AgentDefinition                                                  │
+│ - 使用 Claude Code Python SDK 原生 worker/sub-agent 定义          │
+│ - 不在 Reachy 侧重写 SDK 字段协议                                │
 └──────────────────────────┬──────────────────────────────────────┘
-                           │ frames
+                           │ SDK Message stream wrapped by Pipecat
 ┌──────────────────────────▼──────────────────────────────────────┐
 │ L2 Pipecat Pipeline                                              │
 │                                                                  │
@@ -55,8 +79,8 @@
 │                                                                  │
 │ BrainProcessor                                                   │
 │ - 把 brain runtime 包成 Pipecat FrameProcessor                    │
-│ - 内部调用 Claude Agent SDK / model runtime                      │
-│ - 输出 BrainReplyFrame                                           │
+│ - 内部调用 Claude Code Python SDK                                │
+│ - 转发 SDK Message stream                                        │
 │                                                                  │
 │ SpeechPresenter -> Kokoro -> speaker                             │
 │ ActionDispatcher -> ActionExecutor                               │
@@ -64,7 +88,7 @@
 │ Pipecat 负责实时问题：barge-in、streaming、routing、backpressure、 │
 │ turn detection 和 interruption。                                  │
 └──────────────────────────┬──────────────────────────────────────┘
-                           │ ActionSpec / RobotAction
+                           │ SDK MCP tool call / RobotAction
 ┌──────────────────────────▼──────────────────────────────────────┐
 │ L1 SDK / Action Runtime                                          │
 │                                                                  │
@@ -85,13 +109,13 @@
 
 ## 关键边界
 
-Brain 不执行动作，只输出意图。
+Brain 不执行底层电机动作，也不定义自己的 tool_call/worker 字段。动作入口是 Claude Code Python SDK MCP tool；tool handler 进入 Action Runtime facade。
 
 ```text
 Brain
-  -> BrainReplyFrame { reply_text, speech_style, actions[] }
-  -> ActionSpec { name, params, reason }
-  -> ActionDispatcher
+  -> ClaudeSDKClient / SDK Message stream
+  -> SDK MCP action tool
+  -> ActionRuntime facade
   -> ActionRegistry.resolve()
   -> RobotAction
   -> ActionExecutor
@@ -145,7 +169,7 @@ class ActionSpec:
 | `priority` | `int` | 否 | 0–100。落到 lock 仲裁时的优先级（见下方"优先级建议"表）。默认 40 = main agent 短动作。 |
 | `interruptible` | `bool` | 否 | true 表示更高优先级请求可以抢占；false 表示一旦 run 就要跑完（紧急 stop 除外）。 |
 | `deadline_s` | `float \| None` | 否 | 相对于入队时刻的超时秒数。超时后 Executor 调 `cancel()` 并释放锁。`None` 表示按 `RobotAction.duration_s` 推断或不设上限。 |
-| `parent_request_id` | `str \| None` | 否 | 若该 spec 是 worker 派生的子动作，指向 spawn worker 的那个 request_id，用于 trace 串联。 |
+| `parent_request_id` | `str \| None` | 否 | 若该 spec 是 SDK task/subagent 派生的子动作，指向触发该任务的 request_id，用于 trace 串联。 |
 
 规则：
 
@@ -233,66 +257,26 @@ class RobotAction:
 - `cancel()` 处理可中断动作被抢占的情况。
 - `cleanup()` 释放临时状态，即使失败也必须调用。
 
-### BrainReplyFrame
+### SDK Native Message Stream
 
-`BrainReplyFrame` 是 `BrainProcessor` 的主要输出，表示"Brain 对一个 turn 的完整决策"。它从 L3 流向 L2，由 `SpeechPresenter` 和 `ActionDispatcher` 分别消费 reply 与 actions。
-
-```python
-from dataclasses import dataclass, field
-from typing import Any
-
-
-@dataclass(frozen=True)
-class BrainReplyFrame:
-    reply_text: str
-    speech_style: dict[str, Any] = field(default_factory=dict)
-    actions: list[ActionSpec] = field(default_factory=list)
-    worker_decision: dict[str, Any] | None = None
-    turn_id: str = ""
-    request_id: str = ""
-    is_final: bool = True
-    metadata: dict[str, Any] = field(default_factory=dict)
-```
-
-字段说明：
-
-| 字段 | 类型 | 含义 |
-|---|---|---|
-| `reply_text` | `str` | 给 TTS 的文本内容。空串表示该 turn 不说话（仅做动作或仅 spawn worker）。允许包含 SSML/标点提示，但不应包含模型 chain-of-thought。 |
-| `speech_style` | `dict[str, Any]` | TTS 风格参数。约定 keys：`voice`（覆盖 profile 默认 voice）、`speed`（0.5–2.0）、`emotion`（"neutral"/"happy"/"sad"/...）、`pause_after_ms`。未识别的 key 由 `SpeechPresenter` 忽略并打 warning。 |
-| `actions` | `list[ActionSpec]` | 本 turn 要执行的动作列表，按列表顺序进入 dispatcher。空列表表示无动作。多个 action 是否并行由各自的 `required_locks` 决定，不由列表顺序决定。 |
-| `worker_decision` | `dict \| None` | 长任务决策。`None` 表示不动 worker。结构见下方"worker_decision 结构"。 |
-| `turn_id` | `str` | 对话 turn 的全局 ID，由 ContextAggregator 在收到 user input 时生成，整个 turn 内所有 frame 共享同一 ID。 |
-| `request_id` | `str` | 该 reply 对应的 brain decision request id。下游 ActionSpec 的 `request_id` 默认继承这个值。 |
-| `is_final` | `bool` | true 表示该 turn 已结束，可以发 TTS。false 表示这是流式中间帧（Phase 1 暂不启用流式，保留字段）。 |
-| `metadata` | `dict[str, Any]` | 调试用透传字段（model name、token usage、latency 分段）。Executor 不读这个字段。 |
-
-`worker_decision` 结构：
+L3 不定义 Reachy 专属 Brain 输出结构或任务字段。`agent.py` 的输出就是 Claude Code Python SDK 原生 message stream：
 
 ```python
-{
-    "op": "spawn" | "update" | "cancel",
-    "task_id": str,
-    "task_type": str,        # 注册过的 worker 类型，如 "patrol"
-    "task_params": dict,     # 透传给 worker 的初始化参数
-    "summary": str,          # 给用户/日志的可读说明
-}
+from claude_agent_sdk import Message
+
+async def run_turn(...) -> AsyncIterator[Message]:
+    ...
 ```
 
-| 字段 | 含义 |
-|---|---|
-| `op` | `spawn` 创建新 worker；`update` 给已有 worker 喂新参数；`cancel` 终止 worker。 |
-| `task_id` | worker 的全局唯一 ID，`spawn` 时由 Brain 生成；`update`/`cancel` 时引用已有 ID。 |
-| `task_type` | 必须命中 worker registry，未注册类型直接拒绝。 |
-| `task_params` | 仅 `op=spawn` 或 `update` 时使用，必须 JSON 可序列化。 |
-| `summary` | 仅日志用，不影响行为。 |
+L3 只认识 SDK 原生类型：
 
-规则：
+- `AssistantMessage` / `TextBlock`
+- `ToolUseBlock` / `ToolResultBlock`
+- `TaskStartedMessage` / `TaskProgressMessage` / `TaskNotificationMessage`
+- `SubagentStartHookInput` / `SubagentStopHookInput`
+- `ResultMessage` / `SystemMessage`
 
-- `reply_text` 进入 `SpeechPresenter`。
-- `actions` 进入 `ActionDispatcher`。
-- `worker_decision` 创建或更新长任务 worker。
-- 一个 frame 三段（reply / actions / worker）可以任意组合，但至少要有一段非空，否则视为空 turn 并丢弃。
+`BrainProcessor` 是 L2 wrapper，职责是把 SDK stream 接进 Pipecat pipeline。它可以为了 TTS、UI、日志生成 frame，但不能在 L3 重新发明一套 task/worker 字段协议。
 
 ## Frame 流
 
@@ -313,12 +297,10 @@ Frame 是 Pipecat pipeline 中的传输单元。所有 frame 都不可变（froz
 
 | Frame | 字段 | 消费者 |
 |---|---|---|
-| `BrainReplyFrame` | 见上节 | `SpeechPresenter` 取 reply_text 与 speech_style；`ActionDispatcher` 取 actions；`WorkerCoordinator` 取 worker_decision。 |
-| `TextFrame` | `text: str`、`turn_id: str` | 调试/日志/UI 透传，不送 TTS。 |
+| `TextFrame` | 从 SDK `AssistantMessage` / `TextBlock` 得到的文本 | `SpeechPresenter` 与 UI 消费。 |
 | `TTSAudioFrame` | `pcm: bytes`、`sample_rate: int`、`turn_id: str`、`is_final: bool` | speaker 播放；`is_final` 标记最后一个 chunk。 |
-| `ActionSpecFrame` | `spec: ActionSpec`、`turn_id: str` | 进入 `ActionDispatcher`。 |
-| `ActionResultFrame` | `request_id: str`、`name: str`、`status: "ok"\|"cancelled"\|"error"`、`error: str\|None`、`duration_ms: int` | 反馈给 Brain memory，便于下一轮决策。 |
-| `WorkerEventFrame` | `task_id: str`、`event: str`（`"started"`/`"progress"`/`"completed"`/`"failed"`）、`payload: dict`、`ts_ms: int` | Brain coordinator 跟踪 worker 状态。 |
+| `ActionResultFrame` | Action Runtime 执行结果 | 返回 SDK MCP `tool_result`，同时给日志/UI。 |
+| `WorkerEventFrame` | SDK task/subagent message 的原始 payload + 最小 envelope | 供 pipeline/UI 观察；不重新定义 SDK worker 协议。 |
 
 短任务标准流：
 
@@ -328,9 +310,9 @@ mic
   -> FunASR TranscriptionFrame("hello")
   -> ContextAggregator
   -> BrainProcessor
-  -> BrainReplyFrame(reply_text="Hi", actions=[ActionSpec("nod")])
-  -> SpeechPresenter -> Kokoro -> speaker
-  -> ActionDispatcher -> ActionExecutor -> SDK
+  -> ClaudeSDKClient.receive_response()
+  -> AssistantMessage/TextBlock -> SpeechPresenter -> Kokoro -> speaker
+  -> SDK MCP action tool -> ActionDispatcher -> ActionExecutor -> SDK
 ```
 
 长任务标准流：
@@ -338,11 +320,10 @@ mic
 ```text
 TranscriptionFrame("patrol the room")
   -> BrainProcessor
-  -> worker_decision(spawn patrol worker)
-  -> BrainReplyFrame(reply_text="I will start patrolling.")
-  -> worker emits ActionSpec("scan_room")
-  -> ActionDispatcher -> ActionExecutor
-  -> worker writes task progress to MemoryStore
+  -> ClaudeSDKClient starts background SDK subagent
+  -> AssistantMessage/TextBlock -> SpeechPresenter
+  -> SDK task/subagent action tool -> ActionDispatcher -> ActionExecutor
+  -> SDK task/subagent messages -> WorkerEventFrame(raw SDK payload)
   -> main agent stays available for new input
 ```
 
@@ -493,7 +474,7 @@ class AgentConfig:
 | `enabled` | `bool` | 关闭时整条 TTS 链路被旁路，`SpeechPresenter` 直接丢弃 reply。 |
 | `provider` | `str` | TTS 提供方，Phase 1 仅 `kokoro`。 |
 | `model` | `str` | 模型 ID，例如 `hexgrad/Kokoro-82M-v1.1-zh`。 |
-| `voice` | `str` | 默认音色（如 `zf_001`），可被 `BrainReplyFrame.speech_style.voice` 覆盖。 |
+| `voice` | `str` | 默认音色（如 `zf_001`），可被 SpeechPresenter 的 profile/turn style 覆盖。 |
 | `speed` | `float` | 默认语速 0.5–2.0。 |
 | `sample_rate` | `int` | 输出采样率，默认与 provider 匹配。 |
 
@@ -557,17 +538,11 @@ src/reachy_mini/
 │
 ├── reachy_brain/
 │   ├── __init__.py
-│   ├── agent.py
-│   ├── config.py
-│   ├── worker.py
-│   ├── coordinator.py
-│   ├── memory.py
-│   ├── tool_adapter.py
-│   ├── pipecat_bridge.py
-│   ├── mcp_server.py
-│   └── prompts/
-│       ├── system.md
-│       └── worker.md
+│   ├── agent.py              # ClaudeSDKClient + ClaudeAgentOptions
+│   ├── mcp_server.py         # ActionRegistry -> SDK MCP tools
+│   ├── system_prompt.md      # 机器人人格 + coordinator 扩展
+│   ├── config.py             # profiles -> SDK options 适配
+│   └── pipecat_bridge.py     # Pipecat Frame <-> SDK turn/message
 │
 ├── pipeline/
 │   ├── __init__.py
@@ -603,7 +578,7 @@ tests/unit_tests/pipeline/
 
 ```text
 ActionRegistry
-  -> Claude Agent SDK tools adapter
+  -> Claude Code Python SDK tools adapter
   -> MCP adapter
   -> CLI/test adapter
   -> Pipecat ActionDispatcher
@@ -642,20 +617,20 @@ Phase 2 才把默认 runtime 切到 v4，并在 smoke case 通过后删除旧层
 | 项 | 值 |
 |---|---|
 | 输入 | `TranscriptionFrame(text="你好", is_final=True)` |
-| 期望出站 frame | `BrainReplyFrame(reply_text 非空, actions=[ActionSpec(name="nod")])` |
+| 期望出站 | SDK `AssistantMessage` 含非空 `TextBlock`；如需动作，通过 SDK MCP action tool 调用 |
 | 期望 ActionResultFrame | `status="ok"`，`name="nod"`，`duration_ms <= 1500` |
 | 端到端断言 | `t(TranscriptionFrame.is_final=True)` 到 `t(TTSAudioFrame.is_final=True)` 差值 ≤ 2000 ms（mock STT/TTS 环境） |
 | 失败信号 | reply_text 为空 / actions 为空 / 超时 / Lock 冲突 |
 
-### SC-2：长任务 worker
+### SC-2：长任务 SDK worker/sub-agent
 
 | 项 | 值 |
 |---|---|
 | 输入 1 | `TranscriptionFrame(text="巡视一圈")` |
-| 期望 frame 序列 | `BrainReplyFrame(worker_decision={"op":"spawn","task_type":"patrol",...})` → 多个 `ActionSpecFrame(spec.owner_id="worker:<id>")` |
+| 期望事件序列 | Claude Code Python SDK 产生 `TaskStartedMessage` / subagent start hook → `WorkerEventFrame(event="started")` → 多个 SDK MCP action tool calls |
 | 输入 2（5 秒后） | `TranscriptionFrame(text="现在几点")` |
-| 期望并发性断言 | 输入 2 的 `BrainReplyFrame` 必须在 worker 仍发出 `WorkerEventFrame(event="progress")` 的窗口内产生 |
-| 终止断言 | `WorkerEventFrame(event="completed")` 对应一条 JSONL 写入 `memory/<task_id>.jsonl`，含 `status`、`summary`、`memory_refs` |
+| 期望并发性断言 | 输入 2 的 SDK `AssistantMessage` 必须在 SDK worker 仍发出 `WorkerEventFrame(event="progress")` 的窗口内产生 |
+| 终止断言 | `WorkerEventFrame(event="completed")` 来自 SDK completion message，含 `status` 与非空 summary |
 
 ### SC-3：Barge-In
 
@@ -665,7 +640,7 @@ Phase 2 才把默认 runtime 切到 v4，并在 smoke case 通过后删除旧层
 | 触发 | `SpeechActivityFrame(state="start")` 后跟 `TranscriptionFrame(text="等等")` |
 | 时延断言 | 从 barge-in `SpeechActivityFrame` 到 `TTSAudioFrame` 流停止 ≤ 300 ms |
 | 锁断言 | 当前持锁 action 若 `interruptible=True` → `cancel_token` 在 300 ms 内 set 并 `cleanup()` 执行；若 `interruptible=False` → 不取消，记录 `barge_in_blocked_by_uninterruptible` 日志 |
-| 后续 | 新 turn 的 `BrainReplyFrame.turn_id` 与被打断 turn 不同 |
+| 后续 | 新 turn 的 SDK session/turn id 与被打断 turn 不同 |
 
 ### SC-4：Motor lock 冲突
 

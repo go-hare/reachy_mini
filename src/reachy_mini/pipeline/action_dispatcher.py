@@ -1,49 +1,36 @@
-"""Dispatch Brain action specs to the v4 ActionExecutor."""
+"""ActionRuntime facade used by SDK MCP action tools."""
 
 from __future__ import annotations
 
-from reachy_mini.action_runtime import ActionExecutor
+from collections.abc import Awaitable, Callable
 
-from .frames import (
-    ActionResultFrame,
-    ActionSpecFrame,
-    BrainReplyFrame,
-    InterruptFrame,
-)
+from reachy_mini.action_runtime import ActionExecutor, ActionResult, ActionSpec
+
+from .frames import ActionResultFrame, InterruptFrame
 
 
 class ActionDispatcher:
-    """Pipeline adapter for ActionExecutor."""
+    """Run SDK MCP action requests through ActionExecutor and publish results."""
 
-    def __init__(self, executor: ActionExecutor) -> None:
-        """Create an action dispatcher."""
+    def __init__(
+        self,
+        executor: ActionExecutor,
+        *,
+        publish: Callable[[ActionResultFrame], Awaitable[None]] | None = None,
+    ) -> None:
+        """Create an action facade for SDK MCP tool handlers."""
         self.executor = executor
+        self._publish = publish
+
+    async def run_action(self, spec: ActionSpec) -> ActionResult:
+        """Execute one action spec and publish its result frame."""
+        result = await self.executor.submit(spec)
+        if self._publish is not None:
+            await self._publish(ActionResultFrame.from_result(result))
+        return result
 
     async def process(self, frame: object) -> list[object]:
-        """Process BrainReplyFrame, ActionSpecFrame, or InterruptFrame."""
-        if isinstance(frame, BrainReplyFrame):
-            return [
-                ActionSpecFrame(spec=spec, turn_id=frame.turn_id)
-                for spec in frame.actions
-            ]
-
-        if isinstance(frame, ActionSpecFrame):
-            try:
-                result = await self.executor.submit(frame.spec)
-            except Exception as exc:
-                return [
-                    ActionResultFrame(
-                        request_id=frame.spec.request_id,
-                        name=frame.spec.name,
-                        status="error",
-                        error=f"{type(exc).__name__}: {exc}",
-                        duration_ms=0,
-                    )
-                ]
-            return [ActionResultFrame.from_result(result)]
-
+        """Handle action interrupts from the pipeline."""
         if isinstance(frame, InterruptFrame) and frame.scope in {"actions", "all"}:
             self.executor.cancel()
-            return []
-
         return []

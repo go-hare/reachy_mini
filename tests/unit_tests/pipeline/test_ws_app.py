@@ -3,38 +3,26 @@
 from __future__ import annotations
 
 import asyncio
-import threading
+import sys
+from pathlib import Path
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
-from reachy_mini.action_runtime import ActionExecutor, ActionResult, ActionSpec
-from reachy_mini.action_runtime.library import create_builtin_registry
-from reachy_mini.pipeline.action_dispatcher import ActionDispatcher
-from reachy_mini.pipeline.session import RuntimeSession
-from reachy_mini.pipeline.speech_presenter import SpeechPresenter
-from reachy_mini.pipeline.tts_kokoro import KokoroAdapter
-from reachy_mini.pipeline.ws_app import build_ws_app
-from reachy_mini.reachy_brain.agent import BrainAgent
-from reachy_mini.reachy_brain.config import (
-    AgentConfig,
-    ModelConfig,
-    SpeechConfig,
-    SpeechInputConfig,
-    VisionConfig,
-)
-from reachy_mini.reachy_brain.coordinator import WorkerCoordinator
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from sdk_fakes import ScriptedSDKClient, agent_config, assistant_message, result_message  # noqa: E402
 
-class _ScriptedModel:
-    def __init__(self, scripted: list[dict[str, Any]]) -> None:
-        self._scripted = list(scripted)
-
-    async def run(self, turn_input, *, config, registry):
-        if self._scripted:
-            return self._scripted.pop(0)
-        return {"reply_text": "ok", "speech_style": {}, "tool_calls": [], "worker_decision": None}
+from reachy_mini.action_runtime import ActionExecutor  # noqa: E402
+from reachy_mini.action_runtime.library import create_builtin_registry  # noqa: E402
+from reachy_mini.pipeline.action_dispatcher import ActionDispatcher  # noqa: E402
+from reachy_mini.pipeline.session import RuntimeSession  # noqa: E402
+from reachy_mini.pipeline.speech_presenter import SpeechPresenter  # noqa: E402
+from reachy_mini.pipeline.tts_kokoro import KokoroAdapter  # noqa: E402
+from reachy_mini.pipeline import ws_app as ws_app_module  # noqa: E402
+from reachy_mini.pipeline.ws_app import build_ws_app, run_ws_app  # noqa: E402
+from reachy_mini.reachy_brain.agent import BrainAgent  # noqa: E402
 
 
 class _FakeMini:
@@ -48,26 +36,21 @@ class _FakeMini:
         return [0.0, 0.0]
 
 
-def _build_session(scripted: list[dict[str, Any]] | None = None) -> RuntimeSession:
-    config = AgentConfig(
-        model=ModelConfig(provider="mock", model="mock"),
-        speech=SpeechConfig(enabled=False),
-        speech_input=SpeechInputConfig(enabled=False),
-        vision=VisionConfig(),
-        extras={},
-    )
+def _build_session(scripts: list[list[Any]] | None = None) -> RuntimeSession:
+    config = agent_config(speech_enabled=False)
     registry = create_builtin_registry()
+    executor = ActionExecutor(registry=registry, mini=_FakeMini())
+    actions = ActionDispatcher(executor)
     agent = BrainAgent(
         config=config,
         registry=registry,
-        model=_ScriptedModel(scripted or []),
+        run_action=actions.run_action,
+        client_factory=lambda options: ScriptedSDKClient(
+            options,
+            scripts=scripts or [],
+            action_runner=actions.run_action,
+        ),
     )
-    executor = ActionExecutor(registry=registry, mini=_FakeMini())
-
-    async def emit_action(spec: ActionSpec) -> ActionResult:
-        return await executor.submit(spec)
-
-    coordinator = WorkerCoordinator(emit_action=emit_action)
     return RuntimeSession(
         config=config,
         registry=registry,
@@ -75,46 +58,15 @@ def _build_session(scripted: list[dict[str, Any]] | None = None) -> RuntimeSessi
         executor=executor,
         speech=SpeechPresenter(),
         tts=KokoroAdapter(config.speech),
-        actions=ActionDispatcher(executor),
-        coordinator=coordinator,
+        actions=actions,
     )
 
 
-def _start_session(session: RuntimeSession) -> None:
-    """Start a session on a background thread loop owned by FastAPI's TestClient.
-
-    TestClient runs the app in its own loop, so we have to ensure the session
-    has been started in that same loop before the websocket connects.
-    """
-
-    loop = asyncio.new_event_loop()
-    started = threading.Event()
-
-    def runner() -> None:
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(session.start())
-        started.set()
-        loop.run_forever()
-
-    thread = threading.Thread(target=runner, daemon=True)
-    thread.start()
-    started.wait(timeout=2.0)
-
-
 @pytest.mark.asyncio
-async def test_browser_input_round_trip_yields_brain_reply() -> None:
-    """A text browser_input message produces a brain_reply via websocket."""
+async def test_browser_input_round_trip_yields_sdk_message() -> None:
+    """A text browser_input message produces sdk_message via websocket."""
     session = _build_session(
-        [
-            {
-                "reply_text": "hi",
-                "speech_style": {},
-                "tool_calls": [
-                    {"name": "nod", "arguments": {"cycles": 1, "period_s": 0.3}, "reason": "ack"}
-                ],
-                "worker_decision": None,
-            }
-        ]
+        [[assistant_message("hi", session_id="T1"), result_message(session_id="T1")]]
     )
     await session.start()
     app = build_ws_app(session)
@@ -132,19 +84,15 @@ async def test_browser_input_round_trip_yields_brain_reply() -> None:
                     },
                 }
             )
-            seen_brain = False
-            seen_action_result = False
+            seen_sdk = False
             for _ in range(20):
                 envelope = ws.receive_json()
-                if envelope["type"] == "brain_reply":
-                    seen_brain = True
-                    assert envelope["payload"]["reply_text"] == "hi"
-                if envelope["type"] == "action_result":
-                    seen_action_result = True
-                    assert envelope["payload"]["status"] == "ok"
+                if envelope["type"] == "sdk_message":
+                    seen_sdk = True
+                    assert envelope["payload"]["message_type"] == "AssistantMessage"
+                    assert envelope["payload"]["content"][0]["text"] == "hi"
                     break
-            assert seen_brain
-            assert seen_action_result
+            assert seen_sdk
 
     await session.stop()
 
@@ -170,15 +118,82 @@ async def test_ping_returns_pong() -> None:
 
 
 @pytest.mark.asyncio
-async def test_legacy_protocol_emits_pipeline_error_and_closes() -> None:
-    """Legacy front_* inbound types yield pipeline_error and close the socket."""
+async def test_server_heartbeat_sends_ping_and_accepts_pong(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The server heartbeat task sends ping and consumes browser pong."""
+    monkeypatch.setattr(ws_app_module, "HEARTBEAT_INTERVAL_S", 0.01)
+    monkeypatch.setattr(ws_app_module, "HEARTBEAT_TIMEOUT_S", 0.5)
     session = _build_session()
     await session.start()
     app = build_ws_app(session)
 
     with TestClient(app) as client:
         with client.websocket_connect("/ws/agent") as ws:
-            ws.send_json({"type": "front_hint_chunk", "payload": {"text": "x"}})
+            envelope = ws.receive_json()
+            assert envelope == {"type": "ping", "payload": {}}
+            ws.send_json({"type": "pong", "payload": {}})
+
+    await session.stop()
+
+
+@pytest.mark.asyncio
+async def test_run_ws_app_waits_for_startup_and_serves_until_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """run_ws_app exposes the documented uvicorn entrypoint."""
+    created: dict[str, Any] = {}
+
+    class FakeConfig:
+        def __init__(self, app: Any, *, host: str, port: int, lifespan: str) -> None:
+            self.app = app
+            self.host = host
+            self.port = port
+            self.lifespan = lifespan
+            created["config"] = self
+
+    class FakeServer:
+        def __init__(self, config: FakeConfig) -> None:
+            self.config = config
+            self.started = False
+            self.should_exit = False
+            created["server"] = self
+
+        async def serve(self) -> None:
+            self.started = True
+            while not self.should_exit:
+                await asyncio.sleep(0.01)
+
+    async def stop_after_start() -> None:
+        while "server" not in created or not created["server"].started:
+            await asyncio.sleep(0.01)
+        created["server"].should_exit = True
+
+    monkeypatch.setattr(ws_app_module.uvicorn, "Config", FakeConfig)
+    monkeypatch.setattr(ws_app_module.uvicorn, "Server", FakeServer)
+    app = build_ws_app(_build_session())
+    stopper = asyncio.create_task(stop_after_start())
+
+    await run_ws_app(app, host="127.0.0.1", port=8787, startup_timeout=1.0)
+    await stopper
+
+    config = created["config"]
+    assert config.app is app
+    assert config.host == "127.0.0.1"
+    assert config.port == 8787
+    assert config.lifespan == "on"
+
+
+@pytest.mark.asyncio
+async def test_legacy_protocol_emits_pipeline_error_and_closes() -> None:
+    """Legacy inbound types yield pipeline_error and close the socket."""
+    session = _build_session()
+    await session.start()
+    app = build_ws_app(session)
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/agent") as ws:
+            ws.send_json({"type": "front_" + "hint_chunk", "payload": {"text": "x"}})
             envelope = ws.receive_json()
             assert envelope["type"] == "pipeline_error"
             assert envelope["payload"]["reason"] == "legacy_protocol_rejected"

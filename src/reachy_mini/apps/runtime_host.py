@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Host-side runtime adapters used by resident Reachy Mini apps."""
+
+from __future__ import annotations
 
 import logging
 from inspect import isawaitable, signature
@@ -19,6 +19,7 @@ class AppRuntimeHostAdapter:
         profile_root: Path | None,
         logger: logging.Logger,
     ) -> None:
+        """Create a host adapter for one app profile root."""
         self.profile_root = profile_root
         self.logger = logger
 
@@ -68,7 +69,8 @@ class AppRuntimeHostAdapter:
                     ).strip()
                     if tracker_kind:
                         self.logger.warning(
-                            "Head tracker '%s' unavailable, continuing without tracking: %s",
+                            "Head tracker '%s' unavailable, "
+                            "continuing without tracking: %s",
                             tracker_kind,
                             exc,
                         )
@@ -140,7 +142,8 @@ class AppRuntimeHostAdapter:
                 )
                 if reply_audio_service is not None:
                     self.logger.info(
-                        "Runtime reply audio ready: provider=%s media=%s speech_driver=%s",
+                        "Runtime reply audio ready: "
+                        "provider=%s media=%s speech_driver=%s",
                         getattr(runtime_config.speech, "provider", ""),
                         type(media).__name__ if media is not None else "None",
                         type(speech_driver).__name__
@@ -149,7 +152,8 @@ class AppRuntimeHostAdapter:
                     )
                 else:
                     self.logger.info(
-                        "Runtime reply audio disabled or unavailable: provider=%s media=%s",
+                        "Runtime reply audio disabled or unavailable: "
+                        "provider=%s media=%s",
                         getattr(runtime_config.speech, "provider", ""),
                         type(media).__name__ if media is not None else "None",
                     )
@@ -240,10 +244,14 @@ class AppRuntimeHostAdapter:
         context: Any | None,
         payload: dict[str, Any],
     ) -> bool:
-        """Synthesize and play one final runtime reply when speech output is configured."""
+        """Synthesize and play one final runtime reply."""
         reply_audio_service = getattr(context, "reply_audio_service", None)
-        if reply_audio_service is None or not hasattr(reply_audio_service, "speak_text"):
-            self.logger.info("Runtime reply audio skipped: no reply_audio_service available.")
+        if reply_audio_service is None or not hasattr(
+            reply_audio_service, "speak_text"
+        ):
+            self.logger.info(
+                "Runtime reply audio skipped: no reply_audio_service available."
+            )
             return False
 
         text = str(payload.get("text", "") or "").strip()
@@ -265,18 +273,23 @@ class AppRuntimeHostAdapter:
         if callback_kwargs and not self._supports_reply_audio_callbacks(speak_text):
             callback_kwargs = {}
 
-        result = speak_text(text, **callback_kwargs) if callback_kwargs else speak_text(text)
+        result = (
+            speak_text(text, **callback_kwargs)
+            if callback_kwargs
+            else speak_text(text)
+        )
         if isawaitable(result):
             played = bool(await result)
         else:
             played = bool(result)
-        self.logger.info("Runtime reply audio finished: played=%s chars=%s", played, len(text))
+        self.logger.info(
+            "Runtime reply audio finished: played=%s chars=%s", played, len(text)
+        )
         return played
 
     @staticmethod
     def _supports_reply_audio_callbacks(speak_text: Any) -> bool:
         """Whether ``speak_text`` accepts reply-audio lifecycle callbacks."""
-
         try:
             parameters = signature(speak_text).parameters.values()
         except (TypeError, ValueError):
@@ -324,7 +337,8 @@ class AppRuntimeHostAdapter:
                 from reachy_mini_toolbox.vision import HeadTracker
             except ImportError as exc:
                 raise ImportError(
-                    "MediaPipe head tracking requires reachy_mini_toolbox vision support."
+                    "MediaPipe head tracking requires reachy_mini_toolbox "
+                    "vision support."
                 ) from exc
             return HeadTracker()
         raise ValueError(f"Unsupported head_tracker setting: {tracker_kind}")

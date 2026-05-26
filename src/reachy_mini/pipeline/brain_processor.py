@@ -1,4 +1,4 @@
-"""Brain processor for the v4 pipeline."""
+"""Brain processor for the v4 SDK-native pipeline."""
 
 from __future__ import annotations
 
@@ -8,9 +8,9 @@ from typing import Any
 from reachy_mini.reachy_brain.agent import BrainAgent, BrainTurnInput
 
 from .frames import (
-    BrainReplyFrame,
     BrowserInputFrame,
     InterruptFrame,
+    SDKMessageFrame,
     SpeechActivityFrame,
     TranscriptionFrame,
     TTSAudioFrame,
@@ -20,10 +20,10 @@ from .frames import (
 
 
 class BrainProcessor:
-    """Convert final user input frames into BrainReplyFrame objects."""
+    """Convert completed user turns into SDKMessageFrame streams."""
 
     def __init__(self, agent: BrainAgent) -> None:
-        """Create a processor bound to one Brain agent."""
+        """Create a processor bound to one SDK-backed Brain agent."""
         self.agent = agent
         self.context_buffer: list[Any] = []
         self.tts_active = False
@@ -34,7 +34,7 @@ class BrainProcessor:
             if not frame.is_final:
                 self.context_buffer.append(frame)
                 return []
-            return [await self._run_brain(frame.text, frame.turn_id)]
+            return await self._run_brain(frame.text, frame.turn_id)
 
         if isinstance(frame, BrowserInputFrame):
             if frame.kind != "text":
@@ -42,7 +42,7 @@ class BrainProcessor:
                 return []
             text = str(frame.payload.get("text", "") or "")
             turn_id = str(frame.payload.get("turn_id", frame.session_id) or frame.session_id)
-            return [await self._run_brain(text, turn_id)]
+            return await self._run_brain(text, turn_id)
 
         if isinstance(frame, VisionEventFrame | WorkerEventFrame):
             self.context_buffer.append(frame)
@@ -64,25 +64,21 @@ class BrainProcessor:
 
         return []
 
-    async def _run_brain(self, text: str, turn_id: str) -> BrainReplyFrame:
+    async def _run_brain(self, text: str, turn_id: str) -> list[SDKMessageFrame]:
         start = time.monotonic()
-        output = await self.agent.run(
-            BrainTurnInput(
-                text=text,
-                turn_id=turn_id,
-                context={"recent_frames": list(self.context_buffer[-8:])},
-            )
-        )
-        request_id = output.actions[0].request_id if output.actions else f"brain:{turn_id}"
-        return BrainReplyFrame(
-            reply_text=output.reply_text,
-            speech_style=output.speech_style,
-            actions=output.actions,
-            worker_decision=output.worker_decision,
+        frames: list[SDKMessageFrame] = []
+        turn_input = BrainTurnInput(
+            text=text,
             turn_id=turn_id,
-            request_id=request_id,
-            metadata={
-                "latency_ms": int((time.monotonic() - start) * 1000),
-                "raw_model_response": output.raw_model_response,
-            },
+            context={"recent_frames": list(self.context_buffer[-8:])},
         )
+        async for message in self.agent.run_turn(turn_input):
+            frames.append(
+                SDKMessageFrame(
+                    message=message,
+                    turn_id=turn_id,
+                    metadata={"latency_ms": int((time.monotonic() - start) * 1000)},
+                )
+            )
+        self.context_buffer.extend(frames)
+        return frames

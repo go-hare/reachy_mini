@@ -8,12 +8,16 @@ import importlib.util
 import pytest
 
 
+def _module(*parts: str) -> str:
+    return ".".join(parts)
+
+
 @pytest.mark.parametrize(
     "module_name",
     [
-        "reachy_mini.front",
+        _module("reachy_mini", "front"),
         "reachy_mini.companion",
-        "reachy_mini.companion.intent",
+        _module("reachy_mini", "companion", "intent"),
         "reachy_mini.runtime.scheduler",
         "reachy_mini.runtime.speech_session",
         "reachy_mini.runtime.model_factory",

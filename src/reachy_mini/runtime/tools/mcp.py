@@ -86,7 +86,6 @@ async def connect_mcp_servers(
                 read, write = await stack.enter_async_context(stdio_client(params))
             elif cfg.url:
                 import httpx
-
                 from mcp.client.streamable_http import streamable_http_client
                 # 显式创建 httpx client，避免默认 5s 超时
                 http_client = await stack.enter_async_context(

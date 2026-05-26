@@ -2,20 +2,26 @@
 
 from __future__ import annotations
 
+import sys
 from dataclasses import FrozenInstanceError
+from pathlib import Path
 
 import pytest
 
-from reachy_mini.action_runtime import ActionResult, ActionSpec
-from reachy_mini.pipeline.frames import ActionResultFrame, BrainReplyFrame
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from sdk_fakes import assistant_message  # noqa: E402
+
+from reachy_mini.action_runtime import ActionResult
+from reachy_mini.pipeline.frames import ActionResultFrame, SDKMessageFrame
 
 
-def test_brain_reply_frame_is_immutable() -> None:
-    """Frames are frozen dataclasses."""
-    frame = BrainReplyFrame(reply_text="hi", turn_id="t1")
+def test_sdk_message_frame_is_immutable() -> None:
+    """SDKMessageFrame is a frozen dataclass."""
+    frame = SDKMessageFrame(message=assistant_message("hi"), turn_id="t1")
 
     with pytest.raises(FrozenInstanceError):
-        frame.reply_text = "changed"  # type: ignore[misc]
+        frame.turn_id = "changed"  # type: ignore[misc]
 
 
 def test_action_result_frame_from_result() -> None:
@@ -33,13 +39,14 @@ def test_action_result_frame_from_result() -> None:
 
     assert frame.request_id == "r1"
     assert frame.name == "nod"
+    assert frame.owner_id == "main-agent"
     assert frame.status == "ok"
     assert frame.duration_ms == 12
 
 
-def test_brain_reply_frame_keeps_action_specs() -> None:
-    """BrainReplyFrame carries serializable ActionSpec intents."""
-    spec = ActionSpec(name="nod", owner_id="main-agent")
-    frame = BrainReplyFrame(reply_text="hi", actions=[spec], turn_id="t1")
+def test_sdk_message_frame_keeps_native_message_object() -> None:
+    """SDKMessageFrame wraps the SDK message without inventing a Brain schema."""
+    message = assistant_message("hi")
+    frame = SDKMessageFrame(message=message, turn_id="t1")
 
-    assert frame.actions == [spec]
+    assert frame.message is message

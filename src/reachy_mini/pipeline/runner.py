@@ -14,14 +14,17 @@ from reachy_mini.action_runtime import ActionExecutor
 from reachy_mini.action_runtime.library import create_builtin_registry
 from reachy_mini.reachy_brain.agent import BrainAgent
 from reachy_mini.reachy_brain.config import from_profile
+from reachy_mini.reachy_brain.offline_sdk_client import OfflineSDKClient
+from reachy_mini.reachy_brain.pipecat_bridge import extract_text_blocks
 
 from .action_dispatcher import ActionDispatcher
 from .brain_processor import BrainProcessor
 from .frames import (
     ActionResultFrame,
-    ActionSpecFrame,
-    BrainReplyFrame,
     BrowserInputFrame,
+    SDKMessageFrame,
+    SpeechPresenterFrame,
+    TTSAudioFrame,
 )
 from .speech_presenter import SpeechPresenter
 from .tts_kokoro import KokoroAdapter
@@ -74,31 +77,39 @@ async def run_text_turn(
     """Run one text turn through the opt-in v4 path."""
     config = from_profile(profile_path, overrides=_text_mode_overrides(overrides or {}))
     registry = create_builtin_registry()
-    agent = BrainAgent(config=config, registry=registry)
     executor = ActionExecutor(registry=registry, mini=NoopMini())
-    brain = BrainProcessor(agent)
-    speech = SpeechPresenter()
-    tts = KokoroAdapter(config.speech)
-    actions = ActionDispatcher(executor)
     frames: list[object] = []
 
-    reply_frames = await brain.process(
+    async def publish_action_result(frame: ActionResultFrame) -> None:
+        frames.append(frame)
+
+    actions = ActionDispatcher(executor, publish=publish_action_result)
+    agent = BrainAgent(
+        config=config,
+        registry=registry,
+        run_action=actions.run_action,
+        client_factory=lambda options: OfflineSDKClient(
+            options,
+            action_runner=actions.run_action,
+        ),
+    )
+    brain = BrainProcessor(agent)
+    speech = SpeechPresenter(style={"voice": config.speech.voice, "speed": config.speech.speed})
+    tts = KokoroAdapter(config.speech)
+
+    sdk_frames = await brain.process(
         BrowserInputFrame(
             kind="text",
             payload={"text": text, "turn_id": "cli:turn"},
             session_id="cli",
         )
     )
-    frames.extend(reply_frames)
-    for reply in reply_frames:
-        speech_frames = await speech.process(reply)
+    frames.extend(sdk_frames)
+    for sdk_frame in sdk_frames:
+        speech_frames = await speech.process(sdk_frame)
         frames.extend(speech_frames)
         for speech_frame in speech_frames:
             frames.extend(await tts.process(speech_frame))
-        action_frames = await actions.process(reply)
-        frames.extend(action_frames)
-        for action_frame in action_frames:
-            frames.extend(await actions.process(action_frame))
     return frames
 
 
@@ -182,12 +193,15 @@ def _write_trace(path: Path, frames: list[object]) -> None:
 
 def _print_frames(frames: list[object]) -> None:
     for frame in frames:
-        if isinstance(frame, BrainReplyFrame):
-            print(frame.reply_text)
-        elif isinstance(frame, ActionSpecFrame):
-            print(f"action: {frame.spec.name}")
+        if isinstance(frame, SDKMessageFrame):
+            for text in extract_text_blocks(frame.message):
+                print(text)
         elif isinstance(frame, ActionResultFrame):
             print(f"action_result: {frame.name} {frame.status}")
+        elif isinstance(frame, SpeechPresenterFrame):
+            print(f"speech: {frame.text}")
+        elif isinstance(frame, TTSAudioFrame):
+            print(f"tts_audio: {len(frame.pcm)} bytes")
 
 
 def _frame_to_dict(frame: object) -> dict[str, Any]:

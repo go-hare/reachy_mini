@@ -12,7 +12,7 @@ import uvicorn
 
 from reachy_mini import ReachyMiniApp
 
-from .project import AppProject, DEFAULT_APP_BIND_URL
+from .project import DEFAULT_APP_BIND_URL, AppProject
 
 
 @dataclass(frozen=True)
@@ -29,6 +29,7 @@ class HostedAppProject(ReachyMiniApp):
     """Small ReachyMiniApp wrapper that points at one generated app project."""
 
     def __init__(self, *, app_project: AppProject, bind_url: str) -> None:
+        """Create a hosted app wrapper for one generated app project."""
         self._app_project = app_project
         self.custom_app_url = bind_url
         self.profile_root_relative_path = "profiles"

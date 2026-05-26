@@ -4,11 +4,10 @@ from .action_dispatcher import ActionDispatcher
 from .brain_processor import BrainProcessor
 from .frames import (
     ActionResultFrame,
-    ActionSpecFrame,
     AudioFrame,
-    BrainReplyFrame,
     BrowserInputFrame,
     InterruptFrame,
+    SDKMessageFrame,
     SpeechActivityFrame,
     SpeechPresenterFrame,
     TranscriptionFrame,
@@ -19,15 +18,13 @@ from .output_bus import OutputBus, OutputSubscription
 from .session import RuntimeSession
 from .speech_presenter import SpeechPresenter
 from .wire import WireDecodeError, WireSerializationError, decode_inbound, encode_frame
-from .ws_app import WS_PATH, build_ws_app
+from .ws_app import WS_PATH, build_ws_app, run_ws_app
 
 __all__ = [
     "ActionDispatcher",
     "ActionResultFrame",
-    "ActionSpecFrame",
     "AudioFrame",
     "BrainProcessor",
-    "BrainReplyFrame",
     "BrowserInputFrame",
     "CallableSpeakerSink",
     "InterruptFrame",
@@ -35,6 +32,7 @@ __all__ = [
     "OutputBus",
     "OutputSubscription",
     "RuntimeSession",
+    "SDKMessageFrame",
     "SpeakerSink",
     "SpeechActivityFrame",
     "SpeechPresenter",
@@ -47,4 +45,5 @@ __all__ = [
     "build_ws_app",
     "decode_inbound",
     "encode_frame",
+    "run_ws_app",
 ]

@@ -36,7 +36,7 @@ The dialogue flow uses the v4 wire protocol (each message is `{type, ts_ms, payl
 
 - browser sends `browser_input(kind="text")` for typed turns
 - browser sends `audio_chunk` + `audio_stop` for raw PCM mic audio, with optional `speech_activity` boundaries
-- runtime emits `transcription` previews and `brain_reply` with the full Brain decision
+- runtime emits `transcription` previews and SDK-native `sdk_message` payloads
 - runtime emits `action_result` and `worker_event` for action / worker progress
 - `worker_event(task_id="__surface__")` carries surface-state transitions
 - runtime emits `tts_audio` synthesized PCM

@@ -2,21 +2,32 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import pytest
 
-from reachy_mini.pipeline.frames import BrainReplyFrame, InterruptFrame, SpeechPresenterFrame, TTSStopFrame
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from sdk_fakes import assistant_message, result_message  # noqa: E402
+
+from reachy_mini.pipeline.frames import (
+    InterruptFrame,
+    SDKMessageFrame,
+    SpeechPresenterFrame,
+    TTSStopFrame,
+)
 from reachy_mini.pipeline.speech_presenter import SpeechPresenter
 
 
 @pytest.mark.asyncio
-async def test_speech_presenter_splits_reply_text() -> None:
-    """Reply text is split into final-marked TTS chunks."""
-    presenter = SpeechPresenter(max_chars=20)
+async def test_speech_presenter_splits_sdk_assistant_text() -> None:
+    """SDK AssistantMessage text is split into final-marked TTS chunks."""
+    presenter = SpeechPresenter(max_chars=20, style={"voice": "zf_001"})
 
     frames = await presenter.process(
-        BrainReplyFrame(
-            reply_text="你好。我在这里。",
-            speech_style={"voice": "zf_001"},
+        SDKMessageFrame(
+            message=assistant_message("你好。我在这里。"),
             turn_id="t1",
         )
     )
@@ -28,11 +39,13 @@ async def test_speech_presenter_splits_reply_text() -> None:
 
 
 @pytest.mark.asyncio
-async def test_speech_presenter_skips_empty_reply() -> None:
-    """Empty replies do not reach TTS."""
+async def test_speech_presenter_skips_non_text_sdk_messages() -> None:
+    """Non-assistant SDK messages do not reach TTS."""
     presenter = SpeechPresenter()
 
-    frames = await presenter.process(BrainReplyFrame(reply_text="", turn_id="t1"))
+    frames = await presenter.process(
+        SDKMessageFrame(message=result_message(), turn_id="t1")
+    )
 
     assert frames == []
 

@@ -8,7 +8,7 @@ Phase 2 的前置条件来自架构文档：v4 opt-in path 稳定、四个 smoke
 
 - L3/L2/L1 是**唯一**实现：`reachy_brain.agent.BrainAgent` + `pipeline.session.RuntimeSession` + `action_runtime.ActionExecutor`。
 - `reachy-mini-agent agent` / `reachy-mini-agent web` / daemon / resident runtime / browser websocket 全部走 `RuntimeSession`。
-- 浏览器 ↔ runtime 协议直接是架构文档定义的 frame：入站 `BrowserInputFrame` / `AudioFrame` / `SpeechActivityFrame`，出站 `BrainReplyFrame` / `ActionSpecFrame` / `ActionResultFrame` / `WorkerEventFrame` / `TTSAudioFrame` / `SpeechPresenterFrame`，序列化规则由 `pipeline/wire.py` 锁定。
+- 浏览器 ↔ runtime 协议直接传 SDK-first frame：入站 `BrowserInputFrame` / `AudioFrame` / `SpeechActivityFrame`，出站 `SDKMessageFrame` / `ActionResultFrame` / `WorkerEventFrame` / `TTSAudioFrame` / `SpeechPresenterFrame`，序列化规则由 `pipeline/wire.py` 锁定。
 - 旧前端 JS（`apps/templates/app/static/main.js.j2` 与 `profiles/*/<name>/static/main.js`）改写到新协议。
 - 删除 `front/`、`companion/intent.py`、`runtime/scheduler.py`、`core/agent.py`、`core/kernel.py`、`core/_compat.py`，并清理依赖它们的所有 import 与测试。
 - `profiles/sim_front_app` 与 `reachy-mini-agent create __probe__` 生成的 app 在新默认路径下端到端可用（CLI text、Web UI、live mic→speaker）。
@@ -39,7 +39,7 @@ Phase 2 的前置条件来自架构文档：v4 opt-in path 稳定、四个 smoke
 - Phase 1 已交付的 ActionRuntime / Brain / Pipeline frame contract（仅可补丁，不改字段名）
 - Phase 1 已交付的 5 个内置动作
 - profile 文件格式迁移
-- Pipecat / Claude Agent SDK 的版本升级
+- Pipecat / Claude Code Python SDK 的版本升级
 - React `ui/robot-workbench/` 的桌面 UI（不消费 app websocket，不在本计划范围；其改造在 Phase 3）
 
 ## 当前已知差距
@@ -48,7 +48,7 @@ Phase 2 的前置条件来自架构文档：v4 opt-in path 稳定、四个 smoke
 |---|---|---|
 | 单轮 text 模式 | `pipeline/runner.py:run_text_turn` 已能跑 | 保留作为 smoke 入口，复用同一 BrainProcessor |
 | 多轮 session | 无 | 新增 `pipeline.session.RuntimeSession` |
-| Worker 跨 turn | `reachy_brain/worker.py` + `coordinator.py` 已存在 | 在 session 内常驻，独立于 main loop |
+| Worker 跨 turn | Claude Code Python SDK `AgentDefinition` / task message 已接入 | 在 session 内常驻，独立于 main loop；不新增 Reachy 侧任务调度模块 |
 | Live mic→speaker | `pipeline/stt_funasr.py`/`tts_kokoro.py` 是 stub | 串成 session loop（live_io.py） |
 | Barge-in 路径 | frame contract 已定，executor 支持 cancel | session 把 `SpeechActivityFrame` 路由到 `InterruptFrame` |
 | Browser ↔ runtime 协议 | 旧协议 `front_*` | 直接 frame 序列化（见 §Wire 协议） |
@@ -63,7 +63,7 @@ Phase 2 的前置条件来自架构文档：v4 opt-in path 稳定、四个 smoke
 
 ```text
 src/reachy_mini/pipeline/
-├── session.py            # RuntimeSession：多轮 + worker 常驻 + barge-in 编排
+├── session.py            # RuntimeSession：多轮 + SDK worker/sub-agent 常驻 + barge-in 编排
 ├── output_bus.py         # session 出站 frame 的多订阅者总线
 ├── live_io.py            # MicrophoneSource / SpeakerSink，复用 runtime/audio + reply_audio
 ├── wire.py               # frame ↔ websocket JSON 双向序列化
@@ -146,8 +146,7 @@ tests/unit_tests/migration/
 
 | `type` | payload 结构 | 对应内部 frame |
 |---|---|---|
-| `brain_reply` | `BrainReplyFrame` 全字段（`reply_text`、`speech_style`、`actions`、`worker_decision`、`turn_id`、`request_id`、`is_final`、`metadata`） | `BrainReplyFrame` |
-| `action_spec` | `{ "spec": ActionSpec.dict(), "turn_id": str }` | `ActionSpecFrame` |
+| `sdk_message` | Claude Code Python SDK `Message` 的可序列化 payload，字段名保持 SDK 原样 | `SDKMessageFrame` |
 | `action_result` | `{ "request_id", "name", "owner_id", "status", "duration_ms", "error" }` | `ActionResultFrame` |
 | `worker_event` | `{ "task_id", "event", "payload": { "note", "progress", "metrics", "error" }, "ts_ms" }` | `WorkerEventFrame` |
 | `tts_audio` | `{ "pcm_b64": str, "sample_rate": int, "turn_id": str, "is_final": bool }` | `TTSAudioFrame` |
@@ -172,7 +171,7 @@ tests/unit_tests/migration/
 
 ### Slice 2-S1：RuntimeSession
 
-目标：v4 能跑超过一个 turn，brain memory + worker 在 session 内常驻。
+目标：v4 能跑超过一个 turn，Claude Code Python SDK session 与 SDK worker/sub-agent 在 session 内常驻。
 
 文件：
 
@@ -213,8 +212,8 @@ class RuntimeSession:
 
 | 方法 | 含义 |
 |---|---|
-| `from_profile` | `AgentConfig.from_profile` + 注册内置动作 + 实例化 BrainProcessor / SpeechPresenter / ActionDispatcher / WorkerCoordinator / OutputBus。 |
-| `start` / `stop` | 启停 long-running tasks（worker coordinator、tick、output bus、live_io）。idempotent。 |
+| `from_profile` | `AgentConfig.from_profile` + 注册内置动作 + 实例化 BrainProcessor / SpeechPresenter / ActionDispatcher / OutputBus；worker/sub-agent 由 Claude Code Python SDK 承载。 |
+| `start` / `stop` | 启停 long-running tasks（SDK client/session、tick、output bus、live_io）。idempotent。 |
 | `submit_*` | 入站 frame 的统一入口，立即返回（异步 schedule）。`submit_text` 是 `submit_browser_input(kind="text")` 的便捷包装。 |
 | `subscribe` | 返回 `OutputSubscription`；同一份 frame fan-out 给所有订阅者。 |
 | `wait_for_turn_idle` | 等该 turn 的所有 action / worker / TTS 都停。CLI 串行化用。 |
@@ -230,16 +229,16 @@ class RuntimeSession:
 行为契约：
 
 - `subscribe` 必须支持 N 个并发订阅者，所有订阅者按相同顺序收到同一份 frame 的拷贝（不可变 frozen dataclass，按引用即可）。
-- `RuntimeSession` 拥有一个 long-lived `WorkerCoordinator`；worker 跨 turn 存活。
+- `RuntimeSession` 拥有一个 long-lived `ClaudeSDKClient` 或 SDK resident session；worker/sub-agent 跨 turn 存活。
 - 收到 `SpeechActivityFrame(state="start")` 且当前正发 TTS：session 在 ≤ 300 ms 内向 ActionDispatcher 与 SpeechPresenter 各发一个 `InterruptFrame`，scope 分别为 `actions` 与 `speech`。
-- `stop()` 必须 cancel 全部进行中的 action 和 worker，等待 cleanup 完成才返回。
+- `stop()` 必须 cancel 全部进行中的 action 和 SDK worker/sub-agent，等待 cleanup 完成才返回。
 
 验收：
 
 - 连发 3 个 text turn，第二个 turn 能看到第一个 turn 的 brain memory。
-- 一个 worker 跨 turn 跑，第二个 turn 期间 `WorkerEventFrame(event="progress")` 仍能被订阅者收到。
+- 一个 SDK worker/sub-agent 跨 turn 跑，第二个 turn 期间 `WorkerEventFrame(event="progress")` 仍能被订阅者收到。
 - `SpeechActivityFrame(state="start")` 触发 InterruptFrame，可中断 action 在 300 ms 内 cancel。
-- `stop()` 在 worker 跑到一半时被调用，能在 ≤ 1 s 内退出且无 lingering task。
+- `stop()` 在 SDK worker/sub-agent 跑到一半时被调用，能在 ≤ 1 s 内退出且无 lingering task。
 
 ### Slice 2-S2：Wire 协议 + WS App
 
@@ -286,7 +285,7 @@ WS endpoint 行为：
 验收：
 
 - `test_wire.py`：每条架构文档定义的入站/出站 frame 都有 round-trip 用例（encode→decode→equal 或 decode→encode→equal）。
-- `test_ws_app.py`：用 `httpx.AsyncClient` + `websockets`，发 `browser_input(kind="text", payload={"text": "hi"})` 收到 `brain_reply` 与 `action_result`，全程不出现旧协议 type。
+- `test_ws_app.py`：用 `httpx.AsyncClient` + `websockets`，发 `browser_input(kind="text", payload={"text": "hi"})` 收到 SDK 原生 `sdk_message`，全程不出现旧协议 type。
 - runtime 收到 `front_hint_chunk` 等旧 type 时，回 `pipeline_error(reason="legacy_protocol_rejected")` 并关闭 socket。
 
 ### Slice 2-S3：前端 JS 重写
@@ -304,7 +303,7 @@ UI 行为契约：
 
 | 收到的 frame | UI 处理 |
 |---|---|
-| `brain_reply` | 在对话区追加 assistant 气泡，文本 `payload.reply_text`。`actions` 与 `worker_decision` 仅作 debug 区显示。 |
+| `sdk_message` | 对 `AssistantMessage/TextBlock` 追加 assistant 气泡；其它 SDK message 进入 debug/worker/tool 面板。 |
 | `action_result` | 在 status 行显示 `{name} {status} {duration_ms}ms`。失败时高亮。 |
 | `worker_event` | 在右侧 worker 面板更新对应 `task_id` 的状态行。 |
 | `tts_audio` | 用 `AudioContext.decodeAudioData`（pcm wrap 成 wav，或直接 PCM16 喂 `ScriptProcessor` / `AudioWorkletNode`）播放。 |
@@ -325,7 +324,7 @@ UI 行为契约：
 
 UI 改造范围：
 
-- 删除 `updateStageBubble` 的 `hint`/`final` 双 stage 概念——v4 只有一个 `BrainReplyFrame`，不分 hint/final。
+- 删除 `updateStageBubble` 的 `hint`/`final` 双 stage 概念——v4 以 SDK message stream 为准，不再造聚合式 Brain 输出对象。
 - `setStatus` 文案随之收敛到一份。
 - 保留 `surface_state` 与 `speech_preview` 的显示位置，但事件来源改成 `transcription` 流式预览（surface_state 不在新协议范围；如需要，在 `worker_event` 通道里包一个 `event="surface_state"`）。
 
@@ -333,8 +332,8 @@ UI 改造范围：
 
 验收：
 
-- 浏览器开页面、发一句文本 → 收到 `brain_reply` 与 `action_result`，对话区出现回复。
-- 麦克风开 → 浏览器持续发 `audio_chunk`，收到 `transcription` 流式预览 + `brain_reply`。
+- 浏览器开页面、发一句文本 → 收到 `sdk_message`，对话区出现 SDK AssistantMessage/TextBlock 回复。
+- 麦克风开 → 浏览器持续发 `audio_chunk`，收到 `transcription` 流式预览 + `sdk_message`。
 - 任何 grep `front_hint_chunk|front_final_chunk|front_decision|front_tool_result` 在 `apps/templates/` 与 `profiles/*/static/` 下零命中。
 - `ts/eslint`-style 静态扫描（手测）：`main.js` 不再 import / 引用任何旧协议常量。
 
@@ -412,7 +411,7 @@ Surface state 通道：
 | 测试 | 输入 | 断言 |
 |---|---|---|
 | `test_profile_compat_sim_front_app` | 加载 `profiles/sim_front_app` | `from_profile` 不抛错；`AgentConfig.speech_input.provider == "funasr"`；`vision.no_camera` 与 profile 一致；`RuntimeSession.start/stop` 正常 |
-| `test_profile_compat_generated_app` | `reachy-mini-agent create __probe__` 后立即加载 | 同上；`submit_text("ping")` 至少收到 1 个 `BrainReplyFrame` |
+| `test_profile_compat_generated_app` | `reachy-mini-agent create __probe__` 后立即加载 | 同上；`submit_text("ping")` 至少收到 1 个 SDK `AssistantMessage` |
 | `test_legacy_layers_absent` | — | Slice 2-S6 之后启用：`importlib.util.find_spec("reachy_mini.front") is None` 等。 |
 
 验收：
@@ -473,10 +472,10 @@ CLI 变化：
 
 验收：
 
-- `ruff check src/` 无错误。
+- v4 主路径 lint 无错误：`pipeline/`、`reachy_brain/`、`action_runtime/` 必须通过 ruff；`apps/` 与 `runtime/` 至少通过非 docstring 规则（历史 runtime 文档风格债不作为 L3/Phase 2 SDK-first 切换的兼容理由）。
 - `pytest tests/unit_tests` 全绿。
 - `grep -R "RuntimeScheduler\|BrainKernel\|companion\.intent\|reachy_mini\.front\|front_hint_chunk\|front_final_chunk\|front_decision\|front_tool_result" src/ tests/ profiles/ docs/` 仅命中本计划文档自身。
-- `reachy-mini-agent agent profiles/sim_front_app --message "hi"` 输出 reply，无 deprecation 行。
+- `reachy-mini-agent agent profiles/sim_front_app --message "hi"` 真实走 Claude Code Python SDK；若本机缺 profile 引用的真实 secret（例如 `DEEPSEEK_API_KEY`），该 smoke 必须失败并暴露环境错误，不能静默注入 offline fake。
 - 浏览器 `/ws/agent` 收发 v4 frame。
 
 ## Smoke Case 增量
@@ -489,24 +488,24 @@ Phase 1 SC-1 ~ SC-4 全部继续运行；Phase 2 在 `tests/unit_tests/migration
 |---|---|
 | 输入 1 | `submit_text("你好", turn_id=T1)` |
 | 输入 2 | T1 完成后 `submit_text("再来一次点头", turn_id=T2)` |
-| 期望 | 两个 turn 都产出 `BrainReplyFrame` 与 `ActionResultFrame(status="ok")`；T2 的 brain memory 含 T1 事实 |
+| 期望 | 两个 turn 都产出 SDK `AssistantMessage` 与 `ActionResultFrame(status="ok")`；T2 的 SDK session context 含 T1 事实 |
 | 失败信号 | T2 reply 不引用 T1 / T2 阻塞 |
 
 ### SC-6：Worker 跨 turn 存活
 
 | 项 | 值 |
 |---|---|
-| 输入 1 | `submit_text("巡视一圈")` → spawn worker |
+| 输入 1 | `submit_text("巡视一圈")` → Claude Code Python SDK 启动 background subagent |
 | 输入 2 | 5 s 后 `submit_text("现在几点")` |
-| 期望 | T2 的 BrainReplyFrame 在 worker 仍 progress 时产出 |
-| 终止 | worker `completed` 后 JSONL 写入；下一轮 brain context 看到 task-result XML |
+| 期望 | T2 的 SDK `AssistantMessage` 在 worker 仍 progress 时产出 |
+| 终止 | SDK completion message 原样进入 `WorkerEventFrame.payload`；下一轮 SDK context 能看到 completion summary |
 
 ### SC-7：WS 协议合规
 
 | 项 | 值 |
 |---|---|
 | 输入 | 浏览器假客户端发 `browser_input(kind="text", payload={"text":"hi"})` |
-| 期望 | runtime 发 `brain_reply` + `action_spec` × n + `action_result` × n + 0 个 `front_*` |
+| 期望 | runtime 发 `sdk_message` + `action_result` × n，且不出现任何 legacy inbound/outbound 协议 type |
 | 反向 | 假客户端发 `front_hint_chunk` → runtime 发 `pipeline_error(reason="legacy_protocol_rejected")` 并关闭连接 |
 
 ### SC-8：CLI 默认是 v4
@@ -548,7 +547,7 @@ conda run -n reachy pytest tests/unit_tests/test_profile_loader.py
 
 ```bash
 conda run -n reachy ruff check src/reachy_mini/pipeline src/reachy_mini/reachy_brain src/reachy_mini/action_runtime
-conda run -n reachy ruff check src/reachy_mini/apps src/reachy_mini/runtime src/reachy_mini/companion src/reachy_mini/core
+conda run -n reachy ruff check src/reachy_mini/apps src/reachy_mini/runtime --ignore D
 ```
 
 CLI 烟测：
@@ -557,6 +556,9 @@ CLI 烟测：
 conda run -n reachy reachy-mini-agent agent profiles/sim_front_app --message "hi"
 conda run -n reachy reachy-mini-agent web profiles/sim_front_app
 ```
+
+说明：CLI / web smoke 是真实 SDK 路径验收；本机没有 `DEEPSEEK_API_KEY`
+等 profile secret 时应失败并暴露环境错误，不允许用 hidden offline fake 兜底。
 
 旧协议反向断言（必须零命中）：
 
@@ -583,7 +585,7 @@ grep -RInE "front_hint_chunk|front_final_chunk|front_decision|front_tool_result|
 Phase 2 完成后才允许：
 
 - 改造 React `ui/robot-workbench/`（与 app websocket 协议无关，但与 daemon 协议有关）。
-- 评估 `core/turns.py` / `core/memory.py` / `core/run_store.py` 是否归并入 `reachy_brain`。
+- 评估 `core/turns.py` / `core/memory.py` / `core/run_store.py` 是否由 Claude Code Python SDK session APIs 或 profile/app memory 取代；不默认在 L3 新增任务记忆模块。
 - 评估 `runtime/speech_session.py` / `runtime/reply_audio.py` 是否在 `live_io.py` 完全覆盖后退役。
 - 引入 MCP server / 远端 agent / 多机部署。
 

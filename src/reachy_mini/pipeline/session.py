@@ -1,30 +1,28 @@
-"""Long-lived v4 runtime session that wires Brain, ActionRuntime and Pipecat-style frames."""
+"""Long-lived SDK-first v4 runtime session."""
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Protocol
+from typing import Any, Callable, Protocol
 
-from reachy_mini.action_runtime import ActionExecutor, ActionResult, ActionSpec
+from reachy_mini.action_runtime import ActionExecutor
 from reachy_mini.action_runtime.library import create_builtin_registry
 from reachy_mini.action_runtime.registry import ActionRegistry
-from reachy_mini.reachy_brain.agent import BrainAgent
+from reachy_mini.reachy_brain.agent import BrainAgent, ClientFactory
 from reachy_mini.reachy_brain.config import AgentConfig, from_profile
-from reachy_mini.reachy_brain.coordinator import WorkerCoordinator
-from reachy_mini.reachy_brain.worker import WorkerEvent
+from reachy_mini.reachy_brain.pipecat_bridge import sdk_message_to_worker_event
 
 from .action_dispatcher import ActionDispatcher
 from .brain_processor import BrainProcessor
 from .frames import (
     AudioFrame,
-    BrainReplyFrame,
     BrowserInputFrame,
     InterruptFrame,
+    SDKMessageFrame,
     SpeechActivityFrame,
     SpeechPresenterFrame,
     TranscriptionFrame,
@@ -47,7 +45,6 @@ class Clock(Protocol):
 
     def monotonic(self) -> float:
         """Return monotonic seconds."""
-        ...
 
 
 class _SystemClock:
@@ -56,7 +53,7 @@ class _SystemClock:
 
 
 class _NoopMini:
-    """Fallback SDK object used when no factory is supplied (text/mock mode)."""
+    """Fallback SDK object used when no hardware factory is supplied."""
 
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
@@ -90,16 +87,7 @@ class _NoopMini:
 
 
 class RuntimeSession:
-    """Multi-turn v4 session wiring Brain, ActionRuntime, SpeechPresenter and TTS.
-
-    Responsibilities:
-      - Build all components from a profile.
-      - Accept input frames (text/audio/speech-activity/vision/transcription).
-      - Run BrainProcessor for completed turns and publish frames to the bus.
-      - Dispatch ActionSpecs through ActionExecutor in the background.
-      - Spawn long-running workers via WorkerCoordinator and surface their events.
-      - Route barge-in (SpeechActivityFrame -> InterruptFrame) to speech and actions.
-    """
+    """Multi-turn v4 session around ClaudeSDKClient and ActionRuntime."""
 
     def __init__(
         self,
@@ -111,9 +99,7 @@ class RuntimeSession:
         speech: SpeechPresenter,
         tts: KokoroAdapter,
         actions: ActionDispatcher,
-        coordinator: WorkerCoordinator,
         clock: Clock | None = None,
-        memory_root: Path | None = None,
     ) -> None:
         """Create a runtime session from prebuilt components."""
         self.config = config
@@ -123,16 +109,10 @@ class RuntimeSession:
         self.speech = speech
         self.tts = tts
         self.actions = actions
-        self.coordinator = coordinator
         self.clock = clock or _SystemClock()
-        self.memory_root = memory_root
         self.brain = BrainProcessor(agent)
         self.bus = OutputBus()
-        self._tasks: set[asyncio.Task[Any]] = set()
-        self._action_tasks: dict[str, asyncio.Task[Any]] = {}
-        self._turn_actions: dict[str, set[str]] = {}
         self._turn_workers: dict[str, set[str]] = {}
-        self._worker_to_turn: dict[str, str] = {}
         self._started = False
         self._stopping = False
         self._surface_phase = "idle"
@@ -145,26 +125,32 @@ class RuntimeSession:
         overrides: dict[str, Any] | None = None,
         clock: Clock | None = None,
         mini_factory: Callable[[AgentConfig], Any] | None = None,
+        client_factory: ClientFactory | None = None,
+        cwd: Path | str | None = None,
         memory_root: Path | None = None,
     ) -> "RuntimeSession":
         """Build a runtime session from a profile directory."""
+        del memory_root
         config = from_profile(profile_path, overrides=overrides)
         registry = create_builtin_registry()
         mini = mini_factory(config) if mini_factory is not None else _NoopMini()
-        agent = BrainAgent(config=config, registry=registry)
         executor = ActionExecutor(registry=registry, mini=mini)
-        speech = SpeechPresenter()
-        tts = KokoroAdapter(config.speech)
-        actions = ActionDispatcher(executor)
+        bus = OutputBus()
 
-        async def emit_action(spec: ActionSpec) -> ActionResult:
-            return await executor.submit(spec)
+        async def publish_result(frame: Any) -> None:
+            await bus.publish(frame)
 
-        coordinator = WorkerCoordinator(
-            emit_action=emit_action,
-            memory_root=memory_root,
+        actions = ActionDispatcher(executor, publish=publish_result)
+        agent = BrainAgent(
+            config=config,
+            registry=registry,
+            run_action=actions.run_action,
+            client_factory=client_factory,
+            cwd=cwd,
         )
-        return cls(
+        speech = SpeechPresenter(style={"voice": config.speech.voice, "speed": config.speech.speed})
+        tts = KokoroAdapter(config.speech)
+        session = cls(
             config=config,
             registry=registry,
             agent=agent,
@@ -172,46 +158,28 @@ class RuntimeSession:
             speech=speech,
             tts=tts,
             actions=actions,
-            coordinator=coordinator,
             clock=clock,
-            memory_root=memory_root,
         )
+        session.bus = bus
+        return session
 
     async def start(self) -> None:
-        """Start session-scoped background tasks."""
+        """Start the SDK client session."""
         if self._started:
             return
         self._started = True
         self._stopping = False
-        self.coordinator.event_sink = self._on_worker_event
+        await self.agent.start()
         await self._set_surface("idle")
 
     async def stop(self) -> None:
-        """Cancel running actions and workers and shut the bus down."""
+        """Cancel running actions/tasks and shut down the session."""
         if not self._started:
             return
         self._stopping = True
-        self.coordinator.cancel_all()
         self.executor.cancel()
-        action_tasks = list(self._action_tasks.values())
-        for task in action_tasks:
-            task.cancel()
-        for task in list(self._tasks):
-            task.cancel()
-        with contextlib.suppress(asyncio.TimeoutError):
-            await self.coordinator.wait_all(timeout=2.0)
-        if action_tasks:
-            with contextlib.suppress(BaseException):
-                await asyncio.wait_for(
-                    asyncio.gather(*action_tasks, return_exceptions=True),
-                    timeout=2.0,
-                )
-        if self._tasks:
-            with contextlib.suppress(BaseException):
-                await asyncio.wait_for(
-                    asyncio.gather(*list(self._tasks), return_exceptions=True),
-                    timeout=2.0,
-                )
+        await self._stop_sdk_tasks()
+        await self.agent.stop()
         await self.bus.close()
         self._started = False
         self._stopping = False
@@ -240,14 +208,14 @@ class RuntimeSession:
         return resolved
 
     async def submit_browser_input(self, frame: BrowserInputFrame) -> str:
-        """Submit a browser input frame and schedule brain processing."""
+        """Submit a browser input frame and run brain processing."""
         turn_id = str(frame.payload.get("turn_id") or frame.session_id or self._make_turn_id())
         await self._set_surface("replying")
         await self._dispatch_brain(frame, turn_id=turn_id)
         return turn_id
 
     async def submit_audio_chunk(self, frame: AudioFrame) -> None:
-        """Forward an audio frame to upstream consumers; STT is built per-deployment."""
+        """Forward an audio frame to upstream consumers."""
         await self.bus.publish(frame)
 
     async def submit_speech_activity(self, frame: SpeechActivityFrame) -> None:
@@ -274,14 +242,13 @@ class RuntimeSession:
         await self.bus.publish(frame)
 
     async def wait_for_turn_idle(self, turn_id: str, *, timeout: float | None = None) -> None:
-        """Wait until the turn has no pending actions or workers."""
+        """Wait until the turn has no pending SDK task events tracked by session."""
         deadline = None
         if timeout is not None:
             deadline = self.clock.monotonic() + timeout
         while True:
-            actions = self._turn_actions.get(turn_id, set())
             workers = self._turn_workers.get(turn_id, set())
-            if not actions and not workers:
+            if not workers:
                 return
             if deadline is not None and self.clock.monotonic() > deadline:
                 raise asyncio.TimeoutError(f"turn {turn_id} not idle in time")
@@ -298,18 +265,22 @@ class RuntimeSession:
         turn_id: str,
     ) -> None:
         for item in outputs:
-            if isinstance(item, BrainReplyFrame):
-                await self._handle_brain_reply(item)
+            if isinstance(item, SDKMessageFrame):
+                await self._handle_sdk_message(item)
             elif isinstance(item, InterruptFrame):
                 await self._handle_interrupt(item)
             else:
                 await self.bus.publish(item)
-        if not outputs and turn_id and turn_id not in self._turn_actions:
+        if turn_id:
             await self._maybe_set_idle()
 
-    async def _handle_brain_reply(self, reply: BrainReplyFrame) -> None:
-        await self.bus.publish(reply)
-        speech_frames = await self.speech.process(reply)
+    async def _handle_sdk_message(self, frame: SDKMessageFrame) -> None:
+        await self.bus.publish(frame)
+        worker_frame = sdk_message_to_worker_event(frame)
+        if worker_frame is not None:
+            await self._handle_worker_event(frame.turn_id, worker_frame)
+
+        speech_frames = await self.speech.process(frame)
         for sf in speech_frames:
             await self.bus.publish(sf)
             if isinstance(sf, SpeechPresenterFrame):
@@ -318,81 +289,22 @@ class RuntimeSession:
                     if isinstance(tf, TTSAudioFrame):
                         await self.brain.process(tf)
                     await self.bus.publish(tf)
-        if reply.actions:
-            await self._set_surface("acting")
-            for spec in reply.actions:
-                await self._spawn_action(spec, turn_id=reply.turn_id)
-        if reply.worker_decision:
-            task_id = await self.coordinator.handle_decision(
-                reply.worker_decision,
-                parent_request_id=reply.request_id,
-            )
-            if task_id:
-                self._turn_workers.setdefault(reply.turn_id, set()).add(task_id)
-                self._worker_to_turn[task_id] = reply.turn_id
-        if not reply.actions and not reply.worker_decision:
-            await self._maybe_set_idle()
 
-    async def _spawn_action(self, spec: ActionSpec, *, turn_id: str) -> None:
-        request_id = spec.request_id or self._make_request_id()
-        if not spec.request_id:
-            spec = ActionSpec(
-                name=spec.name,
-                params=spec.params,
-                reason=spec.reason,
-                request_id=request_id,
-                owner_id=spec.owner_id,
-                priority=spec.priority,
-                interruptible=spec.interruptible,
-                deadline_s=spec.deadline_s,
-                parent_request_id=spec.parent_request_id,
-            )
-        self._turn_actions.setdefault(turn_id, set()).add(request_id)
-        task = asyncio.create_task(self._run_action(spec, turn_id=turn_id, request_id=request_id))
-        self._action_tasks[request_id] = task
-
-    async def _run_action(
+    async def _handle_worker_event(
         self,
-        spec: ActionSpec,
-        *,
         turn_id: str,
-        request_id: str,
+        frame: WorkerEventFrame,
     ) -> None:
-        from .frames import ActionResultFrame, ActionSpecFrame
-
-        await self.bus.publish(ActionSpecFrame(spec=spec, turn_id=turn_id))
-        try:
-            result = await self.executor.submit(spec)
-        except asyncio.CancelledError:
-            self._action_tasks.pop(request_id, None)
-            self._discard_action(turn_id, request_id)
-            raise
-        except Exception as exc:
-            await self.bus.publish(
-                ActionResultFrame(
-                    request_id=request_id,
-                    name=spec.name,
-                    status="error",
-                    error=f"{type(exc).__name__}: {exc}",
-                    duration_ms=0,
-                )
-            )
-            self._action_tasks.pop(request_id, None)
-            self._discard_action(turn_id, request_id)
-            await self._maybe_set_idle()
-            return
-        await self.bus.publish(ActionResultFrame.from_result(result))
-        self._action_tasks.pop(request_id, None)
-        self._discard_action(turn_id, request_id)
-        await self._maybe_set_idle()
-
-    def _discard_action(self, turn_id: str, request_id: str) -> None:
-        bucket = self._turn_actions.get(turn_id)
-        if bucket is None:
-            return
-        bucket.discard(request_id)
-        if not bucket:
-            self._turn_actions.pop(turn_id, None)
+        if turn_id and frame.event in {"started", "progress"}:
+            self._turn_workers.setdefault(turn_id, set()).add(frame.task_id)
+        await self.brain.process(frame)
+        await self.bus.publish(frame)
+        if frame.event in {"completed", "failed", "stopped", "cancelled"}:
+            bucket = self._turn_workers.get(turn_id)
+            if bucket is not None:
+                bucket.discard(frame.task_id)
+                if not bucket:
+                    self._turn_workers.pop(turn_id, None)
 
     async def _handle_interrupt(self, interrupt: InterruptFrame) -> None:
         speech_frames = await self.speech.process(interrupt)
@@ -402,6 +314,7 @@ class RuntimeSession:
                 for tf in tts_frames:
                     await self.bus.publish(tf)
             await self.bus.publish(sf)
+        await self.agent.interrupt()
         cancel_actions = InterruptFrame(
             scope="actions",
             turn_id=interrupt.turn_id,
@@ -410,24 +323,6 @@ class RuntimeSession:
         )
         await self.actions.process(cancel_actions)
         await self.bus.publish(interrupt)
-
-    async def _on_worker_event(self, event: WorkerEvent) -> None:
-        frame = WorkerEventFrame(
-            task_id=event.task_id,
-            event=event.event,
-            payload=dict(event.payload),
-            ts_ms=event.ts_ms,
-        )
-        await self.brain.process(frame)
-        await self.bus.publish(frame)
-        if event.event in {"completed", "failed", "cancelled"}:
-            turn_id = self._worker_to_turn.pop(event.task_id, "")
-            bucket = self._turn_workers.get(turn_id)
-            if bucket is not None:
-                bucket.discard(event.task_id)
-                if not bucket:
-                    self._turn_workers.pop(turn_id, None)
-            await self._maybe_set_idle()
 
     async def _set_surface(self, phase: str) -> None:
         if phase == self._surface_phase:
@@ -445,14 +340,25 @@ class RuntimeSession:
     async def _maybe_set_idle(self) -> None:
         if self._stopping:
             return
-        if self._action_tasks or self._turn_actions:
-            return
         if self._turn_workers:
             return
         await self._set_surface("idle")
 
+    async def _stop_sdk_tasks(self) -> None:
+        task_ids = sorted(
+            {
+                task_id
+                for task_ids in self._turn_workers.values()
+                for task_id in task_ids
+                if task_id
+            }
+        )
+        self._turn_workers.clear()
+        for task_id in task_ids:
+            try:
+                await self.agent.stop_task(task_id)
+            except Exception:  # pragma: no cover - defensive shutdown path
+                LOGGER.exception("Failed to stop SDK task %s", task_id)
+
     def _make_turn_id(self) -> str:
         return f"turn_{uuid.uuid4().hex[:12]}"
-
-    def _make_request_id(self) -> str:
-        return f"req_{uuid.uuid4().hex[:12]}"

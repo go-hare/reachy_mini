@@ -44,8 +44,8 @@ Inbound (browser → runtime):
 
 Outbound (runtime → browser):
 
-- `brain_reply` carries the full Brain decision (`reply_text`, `actions`, `worker_decision`, `turn_id`)
-- `action_spec` and `action_result` reflect the action runtime
+- `sdk_message` carries Claude Agent SDK message payloads (`AssistantMessage`, task messages, result messages) plus `turn_id`
+- `action_result` reflects Action Runtime execution results
 - `worker_event` carries worker progress; `task_id="__surface__"` carries surface-state transitions
 - `transcription` carries STT previews and final user utterances
 - `tts_audio` carries synthesized PCM

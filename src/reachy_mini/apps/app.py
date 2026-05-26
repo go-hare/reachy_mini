@@ -1,15 +1,14 @@
-from __future__ import annotations
-
 """Reachy Mini application base classes wired to the v4 RuntimeSession."""
+
+from __future__ import annotations
 
 import asyncio
 import importlib
 import logging
 import threading
-import time
 import traceback
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal
+from typing import TYPE_CHECKING, Any, Callable, Literal
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -199,10 +198,12 @@ class ReachyMiniApp:
 
     def reset_runtime_audio_motion(self) -> bool:
         """Reset queued speech-motion audio state for the resident runtime."""
-        return self.runtime_host_adapter.reset_runtime_audio_motion(self.runtime_tool_context)
+        return self.runtime_host_adapter.reset_runtime_audio_motion(
+            self.runtime_tool_context
+        )
 
     async def play_runtime_reply_audio(self, payload: dict[str, Any]) -> bool:
-        """Synthesize and play one final runtime reply when speech output is configured."""
+        """Synthesize and play one final runtime reply."""
         return await self.runtime_host_adapter.play_runtime_reply_audio(
             self.runtime_tool_context,
             payload,

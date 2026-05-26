@@ -65,7 +65,6 @@ class SurfaceDriver:
         resolved_now = self._current_time()
         self._refresh_entries(resolved_now)
         normalized_state = self._normalize_state_payload(state)
-        phase = str(normalized_state.get("phase", "idle") or "idle")
         thread_id = self._extract_thread_id(state)
 
         if thread_id:

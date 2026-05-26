@@ -11,10 +11,11 @@ from typing import Any
 
 from reachy_mini.pipeline.frames import (
     ActionResultFrame,
-    BrainReplyFrame,
     PipelineErrorFrame,
+    SDKMessageFrame,
 )
 from reachy_mini.pipeline.session import RuntimeSession
+from reachy_mini.reachy_brain.pipecat_bridge import extract_text_blocks
 from reachy_mini.runtime.project import (
     create_app_project,
     inspect_app_project,
@@ -83,9 +84,9 @@ def parse_args() -> argparse.Namespace:
         help="Send one message and exit.",
     )
     agent_parser.add_argument(
-        "--turn-id",
+        "--thread-id",
         default="",
-        help="Override the generated turn id for one-shot mode.",
+        help="Override the generated SDK session/thread id for one-shot mode.",
     )
     agent_parser.add_argument(
         "--override",
@@ -156,23 +157,35 @@ def handle_create(args: argparse.Namespace) -> None:
 
 async def handle_agent(args: argparse.Namespace) -> None:
     """Run a v4 RuntimeSession turn (or a small REPL)."""
-    logging.basicConfig(level=getattr(logging, str(args.log_level).upper(), logging.INFO))
+    logging.basicConfig(
+        level=getattr(logging, str(args.log_level).upper(), logging.INFO)
+    )
     app_path = resolve_app_path(args.app, _get_apps_root(args))
     profile_path = _resolve_profile_path(app_path)
     overrides = _parse_overrides(list(args.override or []))
-    session = RuntimeSession.from_profile(profile_path, overrides=overrides)
+    one_shot = bool(str(args.message or "").strip())
+    session = _build_agent_session(profile_path, overrides=overrides)
     await session.start()
     try:
-        if str(args.message or "").strip():
+        if one_shot:
             await _run_one_turn(
                 session,
                 user_text=args.message.strip(),
-                turn_id=str(args.turn_id or "") or None,
+                turn_id=str(args.thread_id or "") or None,
             )
             return
         await _run_interactive(session)
     finally:
         await session.stop()
+
+
+def _build_agent_session(
+    profile_path: Path,
+    *,
+    overrides: dict[str, Any],
+) -> RuntimeSession:
+    """Build the CLI RuntimeSession with the real Claude Agent SDK default."""
+    return RuntimeSession.from_profile(profile_path, overrides=overrides)
 
 
 def handle_web(args: argparse.Namespace) -> None:
@@ -238,10 +251,10 @@ async def _run_one_turn(
     user_text: str,
     turn_id: str | None,
 ) -> None:
-    """Submit one message and print the brain reply + action results."""
+    """Submit one message and print SDK assistant text + action results."""
     sub = session.subscribe(
         filter=lambda frame: isinstance(
-            frame, (BrainReplyFrame, ActionResultFrame, PipelineErrorFrame)
+            frame, (SDKMessageFrame, ActionResultFrame, PipelineErrorFrame)
         )
     )
     try:
@@ -250,13 +263,16 @@ async def _run_one_turn(
         # Drain whatever the bus collected for that turn.
         while not sub.queue.empty():
             frame = await sub.queue.get()
-            if isinstance(frame, BrainReplyFrame):
+            if isinstance(frame, SDKMessageFrame):
                 if frame.turn_id and frame.turn_id != actual_turn:
                     continue
-                if frame.reply_text:
-                    print(frame.reply_text)
+                for text in extract_text_blocks(frame.message):
+                    print(text)
             elif isinstance(frame, ActionResultFrame):
-                print(f"action_result: {frame.name} {frame.status} ({frame.duration_ms}ms)")
+                print(
+                    f"action_result: {frame.name} "
+                    f"{frame.status} ({frame.duration_ms}ms)"
+                )
             elif isinstance(frame, PipelineErrorFrame):
                 print(f"pipeline_error: {frame.component}: {frame.reason}")
     finally:

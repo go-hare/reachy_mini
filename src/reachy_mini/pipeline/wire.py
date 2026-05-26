@@ -9,16 +9,16 @@ from enum import Enum
 from pathlib import PurePath
 from typing import Any, Mapping
 
-from reachy_mini.action_runtime import ActionResult, ActionSpec
+from reachy_mini.action_runtime import ActionResult
+from reachy_mini.reachy_brain.pipecat_bridge import sdk_message_to_payload
 
 from .frames import (
     ActionResultFrame,
-    ActionSpecFrame,
     AudioFrame,
-    BrainReplyFrame,
     BrowserInputFrame,
     InterruptFrame,
     PipelineErrorFrame,
+    SDKMessageFrame,
     SpeechActivityFrame,
     SpeechPresenterFrame,
     TextFrame,
@@ -30,15 +30,9 @@ from .frames import (
     WorkerEventFrame,
 )
 
-
+LEGACY_INBOUND_PREFIXES = ("front_",)
 LEGACY_INBOUND_TYPES = frozenset(
     {
-        "front_hint_chunk",
-        "front_hint_done",
-        "front_final_chunk",
-        "front_final_done",
-        "front_decision",
-        "front_tool_result",
         "user_text",
         "browser_audio_chunk",
         "browser_audio_stop",
@@ -56,22 +50,15 @@ class WireDecodeError(ValueError):
 
 def encode_frame(frame: Any) -> dict[str, Any]:
     """Encode a v4 outbound frame as a websocket JSON envelope."""
-    if isinstance(frame, BrainReplyFrame):
-        payload = {
-            "reply_text": frame.reply_text,
-            "speech_style": _to_jsonable(frame.speech_style),
-            "actions": [_action_spec_to_json(spec) for spec in frame.actions],
-            "worker_decision": _to_jsonable(frame.worker_decision),
-            "turn_id": frame.turn_id,
-            "request_id": frame.request_id,
-            "is_final": frame.is_final,
-            "metadata": _to_jsonable(frame.metadata),
-        }
-        return _envelope("brain_reply", payload, ts_ms=_metadata_ts(frame))
-    if isinstance(frame, ActionSpecFrame):
+    if isinstance(frame, SDKMessageFrame):
         return _envelope(
-            "action_spec",
-            {"spec": _action_spec_to_json(frame.spec), "turn_id": frame.turn_id},
+            "sdk_message",
+            {
+                **sdk_message_to_payload(frame.message),
+                "turn_id": frame.turn_id,
+                "metadata": _to_jsonable(frame.metadata),
+            },
+            ts_ms=_metadata_ts(frame.metadata),
         )
     if isinstance(frame, ActionResultFrame):
         return _envelope(
@@ -79,6 +66,7 @@ def encode_frame(frame: Any) -> dict[str, Any]:
             {
                 "request_id": frame.request_id,
                 "name": frame.name,
+                "owner_id": frame.owner_id,
                 "status": frame.status,
                 "error": frame.error,
                 "duration_ms": frame.duration_ms,
@@ -181,7 +169,7 @@ def decode_inbound(message: Mapping[str, Any]) -> Any:
     type_name = str(message.get("type") or "").strip()
     if not type_name:
         raise WireDecodeError("Inbound message missing 'type'.")
-    if type_name in LEGACY_INBOUND_TYPES:
+    if _is_legacy_inbound_type(type_name):
         raise WireDecodeError(f"Legacy protocol rejected: {type_name}")
     payload = message.get("payload") or {}
     if not isinstance(payload, Mapping):
@@ -236,6 +224,8 @@ def decode_inbound(message: Mapping[str, Any]) -> Any:
         )
     if type_name == "ping":
         return _Ping()
+    if type_name == "pong":
+        return _Pong()
     raise WireDecodeError(f"Unknown inbound type: {type_name}")
 
 
@@ -243,8 +233,16 @@ class _Ping:
     """Marker for an inbound ping; the ws layer answers with 'pong'."""
 
 
+class _Pong:
+    """Marker for an inbound pong; the ws layer heartbeat consumes it."""
+
+
 class _AudioStop:
     """Marker for an inbound audio_stop request."""
+
+
+def _is_legacy_inbound_type(type_name: str) -> bool:
+    return type_name in LEGACY_INBOUND_TYPES or type_name.startswith(LEGACY_INBOUND_PREFIXES)
 
 
 def _envelope(type_name: str, payload: dict[str, Any], *, ts_ms: int | None = None) -> dict[str, Any]:
@@ -253,20 +251,6 @@ def _envelope(type_name: str, payload: dict[str, Any], *, ts_ms: int | None = No
         envelope["ts_ms"] = int(ts_ms)
     envelope["payload"] = payload
     return envelope
-
-
-def _action_spec_to_json(spec: ActionSpec) -> dict[str, Any]:
-    return {
-        "name": spec.name,
-        "params": _to_jsonable(spec.params),
-        "reason": spec.reason,
-        "request_id": spec.request_id,
-        "owner_id": spec.owner_id,
-        "priority": spec.priority,
-        "interruptible": spec.interruptible,
-        "deadline_s": spec.deadline_s,
-        "parent_request_id": spec.parent_request_id,
-    }
 
 
 def action_result_to_json(result: ActionResult) -> dict[str, Any]:
@@ -309,8 +293,8 @@ def _coerce_ts_ms(value: Any) -> int:
         raise WireDecodeError("ts_ms must be an integer.") from exc
 
 
-def _metadata_ts(frame: BrainReplyFrame) -> int | None:
-    ts = frame.metadata.get("ts_ms") if isinstance(frame.metadata, Mapping) else None
+def _metadata_ts(metadata: Mapping[str, Any]) -> int | None:
+    ts = metadata.get("ts_ms")
     if ts is None:
         return None
     try:
@@ -334,8 +318,6 @@ def _to_jsonable(value: Any) -> Any:
         return [_to_jsonable(item) for item in value]
     if isinstance(value, (set, frozenset)):
         return sorted(_to_jsonable(item) for item in value)
-    if isinstance(value, ActionSpec):
-        return _action_spec_to_json(value)
     if is_dataclass(value):
         return {key: _to_jsonable(item) for key, item in value.__dict__.items()}
     if hasattr(value, "__dict__"):

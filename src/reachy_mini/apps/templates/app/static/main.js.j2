@@ -178,6 +178,15 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
+    function sdkMessageText(payload) {
+        const content = Array.isArray(payload.content) ? payload.content : [];
+        return content
+            .filter((block) => block && block.type === "text")
+            .map((block) => compactText(block.text))
+            .filter(Boolean)
+            .join("\n");
+    }
+
     function formatSurfaceStatus(phase) {
         if (phase === "listening") {
             return "Runtime 正在接收你的输入...";
@@ -496,14 +505,14 @@ document.addEventListener("DOMContentLoaded", () => {
         const type = String(envelope?.type || "");
         const payload = envelope?.payload || {};
 
-        if (type === "brain_reply") {
-            setReplyText(payload.turn_id, payload.reply_text);
-            setStatus(
-                Array.isArray(payload.actions) && payload.actions.length > 0
-                    ? "Brain 已生成回复，动作排队执行中。"
-                    : "Brain 已生成回复。",
-                true,
-            );
+        if (type === "sdk_message") {
+            const text = sdkMessageText(payload);
+            if (text) {
+                setReplyText(payload.turn_id, text);
+                setStatus("Brain 已生成 SDK 回复。", true);
+            } else {
+                setStatus(`SDK message: ${payload.message_type || "unknown"}`, true);
+            }
             return;
         }
         if (type === "action_result") {
@@ -566,6 +575,10 @@ document.addEventListener("DOMContentLoaded", () => {
                 "assistant",
                 `runtime error (${payload.component || "pipeline"}): ${payload.reason || "unknown"}`,
             );
+            return;
+        }
+        if (type === "ping") {
+            sendEnvelope("pong", {});
             return;
         }
         if (type === "pong") {

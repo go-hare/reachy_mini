@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from sdk_fakes import run_action_ok  # noqa: E402
 
 from reachy_mini.action_runtime.library import create_builtin_registry
 from reachy_mini.reachy_brain.agent import BrainAgent
 from reachy_mini.reachy_brain.config import AgentConfig, ModelConfig, SpeechConfig, SpeechInputConfig, VisionConfig
+from reachy_mini.reachy_brain.offline_sdk_client import OfflineSDKClient
 from reachy_mini.pipeline.brain_processor import BrainProcessor
 from reachy_mini.pipeline.frames import InterruptFrame, SpeechActivityFrame, TranscriptionFrame, TTSAudioFrame, TTSStopFrame
 from reachy_mini.pipeline.speech_presenter import SpeechPresenter
@@ -20,7 +28,14 @@ def _processor() -> BrainProcessor:
         vision=VisionConfig(),
         extras={},
     )
-    return BrainProcessor(BrainAgent(config=config, registry=create_builtin_registry()))
+    return BrainProcessor(
+        BrainAgent(
+            config=config,
+            registry=create_builtin_registry(),
+            run_action=run_action_ok,
+            client_factory=lambda options: OfflineSDKClient(options),
+        )
+    )
 
 
 @pytest.mark.asyncio

@@ -2,21 +2,35 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import pytest
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from sdk_fakes import run_action_ok  # noqa: E402
+
 from reachy_mini.action_runtime.library import create_builtin_registry
-from reachy_mini.reachy_brain.agent import BrainAgent
-from reachy_mini.reachy_brain.config import AgentConfig, ModelConfig, SpeechConfig, SpeechInputConfig, VisionConfig
 from reachy_mini.pipeline.brain_processor import BrainProcessor
 from reachy_mini.pipeline.frames import (
-    BrainReplyFrame,
     BrowserInputFrame,
     InterruptFrame,
+    SDKMessageFrame,
     SpeechActivityFrame,
     TranscriptionFrame,
     TTSAudioFrame,
     VisionEventFrame,
 )
+from reachy_mini.reachy_brain.agent import BrainAgent
+from reachy_mini.reachy_brain.config import (
+    AgentConfig,
+    ModelConfig,
+    SpeechConfig,
+    SpeechInputConfig,
+    VisionConfig,
+)
+from reachy_mini.reachy_brain.offline_sdk_client import OfflineSDKClient
 
 
 def _agent() -> BrainAgent:
@@ -27,23 +41,27 @@ def _agent() -> BrainAgent:
         vision=VisionConfig(),
         extras={},
     )
-    return BrainAgent(config=config, registry=create_builtin_registry())
+    return BrainAgent(
+        config=config,
+        registry=create_builtin_registry(),
+        run_action=run_action_ok,
+        client_factory=lambda options: OfflineSDKClient(options),
+    )
 
 
 @pytest.mark.asyncio
-async def test_final_transcription_triggers_brain_reply() -> None:
-    """Final STT frames run the Brain."""
+async def test_final_transcription_triggers_sdk_message_stream() -> None:
+    """Final STT frames run the SDK-backed Brain."""
     processor = BrainProcessor(_agent())
 
     frames = await processor.process(
         TranscriptionFrame(text="你好", is_final=True, turn_id="t1", lang="zh")
     )
 
-    assert len(frames) == 1
-    assert isinstance(frames[0], BrainReplyFrame)
-    assert frames[0].turn_id == "t1"
-    assert frames[0].reply_text
-    assert frames[0].actions[0].name == "nod"
+    sdk_frames = [frame for frame in frames if isinstance(frame, SDKMessageFrame)]
+    assert sdk_frames
+    assert sdk_frames[0].turn_id == "t1"
+    assert type(sdk_frames[0].message).__name__ == "AssistantMessage"
 
 
 @pytest.mark.asyncio
@@ -76,7 +94,7 @@ async def test_browser_text_input_runs_brain() -> None:
         )
     )
 
-    assert isinstance(frames[0], BrainReplyFrame)
+    assert isinstance(frames[0], SDKMessageFrame)
     assert frames[0].turn_id == "web:t1"
 
 
@@ -84,7 +102,9 @@ async def test_browser_text_input_runs_brain() -> None:
 async def test_speech_activity_start_during_tts_emits_interrupt() -> None:
     """Barge-in while TTS is active emits a speech interrupt."""
     processor = BrainProcessor(_agent())
-    await processor.process(TTSAudioFrame(pcm=b"audio", sample_rate=24000, turn_id="t1", is_final=False))
+    await processor.process(
+        TTSAudioFrame(pcm=b"audio", sample_rate=24000, turn_id="t1", is_final=False)
+    )
 
     frames = await processor.process(SpeechActivityFrame(state="start", ts_ms=123))
 

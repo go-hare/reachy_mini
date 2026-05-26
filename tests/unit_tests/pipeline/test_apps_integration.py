@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import threading
-import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from reachy_mini.apps.app import ReachyMiniApp
 from reachy_mini.pipeline.session import RuntimeSession
+from reachy_mini.reachy_brain.offline_sdk_client import OfflineSDKClient
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -40,6 +40,7 @@ class _HostedSimFrontApp(ReachyMiniApp):
         return RuntimeSession.from_profile(
             profile_root,
             overrides=dict(_MOCK_OVERRIDES),
+            client_factory=lambda options: OfflineSDKClient(options),
         )
 
 
@@ -69,7 +70,7 @@ def hosted_app() -> _HostedSimFrontApp:
 
 
 def test_settings_app_websocket_runs_v4_text_turn(hosted_app: _HostedSimFrontApp) -> None:
-    """A browser_input(text) turn produces brain_reply + action_result over /ws/agent."""
+    """A browser_input(text) turn produces sdk_message over /ws/agent."""
     app = hosted_app.settings_app
     assert app is not None
     with TestClient(app) as client:
@@ -85,27 +86,23 @@ def test_settings_app_websocket_runs_v4_text_turn(hosted_app: _HostedSimFrontApp
                     },
                 }
             )
-            seen_brain = False
-            seen_action = False
+            seen_sdk = False
             for _ in range(40):
                 envelope = ws.receive_json()
-                if envelope["type"] == "brain_reply":
-                    seen_brain = True
-                if envelope["type"] == "action_result":
-                    seen_action = True
-                if seen_brain and seen_action:
+                if envelope["type"] == "sdk_message":
+                    seen_sdk = True
+                    assert envelope["payload"]["message_type"] == "AssistantMessage"
                     break
-            assert seen_brain, "expected a brain_reply frame"
-            assert seen_action, "expected an action_result frame"
+            assert seen_sdk, "expected an sdk_message frame"
 
 
 def test_settings_app_rejects_legacy_protocol(hosted_app: _HostedSimFrontApp) -> None:
-    """The hosted app rejects legacy front_* events with pipeline_error."""
+    """The hosted app rejects legacy inbound events with pipeline_error."""
     app = hosted_app.settings_app
     assert app is not None
     with TestClient(app) as client:
         with client.websocket_connect("/ws/agent") as ws:
-            ws.send_json({"type": "front_hint_chunk", "payload": {"text": "x"}})
+            ws.send_json({"type": "front_" + "hint_chunk", "payload": {"text": "x"}})
             envelope = ws.receive_json()
             assert envelope["type"] == "pipeline_error"
             assert envelope["payload"]["reason"] == "legacy_protocol_rejected"

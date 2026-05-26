@@ -1,41 +1,52 @@
-"""Prepare Brain replies for TTS."""
+"""Prepare SDK assistant text for TTS."""
 
 from __future__ import annotations
 
 import re
 
+from reachy_mini.reachy_brain.pipecat_bridge import sdk_message_to_speech_frames
+
 from .frames import (
-    BrainReplyFrame,
     InterruptFrame,
+    SDKMessageFrame,
     SpeechPresenterFrame,
     TTSStopFrame,
 )
 
 
 class SpeechPresenter:
-    """Split reply text into TTS-ready chunks and handle interrupts."""
+    """Split SDK assistant text into TTS-ready chunks and handle interrupts."""
 
-    def __init__(self, *, max_chars: int = 120) -> None:
+    def __init__(
+        self,
+        *,
+        max_chars: int = 120,
+        style: dict[str, object] | None = None,
+    ) -> None:
         """Create a speech presenter."""
         self.max_chars = max(20, max_chars)
+        self.style = dict(style or {})
         self._stopped_turns: set[str] = set()
 
     async def process(self, frame: object) -> list[object]:
-        """Process BrainReplyFrame or InterruptFrame."""
-        if isinstance(frame, BrainReplyFrame):
-            if not frame.reply_text.strip():
+        """Process SDKMessageFrame or InterruptFrame."""
+        if isinstance(frame, SDKMessageFrame):
+            if frame.turn_id in self._stopped_turns:
                 return []
-            chunks = self._split_text(frame.reply_text)
+            raw_frames = sdk_message_to_speech_frames(frame, style=self.style)
+            chunks: list[str] = []
+            for raw in raw_frames:
+                chunks.extend(self._split_text(raw.text))
             return [
                 SpeechPresenterFrame(
                     text=chunk,
-                    style=dict(frame.speech_style),
+                    style=dict(self.style),
                     turn_id=frame.turn_id,
                     chunk_index=index,
                     is_final=index == len(chunks) - 1,
                 )
                 for index, chunk in enumerate(chunks)
-                if frame.turn_id not in self._stopped_turns
+                if chunk.strip()
             ]
 
         if isinstance(frame, InterruptFrame) and frame.scope in {"speech", "all"}:

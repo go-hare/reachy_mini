@@ -45,7 +45,12 @@ __all__ = [
 def __getattr__(name: str) -> Any:
     """Load web-host helpers lazily to avoid importing app/runtime stacks eagerly."""
     if name in {"HostedAppProject", "WebBinding", "build_web_host", "resolve_web_binding"}:
-        from .web import HostedAppProject, WebBinding, build_web_host, resolve_web_binding
+        from .web import (
+            HostedAppProject,
+            WebBinding,
+            build_web_host,
+            resolve_web_binding,
+        )
 
         exports = {
             "HostedAppProject": HostedAppProject,

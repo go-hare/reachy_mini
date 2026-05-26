@@ -3,18 +3,23 @@
 from __future__ import annotations
 
 import base64
+import sys
+from pathlib import Path
 
 import pytest
 
-from reachy_mini.action_runtime import ActionResult, ActionSpec
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from sdk_fakes import assistant_message  # noqa: E402
+
+from reachy_mini.action_runtime import ActionResult  # noqa: E402
 from reachy_mini.pipeline.frames import (
     ActionResultFrame,
-    ActionSpecFrame,
     AudioFrame,
-    BrainReplyFrame,
     BrowserInputFrame,
     InterruptFrame,
     PipelineErrorFrame,
+    SDKMessageFrame,
     SpeechActivityFrame,
     SpeechPresenterFrame,
     TextFrame,
@@ -31,6 +36,7 @@ from reachy_mini.pipeline.wire import (
     WireSerializationError,
     _AudioStop,
     _Ping,
+    _Pong,
     decode_inbound,
     encode_frame,
 )
@@ -40,36 +46,26 @@ def _b64(data: bytes) -> str:
     return base64.b64encode(data).decode("ascii")
 
 
-def test_encode_brain_reply_includes_action_specs() -> None:
-    """BrainReplyFrame encodes reply_text, actions, worker_decision and metadata."""
-    spec = ActionSpec(name="nod", params={"cycles": 1}, owner_id="main-agent", request_id="r1")
-    frame = BrainReplyFrame(
-        reply_text="hi",
-        speech_style={"voice": "zf_001"},
-        actions=[spec],
-        worker_decision={"op": "spawn", "task_id": "w1", "task_type": "patrol"},
+def test_encode_sdk_message_preserves_sdk_payload_and_metadata() -> None:
+    """SDKMessageFrame encodes SDK-native messages, turn id, and metadata."""
+    frame = SDKMessageFrame(
+        message=assistant_message("hi", session_id="T1"),
         turn_id="T1",
-        request_id="brain_1",
         metadata={"latency_ms": 12, "ts_ms": 1717},
     )
 
     envelope = encode_frame(frame)
 
-    assert envelope["type"] == "brain_reply"
+    assert envelope["type"] == "sdk_message"
     assert envelope["ts_ms"] == 1717
-    assert envelope["payload"]["reply_text"] == "hi"
-    assert envelope["payload"]["actions"][0]["name"] == "nod"
-    assert envelope["payload"]["actions"][0]["params"] == {"cycles": 1}
-    assert envelope["payload"]["worker_decision"]["task_type"] == "patrol"
+    assert envelope["payload"]["message_type"] == "AssistantMessage"
+    assert envelope["payload"]["content"][0]["text"] == "hi"
+    assert envelope["payload"]["turn_id"] == "T1"
+    assert envelope["payload"]["metadata"]["latency_ms"] == 12
 
 
-def test_encode_action_spec_and_result_frames() -> None:
-    """ActionSpecFrame and ActionResultFrame encode round-trippable payloads."""
-    spec = ActionSpec(name="shake_head", owner_id="main-agent", request_id="r2")
-    spec_envelope = encode_frame(ActionSpecFrame(spec=spec, turn_id="T2"))
-    assert spec_envelope["type"] == "action_spec"
-    assert spec_envelope["payload"]["spec"]["name"] == "shake_head"
-
+def test_encode_action_result_frame() -> None:
+    """ActionResultFrame encodes round-trippable payloads."""
     result = ActionResult(
         request_id="r3",
         action_id="a3",
@@ -83,6 +79,7 @@ def test_encode_action_spec_and_result_frames() -> None:
     assert result_envelope["payload"] == {
         "request_id": "r3",
         "name": "nod",
+        "owner_id": "main-agent",
         "status": "ok",
         "error": None,
         "duration_ms": 42,
@@ -215,6 +212,7 @@ def test_decode_speech_activity_validates_state() -> None:
 def test_decode_ping_and_audio_stop_are_markers() -> None:
     """ping/audio_stop decode to internal marker objects."""
     assert isinstance(decode_inbound({"type": "ping", "payload": {}}), _Ping)
+    assert isinstance(decode_inbound({"type": "pong", "payload": {}}), _Pong)
     assert isinstance(decode_inbound({"type": "audio_stop", "payload": {}}), _AudioStop)
 
 

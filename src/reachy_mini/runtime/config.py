@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 
 from reachy_mini.runtime.profile_loader import ProfileBundle
 
@@ -301,57 +301,3 @@ def load_profile_runtime_config(profile: ProfileBundle) -> ProfileRuntimeConfig:
             )
 
     return config
-
-
-def apply_runtime_overrides(
-    config: ProfileRuntimeConfig,
-    *,
-    provider: str | None = None,
-    model: str | None = None,
-    base_url: str | None = None,
-    api_key: str | None = None,
-    temperature: float | None = None,
-    kernel_provider: str | None = None,
-    kernel_model: str | None = None,
-    kernel_base_url: str | None = None,
-    kernel_api_key: str | None = None,
-    kernel_temperature: float | None = None,
-    history_limit: int | None = None,
-) -> ProfileRuntimeConfig:
-    """Apply CLI overrides on top of a parsed profile config."""
-    front_model = replace(
-        config.front_model,
-        provider=provider or config.front_model.provider,
-        model=model or config.front_model.model,
-        base_url=base_url if base_url is not None else config.front_model.base_url,
-        api_key=api_key if api_key is not None else config.front_model.api_key,
-        temperature=temperature
-        if temperature is not None
-        else config.front_model.temperature,
-    )
-    resolved_kernel_model = replace(
-        config.kernel_model,
-        provider=kernel_provider or config.kernel_model.provider,
-        model=kernel_model or config.kernel_model.model,
-        base_url=(
-            kernel_base_url if kernel_base_url is not None else config.kernel_model.base_url
-        ),
-        api_key=(
-            kernel_api_key if kernel_api_key is not None else config.kernel_model.api_key
-        ),
-        temperature=kernel_temperature
-        if kernel_temperature is not None
-        else config.kernel_model.temperature,
-    )
-    return ProfileRuntimeConfig(
-        front_mode=config.front_mode,
-        front_style=config.front_style,
-        history_limit=max(1, history_limit)
-        if history_limit is not None
-        else config.history_limit,
-        front_model=front_model,
-        kernel_model=resolved_kernel_model,
-        vision=config.vision,
-        speech=config.speech,
-        speech_input=config.speech_input,
-    )

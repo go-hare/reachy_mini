@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import time
-import logging
 from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
-from numpy.typing import NDArray
 from huggingface_hub import snapshot_download
+from numpy.typing import NDArray
 
 logger = logging.getLogger(__name__)
 

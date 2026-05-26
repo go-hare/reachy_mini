@@ -69,8 +69,8 @@
                     <ol>
                         <li><code>ReachyMiniApp</code> 常驻当前 app 的 v4 RuntimeSession</li>
                         <li>页面通过 <code>/ws/agent</code> 把文本或浏览器音频帧发进 runtime</li>
-                        <li>Brain 产出 <code>brain_reply</code>（含 reply_text、actions、worker_decision）</li>
-                        <li>ActionRuntime 执行动作并回 <code>action_result</code>；worker 状态走 <code>worker_event</code></li>
+                        <li>Brain 产出 Claude Agent SDK 原生 <code>sdk_message</code></li>
+                        <li>ActionRuntime 执行动作并回 <code>action_result</code>；SDK task 状态走 <code>worker_event</code></li>
                         <li>页面持续监听 <code>worker_event(task_id="__surface__")</code> 渲染 surface 状态</li>
                     </ol>
                 </div>
