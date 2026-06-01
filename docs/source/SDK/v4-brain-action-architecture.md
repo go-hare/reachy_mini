@@ -4,12 +4,24 @@
 
 核心结论：
 
-> `profiles/` 提供 app/profile 配置；Pipecat 统一实时事件流；Brain 使用 Claude Code Python SDK 跑单一 agent loop 并按需派 worker；Action Runtime 把动作意图解析成一等机器人动作，完成锁仲裁后落到现有 Reachy Mini Python SDK。
+> `profiles/` 提供 app/profile/persona/tools/runtime config 产品边界；L3 Brain 使用 Claude Agent SDK (Python，也就是 Claude Code Python SDK，包名 `claude-agent-sdk`) 跑单一 main agent loop 并按需派 SDK worker/sub-agent；L2 Pipecat 统一实时事件流、barge-in、TTS/STT 和 frame routing；L1 Action Runtime 把动作意图解析成一等 `RobotAction`，完成锁仲裁后落到现有 Reachy Mini Python SDK。
+
+## 锁版三层职责
+
+这一版文档的 source of truth 是下面三层，后续设计和实现不能再换成其它抽象。
+
+| 层级 | 目录 | 核心资产 | 负责 | 不负责 |
+|---|---|---|---|---|
+| L3 Brain | `src/reachy_mini/reachy_brain/` | Claude Agent SDK (Python) + `BrainAgent` | 决策：说什么、选择哪些动作、是否派 SDK worker/sub-agent。输出以 SDK 原生 message stream、SDK MCP tool call、SDK sub-agent message 为准。 | 不实现动作、不做电机时序、不调 `goto_target()` / `set_target()`、不重写 Claude Code 内部 coordinator。 |
+| L2 Pipecat Pipeline | `src/reachy_mini/pipeline/` | `BrainProcessor`、`SpeechPresenter`、`ActionDispatcher` | `mic -> VAD -> FunASR -> ContextAggregator -> BrainProcessor`；把 SDK text 送 TTS，把 SDK action tool call 送 L1；处理 barge-in、streaming、routing、backpressure。 | 不重新定义 L3 任务协议，不把动作实现塞进 frame processor。 |
+| L1 SDK / Action Runtime | `src/reachy_mini/action_runtime/` + 现有 SDK | `RobotAction`、`ActionRegistry`、`ActionExecutor`、`MotorLockManager` | 动作是一等对象；校验参数、申请锁、执行/取消/清理动作；调用现有 Reachy Mini Python SDK。 | 不做 LLM 决策，不读取 profile persona，不承载 worker 任务模型。 |
+
+从 L3 视角，“做哪些动作”只表现为 SDK MCP action tool call 的动作名和参数；真正的 `RobotAction` 对象只在 L1 由 `ActionExecutor` 根据 `ActionRegistry` 实例化。LLM 只看动作元数据和工具 schema，看不到电机、插值、锁细节。
 
 ## 目标
 
 - 保留 `profiles/<app>/` 作为 app、persona、tools、runtime config 的产品边界。
-- 用 Claude Code Python SDK 提供的单一 Brain agent loop 替换当前 front/kernel 双 LLM 分层。
+- 用 Claude Agent SDK (Python / Claude Code Python SDK) 提供的单一 Brain agent loop 替换当前 front/kernel 双 LLM 分层。
 - 用 Pipecat 承担 VAD、turn detection、barge-in、streaming、STT、TTS 和 frame routing。
 - 把机器人动作做成 SDK 侧一等对象，使动作可以脱离 LLM 独立运行。
 - 保持底层 SDK 稳定：`reachy_mini.py`、`motion`、`kinematics`、`io`、`embodiment`、安全限位、media、tracking 不在 Phase 1 重写。
@@ -17,15 +29,17 @@
 ## 非目标
 
 - 不把 Claude Code 内部代码翻译成 Python。
-- 不用 mock brain 替代 Claude Code Python SDK 接入；mock 只能用于测试和离线 smoke。
+- 不把 worker/coordinator 任务模型改写成 Reachy 自研调度器；只通过 Claude Agent SDK (Python) 的公开 worker/sub-agent 能力复用。
+- 不用 mock brain 替代 Claude Agent SDK (Python) 接入；mock 只能用于测试和离线 smoke。
 - 不让 Brain 直接调用电机或 SDK 运动接口。
 - 不把 LLM tool call 作为动作执行的唯一入口。
+- 不删除 `profiles/`，也不把 profile/persona/tools/runtime config 挪到 L3 之外。
 - 不在 Phase 1 重写现有 Reachy Mini SDK。
 - 不在 Phase 1 修改现有 profile 文件格式。
 
-## Claude Code Python SDK 边界
+## Claude Agent SDK (Python) 边界
 
-L3 Brain 的 source of truth 是 Claude Code Python SDK 的官方文档和源码：
+L3 Brain 的 source of truth 是 Claude Agent SDK (Python)。它就是本文所说的 Claude Code Python SDK 接入点，不能被 mock、手写 wrapper 或翻译版 Claude Code TS 代码替代：
 
 - Docs: `https://code.claude.com/docs/en/agent-sdk/python`
 - GitHub: `https://github.com/anthropics/claude-agent-sdk-python`
@@ -37,9 +51,7 @@ v4 Brain 只能通过 SDK 公开接口接入 Claude Code：
 - `ClaudeSDKClient` 承载主 agent loop、streaming、interrupt、session 和 tool call；
 - `ClaudeAgentOptions` 承载 profile 映射后的 model、system prompt、cwd、tools、agents、permission、hooks；
 - `tool()` + `create_sdk_mcp_server()` 把 `ActionRegistry` 暴露成同进程 SDK MCP tools；
-- `AgentDefinition` 定义 worker/sub-agent；
-- `query()` 只用于最小 smoke，不作为主运行时；
-- `RuntimeAgent` / `RuntimeKernelClient` 是可选 resident runtime 路线，不能和 `ClaudeSDKClient` 路线混写而不说明。
+- `AgentDefinition` 定义 worker/sub-agent。
 
 如果环境里没有 `claude-agent-sdk`，v4 Brain 必须启动失败并提示安装命令，不能静默退回 mock。离线 smoke 和单元测试只能显式注入 `OfflineSDKClient` / fake SDK client，不能让 mock 成为默认 fallback。
 
@@ -55,7 +67,7 @@ v4 Brain 只能通过 SDK 公开接口接入 Claude Code：
 │                                                                  │
 │ AgentConfig 适配层只读 profiles                                  │
 │                                                                  │
-│ Claude Code Python SDK                                           │
+│ Claude Agent SDK (Python / Claude Code Python SDK)               │
 │   package: claude-agent-sdk                                      │
 │   import : claude_agent_sdk                                      │
 │                                                                  │
@@ -66,7 +78,7 @@ v4 Brain 只能通过 SDK 公开接口接入 Claude Code：
 │ - 长任务交给 SDK background subagent                             │
 │                                                                  │
 │ AgentDefinition                                                  │
-│ - 使用 Claude Code Python SDK 原生 worker/sub-agent 定义          │
+│ - 使用 Claude Agent SDK (Python) 原生 worker/sub-agent 定义       │
 │ - 不在 Reachy 侧重写 SDK 字段协议                                │
 └──────────────────────────┬──────────────────────────────────────┘
                            │ SDK Message stream wrapped by Pipecat
@@ -79,7 +91,7 @@ v4 Brain 只能通过 SDK 公开接口接入 Claude Code：
 │                                                                  │
 │ BrainProcessor                                                   │
 │ - 把 brain runtime 包成 Pipecat FrameProcessor                    │
-│ - 内部调用 Claude Code Python SDK                                │
+│ - 内部调用 Claude Agent SDK (Python)                             │
 │ - 转发 SDK Message stream                                        │
 │                                                                  │
 │ SpeechPresenter -> Kokoro -> speaker                             │
@@ -109,7 +121,7 @@ v4 Brain 只能通过 SDK 公开接口接入 Claude Code：
 
 ## 关键边界
 
-Brain 不执行底层电机动作，也不定义自己的 tool_call/worker 字段。动作入口是 Claude Code Python SDK MCP tool；tool handler 进入 Action Runtime facade。
+Brain 不执行底层电机动作，也不定义自己的 tool_call/worker 字段。动作入口是 Claude Agent SDK (Python) MCP tool；tool handler 进入 Action Runtime facade。
 
 ```text
 Brain
@@ -259,12 +271,15 @@ class RobotAction:
 
 ### SDK Native Message Stream
 
-L3 不定义 Reachy 专属 Brain 输出结构或任务字段。`agent.py` 的输出就是 Claude Code Python SDK 原生 message stream：
+L3 不定义 Reachy 专属 Brain 输出结构或任务字段。`agent.py` 的输出就是 Claude Agent SDK (Python) 原生 message stream：
 
 ```python
-from claude_agent_sdk import Message
+from collections.abc import AsyncIterator
+from typing import Any
 
-async def run_turn(...) -> AsyncIterator[Message]:
+async def run_turn(turn_input: BrainTurnInput) -> AsyncIterator[Any]:
+    # yields SDK-native messages: AssistantMessage, ResultMessage,
+    # TaskStartedMessage, TaskProgressMessage, TaskNotificationMessage, etc.
     ...
 ```
 
@@ -448,20 +463,20 @@ class AgentConfig:
 
 | 字段 | 类型 | 含义 |
 |---|---|---|
-| `model` | `ModelConfig` | Brain 主 LLM 配置；按"模型合并规则"从 `kernel_model`/`front_model` 推导。 |
+| `model` | `ModelConfig` | Brain 主 LLM 配置；对应 profile 中 `kind: "model"` 行（兼容旧 `kernel_model`/`front_model`）。 |
 | `speech` | `SpeechConfig` | TTS 输出配置。 |
 | `speech_input` | `SpeechInputConfig` | STT 输入配置。 |
 | `vision` | `VisionConfig` | 视觉输入与跟踪配置。 |
 | `extras` | `dict[str, Any]` | profile 中未识别的 `kind` 行原样透传，用于实验性字段，不参与稳定 API。 |
 
-`ModelConfig`（对应 profile 中 `kernel_model`/`front_model` 行）：
+`ModelConfig`（对应 profile 中 `kind: "model"` 行）：
 
 | 字段 | 类型 | 含义 |
 |---|---|---|
 | `provider` | `str` | LLM 提供方，约定值：`openai`、`anthropic`、`deepseek`、`ollama`、`mock`。 |
 | `model` | `str` | 模型 ID，如 `deepseek-chat`、`claude-opus-4-7`。 |
 | `base_url` | `str \| None` | 自定义 endpoint；`None` 表示用 SDK 默认。 |
-| `api_key_ref` | `str` | API key 的环境变量名或 vault 引用（如 `env:DEEPSEEK_API_KEY`）。**不接受明文 key**——Phase 1 起 profile 必须用引用。 |
+| `api_key_ref` | `str` | API key，支持 `env:VAR_NAME` 引用环境变量、`vault:` 前缀引用 vault、或直接明文。 |
 | `temperature` | `float` | 采样温度，建议 0–1。 |
 | `max_tokens` | `int \| None` | 单次最大输出 token 数；`None` 让 provider 默认。 |
 | `system_prompt_path` | `str \| None` | 相对 profile 根目录的系统提示文件，例如 `profiles/AGENTS.md`。 |
@@ -505,15 +520,15 @@ class AgentConfig:
 | `frame_rate` | `int` | 期望帧率，仅作为 hint。 |
 | `min_confidence` | `float` | 检测置信度阈值，低于不发 `VisionEventFrame`。 |
 
-模型合并规则：
+模型配置规则：
 
-1. 优先使用 `kernel_model`。
-2. 没有 `kernel_model` 时回退到 `front_model`。
+1. Profile 中使用 `{"kind": "model", ...}` 配置唯一的 LLM。
+2. 兼容旧格式：`kernel_model` 或 `front_model` kind 仍可解析，kernel 优先。
 3. Brain runtime 内部不暴露 `ProfileBundle`。
 4. Brain 只读 profile，不写 profile。
 5. 任何字段缺失时使用上方表格中的默认值，并在 logger 中打 `config_default_used` warning。
 
-## 建议目录结构
+## 目录结构
 
 ```text
 src/reachy_mini/
@@ -527,39 +542,41 @@ src/reachy_mini/
 │   ├── errors.py
 │   └── library/
 │       ├── __init__.py
+│       ├── common.py
 │       ├── look_at.py
 │       ├── nod.py
 │       ├── shake_head.py
 │       ├── play_emotion.py
-│       ├── play_dance.py
-│       ├── set_antenna.py
-│       ├── scan_room.py
-│       └── face_track.py
+│       └── set_antenna.py
 │
 ├── reachy_brain/
 │   ├── __init__.py
 │   ├── agent.py              # ClaudeSDKClient + ClaudeAgentOptions
 │   ├── mcp_server.py         # ActionRegistry -> SDK MCP tools
-│   ├── system_prompt.md      # 机器人人格 + coordinator 扩展
-│   ├── config.py             # profiles -> SDK options 适配
-│   └── pipecat_bridge.py     # Pipecat Frame <-> SDK turn/message
+│   ├── config.py             # profiles -> AgentConfig 适配
+│   ├── pipecat_bridge.py     # SDK Message -> pipeline Frame 转换
+│   ├── offline_sdk_client.py # 测试/smoke 用离线 SDK client
+│   └── prompts/
+│       ├── system.md         # 机器人人格 + system prompt
+│       └── worker.md         # background worker prompt
 │
 ├── pipeline/
 │   ├── __init__.py
-│   ├── runner.py
-│   ├── frames.py
-│   ├── brain_processor.py
-│   ├── speech_presenter.py
-│   ├── action_dispatcher.py
-│   ├── stt_funasr.py
-│   ├── tts_kokoro.py
-│   ├── vision_frame.py
-│   └── tick_frame.py
+│   ├── session.py            # RuntimeSession：多轮编排 + barge-in
+│   ├── runner.py             # CLI 入口（单轮 smoke）
+│   ├── frames.py             # 所有 frame 定义（frozen dataclass）
+│   ├── brain_processor.py    # BrainAgent -> SDKMessageFrame
+│   ├── speech_presenter.py   # SDK text -> TTS chunk
+│   ├── action_dispatcher.py  # ActionExecutor facade
+│   ├── output_bus.py         # 多订阅者 fan-out
+│   ├── wire.py               # Frame <-> JSON 序列化（WebSocket 传输）
+│   ├── ws_app.py             # WebSocket 应用层
+│   ├── live_io.py            # 麦克风/扬声器 I/O
+│   ├── stt_funasr.py         # FunASR STT adapter
+│   └── tts_kokoro.py         # Kokoro TTS adapter
 │
-├── core/       # Phase 1 保留，Phase 2 退役
-├── front/      # Phase 1 保留，Phase 2 用 SpeechPresenter 替换
-├── runtime/    # Phase 1 保留旧入口，Phase 2 退役 scheduler
-└── reachy_mini.py / motion / kinematics / io / embodiment
+├── runtime/    # profile loader、web host、embodiment coordinator
+└── reachy_mini.py / motion / kinematics / io
 ```
 
 测试使用仓库现有测试结构：
@@ -578,7 +595,7 @@ tests/unit_tests/pipeline/
 
 ```text
 ActionRegistry
-  -> Claude Code Python SDK tools adapter
+  -> Claude Agent SDK (Python) tools adapter
   -> MCP adapter
   -> CLI/test adapter
   -> Pipecat ActionDispatcher
@@ -627,7 +644,7 @@ Phase 2 才把默认 runtime 切到 v4，并在 smoke case 通过后删除旧层
 | 项 | 值 |
 |---|---|
 | 输入 1 | `TranscriptionFrame(text="巡视一圈")` |
-| 期望事件序列 | Claude Code Python SDK 产生 `TaskStartedMessage` / subagent start hook → `WorkerEventFrame(event="started")` → 多个 SDK MCP action tool calls |
+| 期望事件序列 | Claude Agent SDK (Python) 产生 `TaskStartedMessage` / subagent start hook → `WorkerEventFrame(event="started")` → 多个 SDK MCP action tool calls |
 | 输入 2（5 秒后） | `TranscriptionFrame(text="现在几点")` |
 | 期望并发性断言 | 输入 2 的 SDK `AssistantMessage` 必须在 SDK worker 仍发出 `WorkerEventFrame(event="progress")` 的窗口内产生 |
 | 终止断言 | `WorkerEventFrame(event="completed")` 来自 SDK completion message，含 `status` 与非空 summary |

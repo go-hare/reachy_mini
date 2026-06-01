@@ -3,8 +3,7 @@
 from typing import Any
 
 from .config import (
-    FrontModelConfig,
-    KernelModelConfig,
+    ModelConfig,
     ProfileRuntimeConfig,
     SpeechInputRuntimeConfig,
     SpeechRuntimeConfig,
@@ -21,9 +20,8 @@ from .surface_driver import SurfaceDriver
 __all__ = [
     "AppProject",
     "EmbodimentCoordinator",
-    "FrontModelConfig",
+    "ModelConfig",
     "HostedAppProject",
-    "KernelModelConfig",
     "MovementManager",
     "ProfileBundle",
     "ProfileRuntimeConfig",

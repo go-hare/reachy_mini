@@ -44,25 +44,14 @@ def _resolve_api_key(value: object) -> str:
 
 
 @dataclass(slots=True)
-class FrontModelConfig:
-    """How the front layer should talk to a model."""
+class ModelConfig:
+    """LLM configuration for the runtime."""
 
     provider: str = "mock"
-    model: str = "reachy_mini_front_mock"
+    model: str = "reachy_mini_mock"
     base_url: str = ""
     api_key: str = ""
-    temperature: float = 0.4
-
-
-@dataclass(slots=True)
-class KernelModelConfig:
-    """How the kernel layer should talk to a model."""
-
-    provider: str = "mock"
-    model: str = "reachy_mini_kernel_mock"
-    base_url: str = ""
-    api_key: str = ""
-    temperature: float = 0.2
+    temperature: float = 0.3
 
 
 @dataclass(slots=True)
@@ -117,8 +106,7 @@ class ProfileRuntimeConfig:
     front_mode: str = "text"
     front_style: str = "friendly_concise"
     history_limit: int = 6
-    front_model: FrontModelConfig = field(default_factory=FrontModelConfig)
-    kernel_model: KernelModelConfig = field(default_factory=KernelModelConfig)
+    model: ModelConfig = field(default_factory=ModelConfig)
     vision: VisionRuntimeConfig = field(default_factory=VisionRuntimeConfig)
     speech: SpeechRuntimeConfig = field(default_factory=SpeechRuntimeConfig)
     speech_input: SpeechInputRuntimeConfig = field(default_factory=SpeechInputRuntimeConfig)
@@ -261,43 +249,31 @@ def load_profile_runtime_config(profile: ProfileBundle) -> ProfileRuntimeConfig:
             continue
 
         role = str(record.get("role", "") or "").strip()
-        if kind == "front_model" or (kind == "model" and role in {"", "front"}):
-            config.front_model = FrontModelConfig(
-                provider=str(
-                    record.get("provider", config.front_model.provider)
-                    or config.front_model.provider
-                ),
-                model=str(
-                    record.get("model", config.front_model.model)
-                    or config.front_model.model
-                ),
-                base_url=str(record.get("base_url", config.front_model.base_url) or ""),
-                api_key=_resolve_api_key(
-                    record.get("api_key", config.front_model.api_key)
-                    or config.front_model.api_key
-                ),
-                temperature=float(record.get("temperature", config.front_model.temperature)),
-            )
-            continue
+        is_kernel = kind == "kernel_model" or (kind == "model" and role == "kernel")
+        is_front = kind == "front_model" or (kind == "model" and role in {"", "front"})
 
-        if kind == "kernel_model" or (kind == "model" and role == "kernel"):
-            config.kernel_model = KernelModelConfig(
+        if is_kernel or is_front:
+            incoming = ModelConfig(
                 provider=str(
-                    record.get("provider", config.kernel_model.provider)
-                    or config.kernel_model.provider
+                    record.get("provider", config.model.provider)
+                    or config.model.provider
                 ),
                 model=str(
-                    record.get("model", config.kernel_model.model)
-                    or config.kernel_model.model
+                    record.get("model", config.model.model)
+                    or config.model.model
                 ),
-                base_url=str(record.get("base_url", config.kernel_model.base_url) or ""),
+                base_url=str(record.get("base_url", config.model.base_url) or ""),
                 api_key=_resolve_api_key(
-                    record.get("api_key", config.kernel_model.api_key)
-                    or config.kernel_model.api_key
+                    record.get("api_key", config.model.api_key)
+                    or config.model.api_key
                 ),
-                temperature=float(
-                    record.get("temperature", config.kernel_model.temperature)
-                ),
+                temperature=float(record.get("temperature", config.model.temperature)),
             )
+            if is_kernel:
+                # kernel always wins
+                config.model = incoming
+            elif config.model.provider == "mock":
+                # front only applies if nothing better is set yet
+                config.model = incoming
 
     return config

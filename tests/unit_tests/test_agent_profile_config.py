@@ -38,14 +38,14 @@ def test_load_profile_runtime_config_reads_front_settings(tmp_path: Path) -> Non
     assert config.front_mode == "text"
     assert config.front_style == "warm_precise"
     assert config.history_limit == 8
-    assert config.front_model.provider == "ollama"
-    assert config.front_model.model == "qwen2.5:7b"
-    assert config.front_model.base_url == "http://127.0.0.1:11434"
-    assert config.front_model.temperature == 0.2
+    assert config.model.provider == "ollama"
+    assert config.model.model == "qwen2.5:7b"
+    assert config.model.base_url == "http://127.0.0.1:11434"
+    assert config.model.temperature == 0.2
 
 
-def test_load_profile_runtime_config_reads_kernel_settings(tmp_path: Path) -> None:
-    """Parse kernel settings from config.jsonl."""
+def test_load_profile_runtime_config_kernel_overrides_front(tmp_path: Path) -> None:
+    """When both front_model and kernel_model exist, kernel wins."""
     profile_root = tmp_path / "demo"
     profile_root.mkdir()
     _write_profile(
@@ -59,12 +59,11 @@ def test_load_profile_runtime_config_reads_kernel_settings(tmp_path: Path) -> No
     profile = load_profile_bundle(profile_root)
     config = load_profile_runtime_config(profile)
 
-    assert config.front_model.model == "front-demo"
-    assert config.kernel_model.provider == "openai"
-    assert config.kernel_model.model == "gpt-4.1-mini"
-    assert config.kernel_model.base_url == "https://example.com/v1"
-    assert config.kernel_model.api_key == "kernel-secret"
-    assert config.kernel_model.temperature == 0.1
+    assert config.model.provider == "openai"
+    assert config.model.model == "gpt-4.1-mini"
+    assert config.model.base_url == "https://example.com/v1"
+    assert config.model.api_key == "kernel-secret"
+    assert config.model.temperature == 0.1
 
 
 def test_load_profile_runtime_config_resolves_env_api_key(
@@ -78,16 +77,14 @@ def test_load_profile_runtime_config_resolves_env_api_key(
     _write_profile(
         profile_root,
         config_jsonl=(
-            '{"kind":"front_model","provider":"openai","model":"front","api_key":"env:DEMO_RUNTIME_KEY"}\n'
-            '{"kind":"kernel_model","provider":"openai","model":"kernel","api_key":"env:DEMO_RUNTIME_KEY"}\n'
+            '{"kind":"model","provider":"openai","model":"demo","api_key":"env:DEMO_RUNTIME_KEY"}\n'
         ),
     )
 
     profile = load_profile_bundle(profile_root)
     config = load_profile_runtime_config(profile)
 
-    assert config.front_model.api_key == "resolved-runtime-secret"
-    assert config.kernel_model.api_key == "resolved-runtime-secret"
+    assert config.model.api_key == "resolved-runtime-secret"
 
 
 def test_load_profile_runtime_config_reads_vision_settings(tmp_path: Path) -> None:

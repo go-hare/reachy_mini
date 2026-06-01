@@ -8,7 +8,6 @@ import pytest
 
 from reachy_mini.reachy_brain.config import (
     MissingApiKeyError,
-    PlaintextApiKeyError,
     from_profile,
 )
 
@@ -80,15 +79,15 @@ def test_from_profile_rejects_missing_env_key(
         from_profile(profile_root)
 
 
-def test_from_profile_rejects_plaintext_sk_key(tmp_path: Path) -> None:
-    """Plaintext sk-* keys are rejected in strict mode."""
+def test_from_profile_accepts_plaintext_key(tmp_path: Path) -> None:
+    """Plaintext keys are accepted for self-hosted proxies."""
     profile_root = _write_config(
         tmp_path,
         ['{"kind":"kernel_model","provider":"openai","model":"demo","api_key":"sk-secret"}'],
     )
 
-    with pytest.raises(PlaintextApiKeyError):
-        from_profile(profile_root)
+    config = from_profile(profile_root)
+    assert config.model.api_key == "sk-secret"
 
 
 def test_from_profile_applies_dot_overrides(tmp_path: Path) -> None:

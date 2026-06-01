@@ -4,6 +4,18 @@
 
 Phase 2 的前置条件来自架构文档：v4 opt-in path 稳定、四个 smoke case 通过、profile loader 兼容性已验证、旧 runtime regression 用例仍绿。
 
+命名约定：本文中的 **Claude Agent SDK (Python)** 就是用户语境里的 **Claude Code Python SDK**，对应 `claude-agent-sdk` / `claude_agent_sdk`。Phase 2 删除的是旧 Reachy runtime/front/kernel 分层，不是删除 Claude Agent SDK (Python)、`profiles/` 或 L1 Action Runtime。
+
+Phase 2 的“删旧层”只允许发生在下列替换关系已经成立之后：
+
+| 被删除/退役 | 替代者 | 不变资产 |
+|---|---|---|
+| `BrainKernel` / front+kernel 双 LLM | L3 `reachy_brain.agent.BrainAgent` + Claude Agent SDK (Python) | Claude Agent SDK (Python) 是 Brain 主运行时，不能退回 mock。 |
+| `RuntimeScheduler` | L2 `pipeline.session.RuntimeSession` | Pipecat/frame routing 仍是实时流中枢。 |
+| `front_*` websocket 协议 | SDK-first frame wire protocol | 浏览器仍连接 app runtime，但消息以 SDK/native frame 表示。 |
+| 旧 action/tool shim | L1 `action_runtime.ActionExecutor` | `RobotAction`、`ActionRegistry`、`MotorLockManager` 是核心资产。 |
+| 旧 app runtime wiring | `profiles/<app>/` 只读适配到 `AgentConfig` | `profiles/` 不删、不迁移成其它产品边界。 |
+
 ## Phase 2 目标
 
 - L3/L2/L1 是**唯一**实现：`reachy_brain.agent.BrainAgent` + `pipeline.session.RuntimeSession` + `action_runtime.ActionExecutor`。
@@ -39,16 +51,18 @@ Phase 2 的前置条件来自架构文档：v4 opt-in path 稳定、四个 smoke
 - Phase 1 已交付的 ActionRuntime / Brain / Pipeline frame contract（仅可补丁，不改字段名）
 - Phase 1 已交付的 5 个内置动作
 - profile 文件格式迁移
-- Pipecat / Claude Code Python SDK 的版本升级
+- Pipecat / Claude Agent SDK (Python) 的版本升级
 - React `ui/robot-workbench/` 的桌面 UI（不消费 app websocket，不在本计划范围；其改造在 Phase 3）
 
-## 当前已知差距
+## Phase 2 入口差距
+
+下表描述的是“刚进入 Phase 2 时”需要补齐的差距。若当前分支已经完成其中某项（例如 `reachy-mini-agent agent` 已经默认构造 `RuntimeSession`），以 live code 为准，不要反向恢复旧命令或旧层。
 
 | 能力 | Phase 1 状态 | Phase 2 必须做到 |
 |---|---|---|
 | 单轮 text 模式 | `pipeline/runner.py:run_text_turn` 已能跑 | 保留作为 smoke 入口，复用同一 BrainProcessor |
 | 多轮 session | 无 | 新增 `pipeline.session.RuntimeSession` |
-| Worker 跨 turn | Claude Code Python SDK `AgentDefinition` / task message 已接入 | 在 session 内常驻，独立于 main loop；不新增 Reachy 侧任务调度模块 |
+| Worker 跨 turn | Claude Agent SDK (Python) `AgentDefinition` / task message 已接入 | 在 session 内常驻，独立于 main loop；不新增 Reachy 侧任务调度模块 |
 | Live mic→speaker | `pipeline/stt_funasr.py`/`tts_kokoro.py` 是 stub | 串成 session loop（live_io.py） |
 | Barge-in 路径 | frame contract 已定，executor 支持 cancel | session 把 `SpeechActivityFrame` 路由到 `InterruptFrame` |
 | Browser ↔ runtime 协议 | 旧协议 `front_*` | 直接 frame 序列化（见 §Wire 协议） |
@@ -146,7 +160,7 @@ tests/unit_tests/migration/
 
 | `type` | payload 结构 | 对应内部 frame |
 |---|---|---|
-| `sdk_message` | Claude Code Python SDK `Message` 的可序列化 payload，字段名保持 SDK 原样 | `SDKMessageFrame` |
+| `sdk_message` | Claude Agent SDK (Python) `Message` 的可序列化 payload，字段名保持 SDK 原样 | `SDKMessageFrame` |
 | `action_result` | `{ "request_id", "name", "owner_id", "status", "duration_ms", "error" }` | `ActionResultFrame` |
 | `worker_event` | `{ "task_id", "event", "payload": { "note", "progress", "metrics", "error" }, "ts_ms" }` | `WorkerEventFrame` |
 | `tts_audio` | `{ "pcm_b64": str, "sample_rate": int, "turn_id": str, "is_final": bool }` | `TTSAudioFrame` |
@@ -171,7 +185,7 @@ tests/unit_tests/migration/
 
 ### Slice 2-S1：RuntimeSession
 
-目标：v4 能跑超过一个 turn，Claude Code Python SDK session 与 SDK worker/sub-agent 在 session 内常驻。
+目标：v4 能跑超过一个 turn，Claude Agent SDK (Python) session 与 SDK worker/sub-agent 在 session 内常驻。
 
 文件：
 
@@ -212,7 +226,7 @@ class RuntimeSession:
 
 | 方法 | 含义 |
 |---|---|
-| `from_profile` | `AgentConfig.from_profile` + 注册内置动作 + 实例化 BrainProcessor / SpeechPresenter / ActionDispatcher / OutputBus；worker/sub-agent 由 Claude Code Python SDK 承载。 |
+| `from_profile` | `AgentConfig.from_profile` + 注册内置动作 + 实例化 BrainProcessor / SpeechPresenter / ActionDispatcher / OutputBus；worker/sub-agent 由 Claude Agent SDK (Python) 承载。 |
 | `start` / `stop` | 启停 long-running tasks（SDK client/session、tick、output bus、live_io）。idempotent。 |
 | `submit_*` | 入站 frame 的统一入口，立即返回（异步 schedule）。`submit_text` 是 `submit_browser_input(kind="text")` 的便捷包装。 |
 | `subscribe` | 返回 `OutputSubscription`；同一份 frame fan-out 给所有订阅者。 |
@@ -475,7 +489,7 @@ CLI 变化：
 - v4 主路径 lint 无错误：`pipeline/`、`reachy_brain/`、`action_runtime/` 必须通过 ruff；`apps/` 与 `runtime/` 至少通过非 docstring 规则（历史 runtime 文档风格债不作为 L3/Phase 2 SDK-first 切换的兼容理由）。
 - `pytest tests/unit_tests` 全绿。
 - `grep -R "RuntimeScheduler\|BrainKernel\|companion\.intent\|reachy_mini\.front\|front_hint_chunk\|front_final_chunk\|front_decision\|front_tool_result" src/ tests/ profiles/ docs/` 仅命中本计划文档自身。
-- `reachy-mini-agent agent profiles/sim_front_app --message "hi"` 真实走 Claude Code Python SDK；若本机缺 profile 引用的真实 secret（例如 `DEEPSEEK_API_KEY`），该 smoke 必须失败并暴露环境错误，不能静默注入 offline fake。
+- `reachy-mini-agent agent profiles/sim_front_app --message "hi"` 真实走 Claude Agent SDK (Python)；若本机缺 profile 引用的真实 secret（例如 `DEEPSEEK_API_KEY`），该 smoke 必须失败并暴露环境错误，不能静默注入 offline fake。
 - 浏览器 `/ws/agent` 收发 v4 frame。
 
 ## Smoke Case 增量
@@ -495,7 +509,7 @@ Phase 1 SC-1 ~ SC-4 全部继续运行；Phase 2 在 `tests/unit_tests/migration
 
 | 项 | 值 |
 |---|---|
-| 输入 1 | `submit_text("巡视一圈")` → Claude Code Python SDK 启动 background subagent |
+| 输入 1 | `submit_text("巡视一圈")` → Claude Agent SDK (Python) 启动 background subagent |
 | 输入 2 | 5 s 后 `submit_text("现在几点")` |
 | 期望 | T2 的 SDK `AssistantMessage` 在 worker 仍 progress 时产出 |
 | 终止 | SDK completion message 原样进入 `WorkerEventFrame.payload`；下一轮 SDK context 能看到 completion summary |
@@ -585,7 +599,7 @@ grep -RInE "front_hint_chunk|front_final_chunk|front_decision|front_tool_result|
 Phase 2 完成后才允许：
 
 - 改造 React `ui/robot-workbench/`（与 app websocket 协议无关，但与 daemon 协议有关）。
-- 评估 `core/turns.py` / `core/memory.py` / `core/run_store.py` 是否由 Claude Code Python SDK session APIs 或 profile/app memory 取代；不默认在 L3 新增任务记忆模块。
+- 评估 `core/turns.py` / `core/memory.py` / `core/run_store.py` 是否由 Claude Agent SDK (Python) session APIs 或 profile/app memory 取代；不默认在 L3 新增任务记忆模块。
 - 评估 `runtime/speech_session.py` / `runtime/reply_audio.py` 是否在 `live_io.py` 完全覆盖后退役。
 - 引入 MCP server / 远端 agent / 多机部署。
 

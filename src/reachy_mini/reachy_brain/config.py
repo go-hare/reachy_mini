@@ -18,15 +18,11 @@ class AgentConfigError(ValueError):
 
 
 class MissingModelConfigError(AgentConfigError):
-    """Raised when neither kernel_model nor front_model exists."""
+    """Raised when no model config exists in the profile."""
 
 
 class MissingApiKeyError(AgentConfigError):
     """Raised when an env-based API key reference cannot be resolved."""
-
-
-class PlaintextApiKeyError(AgentConfigError):
-    """Raised when a profile contains a plaintext API key in strict mode."""
 
 
 @dataclass(frozen=True)
@@ -111,8 +107,7 @@ def from_profile(
 
 
 def _config_from_records(records: list[dict[str, Any]]) -> AgentConfig:
-    kernel_model: dict[str, Any] | None = None
-    front_model: dict[str, Any] | None = None
+    model_record: dict[str, Any] | None = None
     speech_record: dict[str, Any] | None = None
     speech_input_record: dict[str, Any] | None = None
     vision_record: dict[str, Any] | None = None
@@ -121,10 +116,12 @@ def _config_from_records(records: list[dict[str, Any]]) -> AgentConfig:
     for record in records:
         kind = str(record.get("kind", "") or "").strip()
         role = str(record.get("role", "") or "").strip()
-        if kind == "kernel_model" or (kind == "model" and role == "kernel"):
-            kernel_model = record
-        elif kind == "front_model" or (kind == "model" and role in {"", "front"}):
-            front_model = record
+        is_kernel = kind == "kernel_model" or (kind == "model" and role == "kernel")
+        is_front = kind == "front_model" or (kind == "model" and role in {"", "front"})
+        if is_kernel:
+            model_record = record
+        elif is_front and model_record is None:
+            model_record = record
         elif kind == "speech":
             speech_record = record
         elif kind == "speech_input":
@@ -134,12 +131,9 @@ def _config_from_records(records: list[dict[str, Any]]) -> AgentConfig:
         elif kind not in {"profile", "front", ""}:
             extras.setdefault(kind, []).append(dict(record))
 
-    model_record = kernel_model or front_model
     if model_record is None:
-        raise MissingModelConfigError("Missing kernel_model/front_model profile config.")
+        raise MissingModelConfigError("Missing model config in profile.")
 
-    if kernel_model is None:
-        LOGGER.warning("config_default_used: kernel_model missing, using front_model")
     if speech_record is None:
         LOGGER.warning("config_default_used: speech missing")
     if speech_input_record is None:
@@ -251,9 +245,6 @@ def _resolve_api_key(raw_value: object, *, provider: str) -> tuple[str, str]:
         return raw, value
     if raw.startswith("vault:"):
         return raw, ""
-    if raw.startswith("sk-") and os.environ.get("REACHY_ALLOW_PLAINTEXT_KEY") != "1":
-        LOGGER.error("Plaintext API key rejected for provider %s", provider)
-        raise PlaintextApiKeyError("Plaintext API keys are not allowed in v4 profiles.")
     return raw, raw
 
 
