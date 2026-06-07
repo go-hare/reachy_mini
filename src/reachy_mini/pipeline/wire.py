@@ -16,6 +16,7 @@ from .frames import (
     ActionResultFrame,
     AudioFrame,
     BrowserInputFrame,
+    CameraFrame,
     InterruptFrame,
     PipelineErrorFrame,
     SDKMessageFrame,
@@ -38,6 +39,9 @@ LEGACY_INBOUND_TYPES = frozenset(
         "browser_audio_stop",
     }
 )
+CAMERA_FRAME_MAX_B64_CHARS = 750_000
+CAMERA_FRAME_MAX_DIMENSION = 1920
+CAMERA_FRAME_MIME_TYPES = frozenset({"image/jpeg", "image/jpg"})
 
 
 class WireSerializationError(ValueError):
@@ -159,7 +163,9 @@ def encode_frame(frame: Any) -> dict[str, Any]:
                 "metadata": _to_jsonable(frame.metadata),
             },
         )
-    raise WireSerializationError(f"Unsupported outbound frame type: {type(frame).__name__}")
+    raise WireSerializationError(
+        f"Unsupported outbound frame type: {type(frame).__name__}"
+    )
 
 
 def decode_inbound(message: Mapping[str, Any]) -> Any:
@@ -204,7 +210,9 @@ def decode_inbound(message: Mapping[str, Any]) -> Any:
     if type_name == "speech_activity":
         state = str(payload.get("state") or "").strip()
         if state not in {"start", "end"}:
-            raise WireDecodeError(f"speech_activity.state must be start or end, got {state!r}.")
+            raise WireDecodeError(
+                f"speech_activity.state must be start or end, got {state!r}."
+            )
         return SpeechActivityFrame(state=state, ts_ms=ts_ms)
     if type_name == "transcription":
         return TranscriptionFrame(
@@ -222,6 +230,8 @@ def decode_inbound(message: Mapping[str, Any]) -> Any:
             payload=dict(inner),
             ts_ms=ts_ms,
         )
+    if type_name == "camera_frame":
+        return _decode_camera_frame(payload, ts_ms=ts_ms)
     if type_name == "ping":
         return _Ping()
     if type_name == "pong":
@@ -242,10 +252,49 @@ class _AudioStop:
 
 
 def _is_legacy_inbound_type(type_name: str) -> bool:
-    return type_name in LEGACY_INBOUND_TYPES or type_name.startswith(LEGACY_INBOUND_PREFIXES)
+    return type_name in LEGACY_INBOUND_TYPES or type_name.startswith(
+        LEGACY_INBOUND_PREFIXES
+    )
 
 
-def _envelope(type_name: str, payload: dict[str, Any], *, ts_ms: int | None = None) -> dict[str, Any]:
+def _decode_camera_frame(payload: Mapping[str, Any], *, ts_ms: int) -> CameraFrame:
+    image_b64 = payload.get("image_b64")
+    if not isinstance(image_b64, str) or not image_b64.strip():
+        raise WireDecodeError("camera_frame.image_b64 must be a non-empty string.")
+    image_b64 = image_b64.strip()
+    if len(image_b64) > CAMERA_FRAME_MAX_B64_CHARS:
+        raise WireDecodeError("camera_frame.image_b64 is too large.")
+
+    mime_type = str(payload.get("mime_type") or "image/jpeg").strip().lower()
+    if mime_type not in CAMERA_FRAME_MIME_TYPES:
+        raise WireDecodeError(f"Unsupported camera_frame.mime_type: {mime_type!r}.")
+
+    width = _coerce_camera_dimension(payload.get("width"), "width")
+    height = _coerce_camera_dimension(payload.get("height"), "height")
+    return CameraFrame(
+        image_b64=image_b64,
+        mime_type=mime_type,
+        width=width,
+        height=height,
+        ts_ms=ts_ms,
+    )
+
+
+def _coerce_camera_dimension(value: Any, name: str) -> int:
+    try:
+        dimension = int(value)
+    except (TypeError, ValueError) as exc:
+        raise WireDecodeError(f"camera_frame.{name} must be an integer.") from exc
+    if dimension <= 0 or dimension > CAMERA_FRAME_MAX_DIMENSION:
+        raise WireDecodeError(
+            f"camera_frame.{name} must be between 1 and {CAMERA_FRAME_MAX_DIMENSION}."
+        )
+    return dimension
+
+
+def _envelope(
+    type_name: str, payload: dict[str, Any], *, ts_ms: int | None = None
+) -> dict[str, Any]:
     envelope: dict[str, Any] = {"type": type_name}
     if ts_ms is not None:
         envelope["ts_ms"] = int(ts_ms)
@@ -322,4 +371,6 @@ def _to_jsonable(value: Any) -> Any:
         return {key: _to_jsonable(item) for key, item in value.__dict__.items()}
     if hasattr(value, "__dict__"):
         return {key: _to_jsonable(item) for key, item in value.__dict__.items()}
-    raise WireSerializationError(f"Cannot serialize value of type {type(value).__name__}")
+    raise WireSerializationError(
+        f"Cannot serialize value of type {type(value).__name__}"
+    )

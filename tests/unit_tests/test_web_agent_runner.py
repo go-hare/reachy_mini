@@ -9,7 +9,12 @@ from fastapi.testclient import TestClient
 from reachy_mini.pipeline.session import RuntimeSession
 from reachy_mini.reachy_brain.offline_sdk_client import OfflineSDKClient
 from reachy_mini.runtime.project import create_app_project, inspect_app_project
-from reachy_mini.runtime.web import build_web_host, resolve_web_binding
+from reachy_mini.runtime.web import (
+    HOST_ONLY_MINI_MAX_CALLS,
+    HostOnlyMini,
+    build_web_host,
+    resolve_web_binding,
+)
 
 
 def test_resolve_web_binding_maps_wildcard_bind_to_local_browser_url(
@@ -85,3 +90,14 @@ def test_host_only_web_launcher_streams_generated_app(tmp_path: Path) -> None:
     finally:
         stop_event.set()
         worker.join(timeout=5.0)
+
+
+def test_host_only_mini_keeps_bounded_call_history() -> None:
+    """Host-only movement no-op should not grow call history forever."""
+    mini = HostOnlyMini()
+
+    for index in range(HOST_ONLY_MINI_MAX_CALLS + 5):
+        mini.goto_target(index=index)
+
+    assert len(mini.calls) == HOST_ONLY_MINI_MAX_CALLS
+    assert mini.calls[0]["kwargs"]["index"] == 5

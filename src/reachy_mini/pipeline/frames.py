@@ -46,6 +46,17 @@ class VisionEventFrame:
 
 
 @dataclass(frozen=True)
+class CameraFrame:
+    """Browser-provided camera frame for local reactive vision."""
+
+    image_b64: str
+    mime_type: str
+    width: int
+    height: int
+    ts_ms: int
+
+
+@dataclass(frozen=True)
 class TickFrame:
     """Internal timer tick."""
 

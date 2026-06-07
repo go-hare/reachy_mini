@@ -8,20 +8,31 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from fastapi import WebSocket
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from sdk_fakes import ScriptedSDKClient, agent_config, assistant_message, result_message  # noqa: E402
+from sdk_fakes import (  # noqa: E402
+    ScriptedSDKClient,
+    agent_config,
+    assistant_message,
+    result_message,
+)
 
 from reachy_mini.action_runtime import ActionExecutor  # noqa: E402
 from reachy_mini.action_runtime.library import create_builtin_registry  # noqa: E402
+from reachy_mini.pipeline import ws_app as ws_app_module  # noqa: E402
 from reachy_mini.pipeline.action_dispatcher import ActionDispatcher  # noqa: E402
+from reachy_mini.pipeline.frames import CameraFrame  # noqa: E402
 from reachy_mini.pipeline.session import RuntimeSession  # noqa: E402
 from reachy_mini.pipeline.speech_presenter import SpeechPresenter  # noqa: E402
 from reachy_mini.pipeline.tts_kokoro import KokoroAdapter  # noqa: E402
-from reachy_mini.pipeline import ws_app as ws_app_module  # noqa: E402
-from reachy_mini.pipeline.ws_app import build_ws_app, run_ws_app  # noqa: E402
+from reachy_mini.pipeline.ws_app import (  # noqa: E402
+    _serve_websocket_with_handler,
+    build_ws_app,
+    run_ws_app,
+)
 from reachy_mini.reachy_brain.agent import BrainAgent  # noqa: E402
 
 
@@ -36,7 +47,33 @@ class _FakeMini:
         return [0.0, 0.0]
 
 
-def _build_session(scripts: list[list[Any]] | None = None) -> RuntimeSession:
+class _DelayedSDKClient(ScriptedSDKClient):
+    """SDK fake that stays busy long enough for heartbeat traffic."""
+
+    async def receive_response(self):
+        """Yield a normal response after the server heartbeat has fired."""
+        await asyncio.sleep(0.08)
+        yield assistant_message("slow hi", session_id="T1")
+        yield result_message(session_id="T1")
+
+
+class _BlockingSDKClient(ScriptedSDKClient):
+    """SDK fake that blocks until the test explicitly releases it."""
+
+    gate: asyncio.Event | None = None
+
+    async def receive_response(self):
+        """Wait for the test gate before yielding a normal response."""
+        assert self.gate is not None
+        await self.gate.wait()
+        yield assistant_message("unblocked", session_id="T1")
+        yield result_message(session_id="T1")
+
+
+def _build_session(
+    scripts: list[list[Any]] | None = None,
+    client_factory_override: Any | None = None,
+) -> RuntimeSession:
     config = agent_config(speech_enabled=False)
     registry = create_builtin_registry()
     executor = ActionExecutor(registry=registry, mini=_FakeMini())
@@ -45,10 +82,14 @@ def _build_session(scripts: list[list[Any]] | None = None) -> RuntimeSession:
         config=config,
         registry=registry,
         run_action=actions.run_action,
-        client_factory=lambda options: ScriptedSDKClient(
-            options,
-            scripts=scripts or [],
-            action_runner=actions.run_action,
+        client_factory=(
+            client_factory_override
+            if client_factory_override is not None
+            else lambda options: ScriptedSDKClient(
+                options,
+                scripts=scripts or [],
+                action_runner=actions.run_action,
+            )
         ),
     )
     return RuntimeSession(
@@ -118,6 +159,122 @@ async def test_ping_returns_pong() -> None:
 
 
 @pytest.mark.asyncio
+async def test_camera_frame_can_be_consumed_by_runtime_inbound_handler() -> None:
+    """A custom app websocket handler can consume browser-fed camera frames."""
+    session = _build_session()
+    await session.start()
+    captured: list[CameraFrame] = []
+
+    async def handle_inbound(frame: Any) -> bool:
+        if isinstance(frame, CameraFrame):
+            captured.append(frame)
+            return True
+        return False
+
+    app = build_ws_app(session)
+
+    @app.websocket("/ws/agent-with-camera")
+    async def runtime_socket(websocket: WebSocket) -> None:
+        await _serve_websocket_with_handler(
+            session,
+            websocket,
+            inbound_handler=handle_inbound,
+        )
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/agent-with-camera") as ws:
+            ws.send_json(
+                {
+                    "type": "camera_frame",
+                    "ts_ms": 300,
+                    "payload": {
+                        "image_b64": "abcd",
+                        "mime_type": "image/jpeg",
+                        "width": 320,
+                        "height": 180,
+                    },
+                }
+            )
+            for _ in range(20):
+                if captured:
+                    break
+                await asyncio.sleep(0.01)
+
+    assert len(captured) == 1
+    assert captured[0].image_b64 == "abcd"
+    assert captured[0].width == 320
+
+    await session.stop()
+
+
+@pytest.mark.asyncio
+async def test_camera_frame_handler_is_not_blocked_by_slow_brain_turn() -> None:
+    """camera_frame should not queue behind a slow browser_input turn."""
+    gate = asyncio.Event()
+    _BlockingSDKClient.gate = gate
+    session = _build_session(
+        client_factory_override=lambda options: _BlockingSDKClient(
+            options,
+            action_runner=lambda _spec: None,
+        )
+    )
+    await session.start()
+    captured: list[CameraFrame] = []
+
+    async def handle_inbound(frame: Any) -> bool:
+        if isinstance(frame, CameraFrame):
+            captured.append(frame)
+            return True
+        return False
+
+    app = build_ws_app(session)
+
+    @app.websocket("/ws/agent-with-camera")
+    async def runtime_socket(websocket: WebSocket) -> None:
+        await _serve_websocket_with_handler(
+            session,
+            websocket,
+            inbound_handler=handle_inbound,
+        )
+
+    try:
+        with TestClient(app) as client:
+            with client.websocket_connect("/ws/agent-with-camera") as ws:
+                ws.send_json(
+                    {
+                        "type": "browser_input",
+                        "ts_ms": 1,
+                        "payload": {
+                            "kind": "text",
+                            "session_id": "S1",
+                            "payload": {"text": "hi", "turn_id": "T1"},
+                        },
+                    }
+                )
+                ws.send_json(
+                    {
+                        "type": "camera_frame",
+                        "ts_ms": 300,
+                        "payload": {
+                            "image_b64": "abcd",
+                            "mime_type": "image/jpeg",
+                            "width": 320,
+                            "height": 180,
+                        },
+                    }
+                )
+                for _ in range(20):
+                    if captured:
+                        break
+                    await asyncio.sleep(0.01)
+                assert captured
+                gate.set()
+    finally:
+        _BlockingSDKClient.gate = None
+        await session.stop()
+
+
+@pytest.mark.asyncio
 async def test_server_heartbeat_sends_ping_and_accepts_pong(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -133,6 +290,54 @@ async def test_server_heartbeat_sends_ping_and_accepts_pong(
             envelope = ws.receive_json()
             assert envelope == {"type": "ping", "payload": {}}
             ws.send_json({"type": "pong", "payload": {}})
+
+    await session.stop()
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_pong_is_processed_while_brain_turn_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A slow brain turn must not block inbound pong handling."""
+    monkeypatch.setattr(ws_app_module, "HEARTBEAT_INTERVAL_S", 0.01)
+    monkeypatch.setattr(ws_app_module, "HEARTBEAT_TIMEOUT_S", 0.2)
+    session = _build_session(
+        client_factory_override=lambda options: _DelayedSDKClient(
+            options,
+            action_runner=lambda _spec: None,
+        )
+    )
+    await session.start()
+    app = build_ws_app(session)
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/agent") as ws:
+            ws.send_json(
+                {
+                    "type": "browser_input",
+                    "ts_ms": 1,
+                    "payload": {
+                        "kind": "text",
+                        "session_id": "S1",
+                        "payload": {"text": "hi", "turn_id": "T1"},
+                    },
+                }
+            )
+            seen_ping = False
+            seen_sdk = False
+            for _ in range(20):
+                envelope = ws.receive_json()
+                if envelope["type"] == "ping":
+                    seen_ping = True
+                    ws.send_json({"type": "pong", "payload": {}})
+                    continue
+                if envelope["type"] == "sdk_message":
+                    seen_sdk = True
+                    assert envelope["payload"]["content"][0]["text"] == "slow hi"
+                    break
+
+            assert seen_ping
+            assert seen_sdk
 
     await session.stop()
 

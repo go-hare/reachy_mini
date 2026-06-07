@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import uvicorn
@@ -13,6 +14,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from .frames import (
     AudioFrame,
     BrowserInputFrame,
+    CameraFrame,
     PipelineErrorFrame,
     SpeechActivityFrame,
     TranscriptionFrame,
@@ -34,6 +36,7 @@ LOGGER = logging.getLogger(__name__)
 WS_PATH = "/ws/agent"
 HEARTBEAT_INTERVAL_S = 15.0
 HEARTBEAT_TIMEOUT_S = 5.0
+InboundFrameHandler = Callable[[Any], bool | Awaitable[bool]]
 
 
 def build_ws_app(session: RuntimeSession, *, path: str = WS_PATH) -> FastAPI:
@@ -71,11 +74,23 @@ async def run_ws_app(
 
 async def _serve_websocket(session: RuntimeSession, websocket: WebSocket) -> None:
     """Accept one websocket connection and pump frames in both directions."""
+    await _serve_websocket_with_handler(session, websocket, inbound_handler=None)
+
+
+async def _serve_websocket_with_handler(
+    session: RuntimeSession,
+    websocket: WebSocket,
+    *,
+    inbound_handler: InboundFrameHandler | None = None,
+) -> None:
+    """Accept one websocket connection and pump frames with an optional hook."""
     await websocket.accept()
     sub = session.subscribe()
     pong_event = asyncio.Event()
     pong_event.set()
     send_lock = asyncio.Lock()
+    route_lock = asyncio.Lock()
+    route_tasks: set[asyncio.Task[None]] = set()
     send_task = asyncio.create_task(_send_loop(websocket, sub, send_lock))
     heartbeat_task = asyncio.create_task(
         _heartbeat_loop(
@@ -87,16 +102,25 @@ async def _serve_websocket(session: RuntimeSession, websocket: WebSocket) -> Non
         )
     )
     try:
-        await _recv_loop(session, websocket, pong_event, send_lock)
+        await _recv_loop(
+            session,
+            websocket,
+            pong_event,
+            send_lock,
+            route_lock,
+            route_tasks,
+            inbound_handler,
+        )
     except WebSocketDisconnect:
         return
     finally:
-        for task in (send_task, heartbeat_task):
+        for task in route_tasks:
             task.cancel()
-        with contextlib.suppress(asyncio.CancelledError, BaseException):
-            await send_task
-        with contextlib.suppress(asyncio.CancelledError, BaseException):
-            await heartbeat_task
+        for task in (send_task, heartbeat_task, *route_tasks):
+            task.cancel()
+        for task in (send_task, heartbeat_task, *route_tasks):
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
         session.unsubscribe(sub)
 
 
@@ -105,6 +129,9 @@ async def _recv_loop(
     websocket: WebSocket,
     pong_event: asyncio.Event,
     send_lock: asyncio.Lock,
+    route_lock: asyncio.Lock,
+    route_tasks: set[asyncio.Task[None]],
+    inbound_handler: InboundFrameHandler | None,
 ) -> None:
     while True:
         try:
@@ -114,7 +141,11 @@ async def _recv_loop(
         try:
             frame = decode_inbound(message)
         except WireDecodeError as exc:
-            reason = "legacy_protocol_rejected" if "Legacy protocol" in str(exc) else str(exc)
+            reason = (
+                "legacy_protocol_rejected"
+                if "Legacy protocol" in str(exc)
+                else str(exc)
+            )
             await _emit_error(websocket, "wire", reason)
             await websocket.close(code=1003)
             return
@@ -130,10 +161,78 @@ async def _recv_loop(
             # Audio capture is stream-driven; reaching here just means the
             # browser stopped pushing chunks. Nothing to do server-side.
             continue
-        await _route_inbound(session, frame)
+        if isinstance(frame, CameraFrame):
+            _schedule_route(
+                session,
+                frame,
+                route_lock=None,
+                route_tasks=route_tasks,
+                inbound_handler=inbound_handler,
+            )
+            continue
+        _schedule_route(
+            session,
+            frame,
+            route_lock=route_lock,
+            route_tasks=route_tasks,
+            inbound_handler=inbound_handler,
+        )
 
 
-async def _route_inbound(session: RuntimeSession, frame: Any) -> None:
+def _schedule_route(
+    session: RuntimeSession,
+    frame: Any,
+    route_lock: asyncio.Lock | None,
+    route_tasks: set[asyncio.Task[None]],
+    inbound_handler: InboundFrameHandler | None,
+) -> None:
+    task = asyncio.create_task(
+        _route_inbound_serialized(session, frame, route_lock, inbound_handler)
+    )
+    route_tasks.add(task)
+    task.add_done_callback(lambda completed: _finish_route_task(completed, route_tasks))
+
+
+def _finish_route_task(
+    task: asyncio.Task[None],
+    route_tasks: set[asyncio.Task[None]],
+) -> None:
+    route_tasks.discard(task)
+    try:
+        exc = task.exception()
+    except asyncio.CancelledError:
+        return
+    if exc is not None:
+        LOGGER.error(
+            "Inbound route task failed",
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+
+
+async def _route_inbound_serialized(
+    session: RuntimeSession,
+    frame: Any,
+    route_lock: asyncio.Lock | None,
+    inbound_handler: InboundFrameHandler | None,
+) -> None:
+    if route_lock is None:
+        await _route_inbound(session, frame, inbound_handler)
+        return
+    async with route_lock:
+        await _route_inbound(session, frame, inbound_handler)
+
+
+async def _route_inbound(
+    session: RuntimeSession,
+    frame: Any,
+    inbound_handler: InboundFrameHandler | None = None,
+) -> None:
+    if inbound_handler is not None:
+        handled = inbound_handler(frame)
+        if asyncio.iscoroutine(handled):
+            handled = await handled
+        if handled:
+            return
     if isinstance(frame, BrowserInputFrame):
         await session.submit_browser_input(frame)
         return
@@ -149,6 +248,8 @@ async def _route_inbound(session: RuntimeSession, frame: Any) -> None:
     if isinstance(frame, VisionEventFrame):
         await session.submit_vision_event(frame)
         return
+    if isinstance(frame, CameraFrame):
+        return
     LOGGER.warning("Unhandled inbound frame: %s", type(frame).__name__)
 
 
@@ -162,7 +263,9 @@ async def _send_loop(
         try:
             envelope = encode_frame(frame)
         except WireSerializationError as exc:
-            LOGGER.warning("Skipping non-serializable frame %s: %s", type(frame).__name__, exc)
+            LOGGER.warning(
+                "Skipping non-serializable frame %s: %s", type(frame).__name__, exc
+            )
             continue
         try:
             async with send_lock:

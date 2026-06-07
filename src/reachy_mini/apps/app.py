@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import importlib
 import logging
 import threading
@@ -16,9 +17,10 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from reachy_mini.pipeline.frames import CameraFrame, VisionEventFrame
 from reachy_mini.pipeline.live_io import MicrophoneSource
 from reachy_mini.pipeline.session import RuntimeSession
-from reachy_mini.pipeline.ws_app import _serve_websocket
+from reachy_mini.pipeline.ws_app import _serve_websocket_with_handler
 
 from .runtime_host import AppRuntimeHostAdapter
 
@@ -77,6 +79,8 @@ class ReachyMiniApp:
         self.runtime_ready = threading.Event()
         self.runtime_tool_context: Any | None = None
         self.runtime_microphone: MicrophoneSource | None = None
+        self._runtime_camera_ingest_busy = threading.Event()
+        self._runtime_camera_vision_listener: Any | None = None
 
         self.settings_app: FastAPI | None = None
         if self.custom_app_url is not None and not self.dont_start_webserver:
@@ -274,7 +278,11 @@ class ReachyMiniApp:
                 pass
             return
         try:
-            await _serve_websocket(runtime, websocket)
+            await _serve_websocket_with_handler(
+                runtime,
+                websocket,
+                inbound_handler=self._handle_runtime_inbound_frame,
+            )
         except WebSocketDisconnect:
             return
 
@@ -284,6 +292,7 @@ class ReachyMiniApp:
         runtime = self.build_runtime(self.profile_root)
         self.runtime = runtime
         await runtime.start()
+        self._attach_reactive_vision_bridge(runtime)
         self.runtime_ready.set()
         microphone = await self._build_runtime_microphone(runtime)
         self.runtime_microphone = microphone
@@ -291,6 +300,7 @@ class ReachyMiniApp:
             while not stop_event.is_set():
                 await asyncio.sleep(0.25)
         finally:
+            self._detach_reactive_vision_bridge()
             if microphone is not None:
                 try:
                     await microphone.stop()
@@ -302,6 +312,88 @@ class ReachyMiniApp:
                 await runtime.stop()
             finally:
                 self.runtime = None
+
+    async def _handle_runtime_inbound_frame(self, frame: Any) -> bool:
+        if not isinstance(frame, CameraFrame):
+            return False
+        context = self.runtime_tool_context
+        camera_worker = getattr(context, "camera_worker", None)
+        if camera_worker is None or not hasattr(camera_worker, "ingest_external_frame"):
+            return True
+        if self._runtime_camera_ingest_busy.is_set():
+            return True
+        image = self._decode_browser_camera_frame(frame)
+        if image is None:
+            return True
+        self._runtime_camera_ingest_busy.set()
+        asyncio.create_task(self._ingest_runtime_camera_frame(camera_worker, image))
+        return True
+
+    async def _ingest_runtime_camera_frame(
+        self,
+        camera_worker: Any,
+        image: Any,
+    ) -> None:
+        try:
+            await asyncio.to_thread(camera_worker.ingest_external_frame, image)
+        except Exception as exc:
+            self.logger.warning("Failed to process browser camera frame: %s", exc)
+        finally:
+            self._runtime_camera_ingest_busy.clear()
+
+    def _decode_browser_camera_frame(self, frame: CameraFrame) -> Any | None:
+        try:
+            import cv2
+            import numpy as np
+
+            raw = base64.b64decode(frame.image_b64, validate=True)
+            encoded = np.frombuffer(raw, dtype=np.uint8)
+            return cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+        except Exception as exc:
+            self.logger.warning("Failed to decode browser camera frame: %s", exc)
+            return None
+
+    def _attach_reactive_vision_bridge(self, runtime: RuntimeSession) -> None:
+        context = self.runtime_tool_context
+        camera_worker = getattr(context, "camera_worker", None)
+        if camera_worker is None or not hasattr(
+            camera_worker, "add_reactive_vision_listener"
+        ):
+            return
+        self._detach_reactive_vision_bridge()
+
+        loop = asyncio.get_running_loop()
+
+        def on_event(event: Any) -> None:
+            payload = dict(getattr(event, "metadata", {}) or {})
+            ts_ms = int(getattr(event, "ts_monotonic", 0.0) * 1000)
+            frame = VisionEventFrame(
+                event=str(getattr(event, "name", "") or ""),
+                payload=payload,
+                ts_ms=ts_ms,
+            )
+            loop.call_soon_threadsafe(
+                lambda: asyncio.create_task(runtime.submit_vision_event(frame))
+            )
+
+        camera_worker.add_reactive_vision_listener(on_event)
+        self._runtime_camera_vision_listener = on_event
+
+    def _detach_reactive_vision_bridge(self) -> None:
+        listener = self._runtime_camera_vision_listener
+        if listener is None:
+            return
+        self._runtime_camera_vision_listener = None
+        context = self.runtime_tool_context
+        camera_worker = getattr(context, "camera_worker", None)
+        if camera_worker is None or not hasattr(
+            camera_worker, "remove_reactive_vision_listener"
+        ):
+            return
+        try:
+            camera_worker.remove_reactive_vision_listener(listener)
+        except Exception as exc:
+            self.logger.warning("Failed to remove reactive vision listener: %s", exc)
 
     async def _build_runtime_microphone(
         self,

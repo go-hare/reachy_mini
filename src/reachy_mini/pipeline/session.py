@@ -22,6 +22,7 @@ from .frames import (
     AudioFrame,
     BrowserInputFrame,
     InterruptFrame,
+    PipelineErrorFrame,
     SDKMessageFrame,
     SpeechActivityFrame,
     SpeechPresenterFrame,
@@ -38,6 +39,8 @@ from .tts_kokoro import KokoroAdapter
 LOGGER = logging.getLogger(__name__)
 
 SURFACE_TASK_ID = "__surface__"
+BRAIN_TURN_TIMEOUT_S = 45.0
+BRAIN_STOP_TIMEOUT_S = 12.0
 
 
 class Clock(Protocol):
@@ -148,7 +151,9 @@ class RuntimeSession:
             client_factory=client_factory,
             cwd=cwd,
         )
-        speech = SpeechPresenter(style={"voice": config.speech.voice, "speed": config.speech.speed})
+        speech = SpeechPresenter(
+            style={"voice": config.speech.voice, "speed": config.speech.speed}
+        )
         tts = KokoroAdapter(config.speech)
         session = cls(
             config=config,
@@ -209,7 +214,9 @@ class RuntimeSession:
 
     async def submit_browser_input(self, frame: BrowserInputFrame) -> str:
         """Submit a browser input frame and run brain processing."""
-        turn_id = str(frame.payload.get("turn_id") or frame.session_id or self._make_turn_id())
+        turn_id = str(
+            frame.payload.get("turn_id") or frame.session_id or self._make_turn_id()
+        )
         await self._set_surface("replying")
         await self._dispatch_brain(frame, turn_id=turn_id)
         return turn_id
@@ -233,15 +240,16 @@ class RuntimeSession:
         if not frame.is_final:
             return
         await self._set_surface("replying")
-        outputs = await self.brain.process(frame)
-        await self._handle_processor_outputs(outputs, turn_id=frame.turn_id)
+        await self._dispatch_brain(frame, turn_id=frame.turn_id)
 
     async def submit_vision_event(self, frame: VisionEventFrame) -> None:
         """Push a vision event into Brain context."""
         await self.brain.process(frame)
         await self.bus.publish(frame)
 
-    async def wait_for_turn_idle(self, turn_id: str, *, timeout: float | None = None) -> None:
+    async def wait_for_turn_idle(
+        self, turn_id: str, *, timeout: float | None = None
+    ) -> None:
         """Wait until the turn has no pending SDK task events tracked by session."""
         deadline = None
         if timeout is not None:
@@ -255,7 +263,24 @@ class RuntimeSession:
             await asyncio.sleep(0.01)
 
     async def _dispatch_brain(self, frame: object, *, turn_id: str) -> None:
-        outputs = await self.brain.process(frame)
+        try:
+            outputs = await asyncio.wait_for(
+                self.brain.process(frame),
+                timeout=BRAIN_TURN_TIMEOUT_S,
+            )
+        except asyncio.CancelledError:
+            await self._reset_agent_after_brain_error()
+            raise
+        except asyncio.TimeoutError:
+            reason = f"brain turn timed out after {BRAIN_TURN_TIMEOUT_S:.0f}s"
+            LOGGER.warning("%s for turn %s", reason, turn_id)
+            await self._publish_brain_error(reason, turn_id=turn_id)
+            return
+        except Exception as exc:
+            reason = self._safe_brain_error_reason(exc)
+            LOGGER.exception("Brain turn failed for %s: %s", turn_id, reason)
+            await self._publish_brain_error(reason, turn_id=turn_id)
+            return
         await self._handle_processor_outputs(outputs, turn_id=turn_id)
 
     async def _handle_processor_outputs(
@@ -343,6 +368,34 @@ class RuntimeSession:
         if self._turn_workers:
             return
         await self._set_surface("idle")
+
+    async def _publish_brain_error(self, reason: str, *, turn_id: str) -> None:
+        await self._reset_agent_after_brain_error()
+        await self.bus.publish(
+            PipelineErrorFrame(
+                component="brain",
+                reason=reason,
+                metadata={"turn_id": turn_id} if turn_id else {},
+            )
+        )
+        await self._set_surface("idle")
+
+    async def _reset_agent_after_brain_error(self) -> None:
+        try:
+            await self.agent.reset(timeout_s=BRAIN_STOP_TIMEOUT_S)
+        except Exception:
+            LOGGER.exception("Failed to reset SDK client after brain error")
+
+    def _safe_brain_error_reason(self, exc: Exception) -> str:
+        text = str(exc).strip()
+        api_key = self.config.model.api_key
+        if api_key:
+            text = text.replace(api_key, "[redacted]")
+        if len(text) > 300:
+            text = f"{text[:297]}..."
+        if text:
+            return f"{type(exc).__name__}: {text}"
+        return type(exc).__name__
 
     async def _stop_sdk_tasks(self) -> None:
         task_ids = sorted(

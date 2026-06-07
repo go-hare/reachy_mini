@@ -58,6 +58,10 @@ document.addEventListener("DOMContentLoaded", () => {
         typeof navigator.mediaDevices.getUserMedia === "function";
     const DESKTOP_PET_POSITION_KEY = "reachy-mini.desktop-pet.position.v1";
     const DESKTOP_PET_MARGIN = 24;
+    const CAMERA_FRAME_INTERVAL_MS = 200;
+    const CAMERA_FRAME_WIDTH = 320;
+    const CAMERA_FRAME_HEIGHT = 180;
+    const CAMERA_FRAME_QUALITY = 0.55;
     const PET_SPRITES = Object.freeze({
         idle: "/static/assets/desktop-pet/idle.png?v=20260331-desktop-pet-3",
         listen: "/static/assets/desktop-pet/listen.png?v=20260331-desktop-pet-3",
@@ -84,6 +88,7 @@ document.addEventListener("DOMContentLoaded", () => {
     let cameraStream = null;
     let cameraActive = false;
     let cameraFrameTimer = null;
+    let cameraFrameCanvas = null;
     let latestVisionOverlay = null;
     let lastVisionLogKey = "";
     let petIdleTimer = null;
@@ -1285,6 +1290,14 @@ document.addEventListener("DOMContentLoaded", () => {
         return sendSocketEvent({ type, ts_ms: Date.now(), payload: payload || {} });
     }
 
+    function dataUrlToBase64(dataUrl) {
+        const commaIndex = String(dataUrl || "").indexOf(",");
+        if (commaIndex < 0) {
+            return String(dataUrl || "");
+        }
+        return String(dataUrl || "").slice(commaIndex + 1);
+    }
+
     function stopBrowserCameraBridge() {
         if (cameraFrameTimer !== null) {
             window.clearInterval(cameraFrameTimer);
@@ -1293,12 +1306,41 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     function pushBrowserCameraFrame() {
-        // v4 has no browser_camera_frame inbound; the runtime owns the camera.
-        // Keep the toggle UI for visual continuity but stop streaming frames out.
+        if (!cameraActive || !cameraPreview || cameraPreview.hidden || !isSocketOpen()) {
+            return;
+        }
+        if (!cameraPreview.videoWidth || !cameraPreview.videoHeight) {
+            return;
+        }
+        if (!cameraFrameCanvas) {
+            cameraFrameCanvas = document.createElement("canvas");
+        }
+        cameraFrameCanvas.width = CAMERA_FRAME_WIDTH;
+        cameraFrameCanvas.height = CAMERA_FRAME_HEIGHT;
+        const context = cameraFrameCanvas.getContext("2d");
+        if (!context) {
+            return;
+        }
+        context.drawImage(cameraPreview, 0, 0, CAMERA_FRAME_WIDTH, CAMERA_FRAME_HEIGHT);
+        const dataUrl = cameraFrameCanvas.toDataURL(
+            "image/jpeg",
+            CAMERA_FRAME_QUALITY
+        );
+        sendEnvelope("camera_frame", {
+            image_b64: dataUrlToBase64(dataUrl),
+            mime_type: "image/jpeg",
+            width: CAMERA_FRAME_WIDTH,
+            height: CAMERA_FRAME_HEIGHT,
+        });
     }
 
     function startBrowserCameraBridge() {
         stopBrowserCameraBridge();
+        pushBrowserCameraFrame();
+        cameraFrameTimer = window.setInterval(
+            pushBrowserCameraFrame,
+            CAMERA_FRAME_INTERVAL_MS
+        );
     }
 
     function emitUserSpeechStarted(_text = "") {
@@ -1488,6 +1530,21 @@ document.addEventListener("DOMContentLoaded", () => {
         schedulePetIdle(200);
     }
 
+    function sdkMessageText(payload) {
+        const content = Array.isArray(payload.content)
+            ? payload.content
+            : Array.isArray(payload.data?.content)
+              ? payload.data.content
+              : Array.isArray(payload.message?.content)
+                ? payload.message.content
+                : [];
+        return content
+            .filter((block) => block && (block.type === "text" || typeof block.text === "string"))
+            .map((block) => compactText(block.text))
+            .filter(Boolean)
+            .join("\n");
+    }
+
     function buildRecognition() {
         if (!recognitionSupported) {
             return null;
@@ -1572,18 +1629,9 @@ document.addEventListener("DOMContentLoaded", () => {
                         label: "正在听",
                         copy: "继续说，我会把它实时转成文字。",
                         speech: previewText,
-            });
-        }
-    }
-
-    function sdkMessageText(payload) {
-        const content = Array.isArray(payload.content) ? payload.content : [];
-        return content
-            .filter((block) => block && block.type === "text")
-            .map((block) => compactText(block.text))
-            .filter(Boolean)
-            .join("\n");
-    }
+                    });
+                }
+            }
         });
 
         instance.addEventListener("nomatch", () => {
@@ -1794,10 +1842,19 @@ document.addEventListener("DOMContentLoaded", () => {
             syncComposerState();
         });
         socket.addEventListener("message", (event) => {
+            let envelope;
             try {
-                handleSocketEvent(JSON.parse(event.data));
+                envelope = JSON.parse(event.data);
             } catch (error) {
+                console.warn("Failed to parse runtime websocket message", error, event.data);
                 appendMessage("assistant", "收到了一条无法解析的运行时消息。");
+                return;
+            }
+            try {
+                handleSocketEvent(envelope);
+            } catch (error) {
+                console.error("Failed to handle runtime websocket message", error, envelope);
+                appendMessage("assistant", "收到了一条运行时消息，但前端处理失败。");
             }
         });
         socket.addEventListener("close", () => {

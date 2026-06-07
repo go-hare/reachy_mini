@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -84,10 +86,22 @@ class BrainAgent:
 
     async def stop(self) -> None:
         """Disconnect the underlying SDK client."""
-        if self._client is None:
+        client = self._client
+        if client is None:
             return
-        await self._client.disconnect()
         self._client = None
+        await client.disconnect()
+
+    async def reset(self, *, timeout_s: float = 12.0) -> None:
+        """Drop the current SDK client and force-close a stuck CLI process."""
+        client = self._client
+        if client is None:
+            return
+        self._client = None
+        try:
+            await asyncio.wait_for(client.disconnect(), timeout=timeout_s)
+        except Exception:
+            await self._force_close_client_process(client)
 
     async def interrupt(self) -> None:
         """Interrupt the current SDK response if connected."""
@@ -161,12 +175,17 @@ class BrainAgent:
         return _load_prompt("system.md")
 
     def _sdk_env(self) -> dict[str, str]:
+        env: dict[str, str] = {}
+        if self.config.model.base_url:
+            env["ANTHROPIC_BASE_URL"] = self.config.model.base_url
         if not self.config.model.api_key:
-            return {}
+            return env
         provider = self.config.model.provider.lower()
-        if provider in {"anthropic", "claude"}:
-            return {"ANTHROPIC_API_KEY": self.config.model.api_key}
-        return {}
+        if provider in {"anthropic", "claude", "openai", "deepseek"}:
+            env["ANTHROPIC_API_KEY"] = self.config.model.api_key
+            if self.config.model.base_url:
+                env["ANTHROPIC_AUTH_TOKEN"] = self.config.model.api_key
+        return env
 
     def _format_prompt(self, turn_input: BrainTurnInput) -> str:
         if not turn_input.context:
@@ -177,6 +196,24 @@ class BrainAgent:
             f"{turn_input.context}\n"
             "</reachy_runtime_context>"
         )
+
+    async def _force_close_client_process(self, client: SDKClient) -> None:
+        transport = getattr(client, "_transport", None)
+        process = getattr(transport, "_process", None)
+        if process is None:
+            return
+
+        if getattr(process, "returncode", None) is None:
+            with contextlib.suppress(Exception):
+                process.terminate()
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(process.wait(), timeout=1.0)
+
+        if getattr(process, "returncode", None) is None:
+            with contextlib.suppress(Exception):
+                process.kill()
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(process.wait(), timeout=1.0)
 
 
 def _load_prompt(name: str) -> str:

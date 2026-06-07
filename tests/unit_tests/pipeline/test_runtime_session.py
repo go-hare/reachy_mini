@@ -24,9 +24,11 @@ from sdk_fakes import (  # noqa: E402
 
 from reachy_mini.action_runtime import ActionExecutor  # noqa: E402
 from reachy_mini.action_runtime.library import create_builtin_registry  # noqa: E402
+from reachy_mini.pipeline import session as session_module  # noqa: E402
 from reachy_mini.pipeline.action_dispatcher import ActionDispatcher  # noqa: E402
 from reachy_mini.pipeline.frames import (  # noqa: E402
     ActionResultFrame,
+    PipelineErrorFrame,
     SDKMessageFrame,
     SpeechActivityFrame,
     TTSStopFrame,
@@ -44,6 +46,7 @@ def _build_session(
     scripts: list[list[Any]] | None = None,
     offline: bool = False,
     speech_enabled: bool = False,
+    client_factory_override: Any | None = None,
 ) -> RuntimeSession:
     config = agent_config(speech_enabled=speech_enabled)
     registry = create_builtin_registry()
@@ -56,6 +59,8 @@ def _build_session(
     actions = ActionDispatcher(executor, publish=publish_result)
 
     def client_factory(options: Any) -> Any:
+        if client_factory_override is not None:
+            return client_factory_override(options, actions)
         if offline:
             return OfflineSDKClient(options, action_runner=actions.run_action)
         return ScriptedSDKClient(
@@ -94,13 +99,29 @@ async def _drain(sub) -> list[Any]:
     return items
 
 
+class _HangingSDKClient(ScriptedSDKClient):
+    """SDK fake that never yields a terminal response."""
+
+    async def receive_response(self):
+        """Sleep until the session timeout cancels this response stream."""
+        await asyncio.sleep(10)
+        if False:
+            yield result_message()
+
+
 @pytest.mark.asyncio
 async def test_two_turns_publish_sdk_messages_and_share_context() -> None:
     """Two turns produce SDKMessageFrames and the second sees accumulated context."""
     session = _build_session(
         scripts=[
-            [assistant_message("hello", session_id="T1"), result_message(session_id="T1")],
-            [assistant_message("again", session_id="T2"), result_message(session_id="T2")],
+            [
+                assistant_message("hello", session_id="T1"),
+                result_message(session_id="T1"),
+            ],
+            [
+                assistant_message("again", session_id="T2"),
+                result_message(session_id="T2"),
+            ],
         ]
     )
     await session.start()
@@ -172,7 +193,11 @@ async def test_sdk_task_messages_publish_worker_events() -> None:
         for frame in frames
         if isinstance(frame, WorkerEventFrame) and frame.task_id == "w1"
     ]
-    assert [frame.event for frame in worker_events] == ["started", "progress", "completed"]
+    assert [frame.event for frame in worker_events] == [
+        "started",
+        "progress",
+        "completed",
+    ]
 
     await session.stop()
 
@@ -215,7 +240,9 @@ async def test_barge_in_publishes_tts_stop_and_cancels_actions() -> None:
 async def test_surface_phase_transitions_published() -> None:
     """Surface state moves idle -> replying -> idle for a no-op turn."""
     session = _build_session(
-        scripts=[[assistant_message("ok", session_id="T1"), result_message(session_id="T1")]]
+        scripts=[
+            [assistant_message("ok", session_id="T1"), result_message(session_id="T1")]
+        ]
     )
     await session.start()
     sub = session.subscribe(
@@ -236,10 +263,50 @@ async def test_surface_phase_transitions_published() -> None:
 
 
 @pytest.mark.asyncio
+async def test_brain_timeout_publishes_error_and_resets_sdk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stuck SDK turn should unblock the UI with a pipeline error."""
+    monkeypatch.setattr(session_module, "BRAIN_TURN_TIMEOUT_S", 0.01)
+    monkeypatch.setattr(session_module, "BRAIN_STOP_TIMEOUT_S", 0.5)
+    created: dict[str, _HangingSDKClient] = {}
+
+    def client_factory(options: Any, actions: ActionDispatcher) -> _HangingSDKClient:
+        client = _HangingSDKClient(options, action_runner=actions.run_action)
+        created["client"] = client
+        return client
+
+    session = _build_session(client_factory_override=client_factory)
+    await session.start()
+    sub = session.subscribe()
+
+    await session.submit_text("hi", turn_id="T1")
+
+    frames = await _drain(sub)
+    errors = [frame for frame in frames if isinstance(frame, PipelineErrorFrame)]
+    phases = [
+        frame.payload["state"]["phase"]
+        for frame in frames
+        if isinstance(frame, WorkerEventFrame) and frame.task_id == SURFACE_TASK_ID
+    ]
+    assert errors
+    assert errors[-1].component == "brain"
+    assert "timed out" in errors[-1].reason
+    assert errors[-1].metadata["turn_id"] == "T1"
+    assert phases[-1] == "idle"
+    assert created["client"].connected is False
+    assert session.agent._client is None
+
+    await session.stop()
+
+
+@pytest.mark.asyncio
 async def test_stop_disconnects_sdk_quickly() -> None:
     """stop() stops tracked SDK tasks and disconnects the SDK client."""
     session = _build_session(
-        scripts=[[task_started("slow1", session_id="T1"), result_message(session_id="T1")]]
+        scripts=[
+            [task_started("slow1", session_id="T1"), result_message(session_id="T1")]
+        ]
     )
     await session.start()
 

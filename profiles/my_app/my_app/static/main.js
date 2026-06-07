@@ -179,9 +179,15 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     function sdkMessageText(payload) {
-        const content = Array.isArray(payload.content) ? payload.content : [];
+        const content = Array.isArray(payload.content)
+            ? payload.content
+            : Array.isArray(payload.data?.content)
+              ? payload.data.content
+              : Array.isArray(payload.message?.content)
+                ? payload.message.content
+                : [];
         return content
-            .filter((block) => block && block.type === "text")
+            .filter((block) => block && (block.type === "text" || typeof block.text === "string"))
             .map((block) => compactText(block.text))
             .filter(Boolean)
             .join("\n");
@@ -629,10 +635,19 @@ document.addEventListener("DOMContentLoaded", () => {
             startPingTimer();
         });
         socket.addEventListener("message", (event) => {
+            let envelope;
             try {
-                handleEnvelope(JSON.parse(event.data));
-            } catch (_error) {
+                envelope = JSON.parse(event.data);
+            } catch (error) {
+                console.warn("Failed to parse runtime websocket message", error, event.data);
                 appendMessage("assistant", "收到了一条无法解析的运行时消息。");
+                return;
+            }
+            try {
+                handleEnvelope(envelope);
+            } catch (error) {
+                console.error("Failed to handle runtime websocket message", error, envelope);
+                appendMessage("assistant", "收到了一条运行时消息，但前端处理失败。");
             }
         });
         socket.addEventListener("close", () => {

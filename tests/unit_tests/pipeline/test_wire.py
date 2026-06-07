@@ -17,6 +17,7 @@ from reachy_mini.pipeline.frames import (
     ActionResultFrame,
     AudioFrame,
     BrowserInputFrame,
+    CameraFrame,
     InterruptFrame,
     PipelineErrorFrame,
     SDKMessageFrame,
@@ -31,6 +32,8 @@ from reachy_mini.pipeline.frames import (
     WorkerEventFrame,
 )
 from reachy_mini.pipeline.wire import (
+    CAMERA_FRAME_MAX_B64_CHARS,
+    CAMERA_FRAME_MAX_DIMENSION,
     LEGACY_INBOUND_TYPES,
     WireDecodeError,
     WireSerializationError,
@@ -105,7 +108,9 @@ def test_encode_audio_and_tts_payloads_use_b64() -> None:
 def test_encode_supporting_frame_types() -> None:
     """Smaller frames serialize with their canonical type name."""
     presenter = encode_frame(
-        SpeechPresenterFrame(text="x", style={}, turn_id="T", chunk_index=0, is_final=True)
+        SpeechPresenterFrame(
+            text="x", style={}, turn_id="T", chunk_index=0, is_final=True
+        )
     )
     assert presenter["type"] == "speech_presenter"
 
@@ -127,7 +132,9 @@ def test_encode_supporting_frame_types() -> None:
     assert vision["ts_ms"] == 99
 
     worker = encode_frame(
-        WorkerEventFrame(task_id="w1", event="progress", payload={"note": "x"}, ts_ms=10)
+        WorkerEventFrame(
+            task_id="w1", event="progress", payload={"note": "x"}, ts_ms=10
+        )
     )
     assert worker["type"] == "worker_event"
     assert worker["payload"]["payload"]["note"] == "x"
@@ -197,6 +204,56 @@ def test_decode_audio_chunk_round_trips_b64() -> None:
     assert frame.ts_ms == 250
 
 
+def test_decode_camera_frame_for_browser_fed_vision() -> None:
+    """camera_frame decodes browser-provided JPEG frames for local YOLO."""
+    frame = decode_inbound(
+        {
+            "type": "camera_frame",
+            "ts_ms": 300,
+            "payload": {
+                "image_b64": "abcd",
+                "mime_type": "image/jpeg",
+                "width": 320,
+                "height": 180,
+            },
+        }
+    )
+
+    assert isinstance(frame, CameraFrame)
+    assert frame.image_b64 == "abcd"
+    assert frame.mime_type == "image/jpeg"
+    assert frame.width == 320
+    assert frame.height == 180
+    assert frame.ts_ms == 300
+
+
+@pytest.mark.parametrize(
+    ("payload_update", "reason"),
+    [
+        ({"image_b64": ""}, "non-empty"),
+        ({"image_b64": "a" * (CAMERA_FRAME_MAX_B64_CHARS + 1)}, "too large"),
+        ({"mime_type": "image/png"}, "Unsupported"),
+        ({"width": 0}, "width"),
+        ({"height": CAMERA_FRAME_MAX_DIMENSION + 1}, "height"),
+    ],
+)
+def test_decode_camera_frame_validates_browser_payload(
+    payload_update: dict[str, object],
+    reason: str,
+) -> None:
+    """camera_frame rejects oversized or unsupported browser image payloads."""
+    payload: dict[str, object] = {
+        "image_b64": "abcd",
+        "mime_type": "image/jpeg",
+        "width": 320,
+        "height": 180,
+    }
+    payload.update(payload_update)
+
+    with pytest.raises(WireDecodeError, match=reason):
+        decode_inbound({"type": "camera_frame", "ts_ms": 300, "payload": payload})
+
+
 def test_decode_speech_activity_validates_state() -> None:
     """speech_activity rejects unknown states."""
     frame = decode_inbound(
@@ -206,7 +263,9 @@ def test_decode_speech_activity_validates_state() -> None:
     assert frame.state == "start"
 
     with pytest.raises(WireDecodeError):
-        decode_inbound({"type": "speech_activity", "ts_ms": 1, "payload": {"state": "weird"}})
+        decode_inbound(
+            {"type": "speech_activity", "ts_ms": 1, "payload": {"state": "weird"}}
+        )
 
 
 def test_decode_ping_and_audio_stop_are_markers() -> None:
