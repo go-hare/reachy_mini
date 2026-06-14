@@ -1,6 +1,6 @@
 {"kind":"profile","name":"sim_front_app"}
 {"kind":"front","mode":"text","style":"friendly_concise","history_limit":6}
-{"kind":"vision","no_camera":false,"head_tracker":"yolo","local_vision":false}
+{"kind":"vision","no_camera":false,"head_tracker":"yolo","local_vision":false,"emotion_backend":"compare_all","emotion_model_name":"enet_b0_8_best_vgaf","emotion_engine":"onnx","emotion_model_path":"/Users/apple/Downloads/team/torchscript_model_0_66_37_wo_gl.pth","poster_var_model_path":"/Users/apple/Downloads/poster-var/poster_var_affectnet8_best.ts","emotion_device":"cpu","emotion_min_interval_s":0.5}
 {"kind":"speech","enabled":true,"provider":"kokoro","model":"hexgrad/Kokoro-82M-v1.1-zh","voice":"zf_001","speed":1.0}
 {"kind":"speech_input","enabled":true,"provider":"funasr","base_url":"ws://127.0.0.1:10096","model":"2pass","language":"zh","playback_block_cooldown_ms":900,"stream_chunk_size":[5,10,5],"stream_chunk_interval":10,"stream_encoder_chunk_look_back":4,"stream_decoder_chunk_look_back":0,"stream_finish_timeout_s":6.0,"stream_itn":true}
 {"kind":"model","provider":"openai","model":"claude-opus-4.6","base_url":"http://185.200.64.188:8990/cc","api_key":"sk-kiro-rs-qazWSXedcRFV123456","temperature":0.3}

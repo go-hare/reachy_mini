@@ -45,6 +45,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const visionDirectionSubtitle = document.getElementById("vision-direction-subtitle");
     const visionEventName = document.getElementById("vision-event-name");
     const visionTrackingEnabled = document.getElementById("vision-tracking-enabled");
+    const visionEmotion = document.getElementById("vision-emotion");
     const visionReleaseReason = document.getElementById("vision-release-reason");
     const visionLastUpdated = document.getElementById("vision-last-updated");
     const visionLog = document.getElementById("vision-log");
@@ -445,6 +446,36 @@ document.addEventListener("DOMContentLoaded", () => {
         return `机器人头部目标：${parts.join("，")}`;
     }
 
+    function humanizeEmotion(emotion) {
+        if (!emotion || typeof emotion !== "object") {
+            return "";
+        }
+        const label = String(emotion.label_zh || emotion.label || "").trim();
+        const model = String(emotion.model || "").trim();
+        const confidence = Number(emotion.confidence);
+        if (!label) {
+            return "";
+        }
+        const prefix = model ? `${model}：` : "表情：";
+        if (!Number.isFinite(confidence)) {
+            return `${prefix}${label}`;
+        }
+        return `${prefix}${label} ${(confidence * 100).toFixed(0)}%`;
+    }
+
+    function humanizeEmotionVersions(emotion) {
+        const versions = Array.isArray(emotion?.versions)
+            ? emotion.versions
+            : [];
+        const items = versions
+            .map((item) => humanizeEmotion(item))
+            .filter(Boolean);
+        if (items.length) {
+            return items.join(" / ");
+        }
+        return humanizeEmotion(emotion);
+    }
+
     function normalizeBbox(bboxNorm) {
         if (!Array.isArray(bboxNorm) || bboxNorm.length !== 4) {
             return null;
@@ -706,12 +737,14 @@ document.addEventListener("DOMContentLoaded", () => {
                 direction,
                 confidence,
                 headTargetDeg: Object(metadata.head_target_deg || {}),
+                emotion: metadata.emotion,
             };
             latestVisionOverlay = overlayState;
             renderDetectionOverlay(overlayState);
+            const emotionText = humanizeEmotionVersions(metadata.emotion);
             if (visionSource) {
                 visionSource.textContent = Number.isFinite(confidence)
-                    ? `${String(metadata.source || "reactive_vision")} · conf ${(confidence * 100).toFixed(0)}%`
+                    ? `${String(metadata.source || "reactive_vision")} · conf ${(confidence * 100).toFixed(0)}%${emotionText ? ` · ${emotionText}` : ""}`
                     : `source: ${String(metadata.source || "reactive_vision")}`;
             }
             if (visionEventName) {
@@ -720,21 +753,35 @@ document.addEventListener("DOMContentLoaded", () => {
             if (visionTrackingEnabled) {
                 visionTrackingEnabled.textContent = trackingEnabled ? "enabled" : "disabled";
             }
+            if (visionEmotion) {
+                visionEmotion.textContent = emotionText || "无表情结果";
+            }
             if (visionReleaseReason) {
                 visionReleaseReason.textContent = "-";
             }
             setVisionStatus("已检测到目标", "active");
+            const detailParts = [
+                `检测链正在关注${humanizeDirection(direction)}的人脸`,
+                emotionText,
+                humanizeHeadMotion(overlayState.headTargetDeg),
+            ].filter(Boolean);
             updateVisionDirection(
                 direction,
-                `检测链正在关注${humanizeDirection(direction)}的人脸，${humanizeHeadMotion(overlayState.headTargetDeg)}`
+                detailParts.join("，")
             );
             updateVisionTimestamp();
             const logKey = `${reactiveEventName}:${direction}:${trackingEnabled}`;
             if (reactiveEventName === "attention_acquired" || logKey !== lastVisionLogKey) {
                 lastVisionLogKey = logKey;
+                const logParts = [
+                    `${formatClockTime(new Date())}`,
+                    `tracking ${trackingEnabled ? "enabled" : "disabled"}`,
+                    emotionText,
+                    humanizeHeadMotion(overlayState.headTargetDeg),
+                ].filter(Boolean);
                 appendVisionLog(
                     `${reactiveEventName} · ${humanizeDirection(direction)}`,
-                    `${formatClockTime(new Date())} · tracking ${trackingEnabled ? "enabled" : "disabled"} · ${humanizeHeadMotion(overlayState.headTargetDeg)}`
+                    logParts.join(" · ")
                 );
             }
             return;
@@ -752,6 +799,9 @@ document.addEventListener("DOMContentLoaded", () => {
             }
             if (visionTrackingEnabled) {
                 visionTrackingEnabled.textContent = metadata.return_to_center ? "returning" : "idle";
+            }
+            if (visionEmotion) {
+                visionEmotion.textContent = "未锁定";
             }
             if (visionReleaseReason) {
                 visionReleaseReason.textContent = reason;
@@ -1971,6 +2021,9 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     if (visionTrackingEnabled) {
         visionTrackingEnabled.textContent = "unknown";
+    }
+    if (visionEmotion) {
+        visionEmotion.textContent = "等待结果";
     }
     if (visionReleaseReason) {
         visionReleaseReason.textContent = "-";

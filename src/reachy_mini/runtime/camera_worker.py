@@ -440,6 +440,10 @@ class CameraWorker:
                 ]
         if bbox_norm is not None:
             metadata["bbox_norm"] = bbox_norm
+        if isinstance(observation, dict):
+            emotion = observation.get("emotion")
+            if isinstance(emotion, dict):
+                metadata["emotion"] = dict(emotion)
         return metadata
 
     @staticmethod
