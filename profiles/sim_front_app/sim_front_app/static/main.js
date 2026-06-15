@@ -38,6 +38,13 @@ document.addEventListener("DOMContentLoaded", () => {
     const cameraPlaceholder = document.getElementById("camera-placeholder");
     const cameraStatus = document.getElementById("camera-status");
     const cameraToggle = document.getElementById("camera-toggle");
+    const cameraTargetChip = document.getElementById("camera-target-chip");
+    const cameraFps = document.getElementById("camera-fps");
+    const cameraDirection = document.getElementById("camera-direction");
+    const cameraYaw = document.getElementById("camera-yaw");
+    const cameraPitch = document.getElementById("camera-pitch");
+    const cameraDistance = document.getElementById("camera-distance");
+    const cameraIdentity = document.getElementById("camera-identity");
     const visionStatus = document.getElementById("vision-status");
     const visionSource = document.getElementById("vision-source");
     const visionDirectionCard = document.getElementById("vision-direction-card");
@@ -46,10 +53,17 @@ document.addEventListener("DOMContentLoaded", () => {
     const visionEventName = document.getElementById("vision-event-name");
     const visionTrackingEnabled = document.getElementById("vision-tracking-enabled");
     const visionEmotion = document.getElementById("vision-emotion");
+    const visionIdentity = document.getElementById("vision-identity");
     const visionReleaseReason = document.getElementById("vision-release-reason");
     const visionLastUpdated = document.getElementById("vision-last-updated");
     const visionLog = document.getElementById("vision-log");
     const visionLogEmpty = document.getElementById("vision-log-empty");
+    const emotionCompareSummary = document.getElementById("emotion-compare-summary");
+    const emotionCompareGrid = document.getElementById("emotion-compare-grid");
+    const identityConfidence = document.getElementById("identity-confidence");
+    const footerFps = document.getElementById("footer-fps");
+    const footerResolution = document.getElementById("footer-resolution");
+    const footerConfidence = document.getElementById("footer-confidence");
     const turnViews = new Map();
     const RecognitionCtor =
         window.SpeechRecognition || window.webkitSpeechRecognition || null;
@@ -63,6 +77,24 @@ document.addEventListener("DOMContentLoaded", () => {
     const CAMERA_FRAME_WIDTH = 320;
     const CAMERA_FRAME_HEIGHT = 180;
     const CAMERA_FRAME_QUALITY = 0.55;
+    const EMOTION_LABELS_BY_MODEL = Object.freeze({
+        "POSTER-Var": ["Neutral", "Happy", "Sad", "Surprise", "Fear", "Disgust", "Anger", "Contempt"],
+        EmotiEffLib: ["Neutral", "Happiness", "Sadness", "Surprise", "Fear", "Disgust", "Anger"],
+        TorchScript: ["Neutral", "Happiness", "Sadness", "Surprise", "Fear", "Disgust", "Anger"],
+        default: ["Neutral", "Happiness", "Sadness", "Surprise", "Fear", "Disgust", "Anger"],
+    });
+    const EMOTION_LABELS_ZH = Object.freeze({
+        Anger: "生气",
+        Contempt: "轻蔑",
+        Disgust: "厌恶",
+        Fear: "害怕",
+        Happy: "开心",
+        Happiness: "开心",
+        Neutral: "平静",
+        Sad: "难过",
+        Sadness: "难过",
+        Surprise: "惊讶",
+    });
     const PET_SPRITES = Object.freeze({
         idle: "/static/assets/desktop-pet/idle.png?v=20260331-desktop-pet-3",
         listen: "/static/assets/desktop-pet/listen.png?v=20260331-desktop-pet-3",
@@ -476,6 +508,151 @@ document.addEventListener("DOMContentLoaded", () => {
         return humanizeEmotion(emotion);
     }
 
+    function emotionLabelZh(label) {
+        const normalized = String(label || "").trim();
+        return EMOTION_LABELS_ZH[normalized] || normalized || "未知";
+    }
+
+    function emotionScoreText(value) {
+        const score = Number(value);
+        if (!Number.isFinite(score)) {
+            return "-";
+        }
+        return score.toFixed(2);
+    }
+
+    function modelEmotionLabels(model) {
+        const modelName = String(model || "").trim();
+        return EMOTION_LABELS_BY_MODEL[modelName] || EMOTION_LABELS_BY_MODEL.default;
+    }
+
+    function emotionVersionsForCompare(emotion) {
+        const versions = Array.isArray(emotion?.versions)
+            ? emotion.versions
+            : emotion && typeof emotion === "object"
+                ? [emotion]
+                : [];
+        return versions.filter((item) => item && typeof item === "object");
+    }
+
+    function emptyEmotionVersions() {
+        return ["POSTER-Var", "EmotiEffLib", "TorchScript"].map((model) => ({
+            model,
+            index: 0,
+            probabilities: [],
+            label_zh: "等待结果",
+        }));
+    }
+
+    function renderEmotionCompare(emotion) {
+        if (!emotionCompareGrid && !emotionCompareSummary) {
+            return;
+        }
+
+        const versions = emotionVersionsForCompare(emotion);
+        if (!versions.length) {
+            if (emotionCompareSummary) {
+                emotionCompareSummary.textContent = "等待结果";
+            }
+            renderEmotionModelCards(emptyEmotionVersions(), true);
+            return;
+        }
+
+        const primary = versions[versions.length - 1];
+        const primaryLabel = String(primary.label_zh || primary.label || "").trim();
+        const primaryConfidence = Number(primary.confidence);
+        if (emotionCompareSummary) {
+            emotionCompareSummary.textContent = [
+                String(primary.model || "表情").trim(),
+                primaryLabel,
+                Number.isFinite(primaryConfidence)
+                    ? emotionScoreText(primaryConfidence)
+                    : "",
+            ].filter(Boolean).join(" · ");
+        }
+
+        renderEmotionModelCards(versions, false);
+    }
+
+    function renderEmotionModelCards(versions, waiting) {
+        if (!emotionCompareGrid) {
+            return;
+        }
+        emotionCompareGrid.replaceChildren();
+        versions.forEach((version) => {
+            const model = String(version.model || "Model").trim();
+            const labels = modelEmotionLabels(model);
+            const probabilities = Array.isArray(version.probabilities)
+                ? version.probabilities
+                : [];
+            const activeIndex = Number.isInteger(version.index)
+                ? Number(version.index)
+                : probabilities.reduce((best, value, index) => {
+                    const score = Number(value);
+                    if (!Number.isFinite(score)) {
+                        return best;
+                    }
+                    return score > Number(probabilities[best] || -1) ? index : best;
+                }, 0);
+
+            const card = document.createElement("section");
+            card.className = "emotion-model-card";
+
+            const title = document.createElement("div");
+            title.className = "emotion-model-title";
+            title.textContent = model;
+            card.appendChild(title);
+
+            labels
+                .map((label, index) => ({
+                    index,
+                    label,
+                    score: Number(probabilities[index]),
+                }))
+                .sort((left, right) => {
+                    const leftScore = Number.isFinite(left.score) ? left.score : -1;
+                    const rightScore = Number.isFinite(right.score) ? right.score : -1;
+                    return rightScore - leftScore;
+                })
+                .slice(0, 5)
+                .forEach((item) => {
+                const row = document.createElement("div");
+                row.className = "emotion-row";
+                if (!waiting && item.index === activeIndex) {
+                    row.dataset.active = "true";
+                }
+
+                const name = document.createElement("span");
+                name.textContent = emotionLabelZh(item.label);
+
+                const score = document.createElement("strong");
+                score.textContent = waiting ? "--" : emotionScoreText(item.score);
+
+                row.append(name, score);
+                card.appendChild(row);
+            });
+
+            emotionCompareGrid.appendChild(card);
+        });
+    }
+
+    function humanizeIdentity(identity) {
+        if (!identity || typeof identity !== "object") {
+            return "";
+        }
+        const name = String(identity.name || "").trim();
+        if (!name) {
+            return "";
+        }
+        const confidence = Number(identity.confidence);
+        const known = Boolean(identity.known);
+        const prefix = known ? "身份：" : "";
+        if (!Number.isFinite(confidence) || confidence <= 0) {
+            return `${prefix}${name}`;
+        }
+        return `${prefix}${name} ${(confidence * 100).toFixed(0)}%`;
+    }
+
     function normalizeBbox(bboxNorm) {
         if (!Array.isArray(bboxNorm) || bboxNorm.length !== 4) {
             return null;
@@ -720,6 +897,62 @@ document.addEventListener("DOMContentLoaded", () => {
         visionLastUpdated.textContent = formatClockTime(new Date());
     }
 
+    function motionValueText(value) {
+        const number = Number(value);
+        if (!Number.isFinite(number)) {
+            return "--";
+        }
+        return `${number.toFixed(1)}°`;
+    }
+
+    function setRealtimeHud({
+        direction = "front",
+        confidence = null,
+        headTargetDeg = {},
+        identity = null,
+        acquired = false,
+    } = {}) {
+        const identityText = humanizeIdentity(identity) || "等待结果";
+        const identityConfidenceValue = Number(identity?.confidence);
+        if (cameraTargetChip) {
+            cameraTargetChip.textContent = acquired ? "已检测到目标" : "等待目标";
+            cameraTargetChip.dataset.state = acquired ? "active" : "idle";
+        }
+        if (cameraDirection) {
+            cameraDirection.textContent = humanizeDirection(direction);
+        }
+        if (cameraYaw) {
+            cameraYaw.textContent = motionValueText(headTargetDeg?.yaw);
+        }
+        if (cameraPitch) {
+            cameraPitch.textContent = motionValueText(headTargetDeg?.pitch);
+        }
+        if (cameraDistance) {
+            cameraDistance.textContent = "--";
+        }
+        if (cameraIdentity) {
+            cameraIdentity.textContent = identityText.replace(/^身份：/, "");
+        }
+        if (identityConfidence) {
+            identityConfidence.textContent = Number.isFinite(identityConfidenceValue)
+                ? identityConfidenceValue.toFixed(2)
+                : "--";
+        }
+        if (footerConfidence) {
+            footerConfidence.textContent = Number.isFinite(confidence)
+                ? confidence.toFixed(2)
+                : "--";
+        }
+        if (footerFps) {
+            footerFps.textContent = cameraActive ? "实时" : "-- FPS";
+        }
+        if (footerResolution) {
+            const width = cameraPreview?.videoWidth || 0;
+            const height = cameraPreview?.videoHeight || 0;
+            footerResolution.textContent = width && height ? `${width} × ${height}` : "--";
+        }
+    }
+
     function handleFrontDecision(payload) {
         const decision = Object(payload?.payload || {});
         const signalName = String(decision.signal_name || "");
@@ -738,13 +971,29 @@ document.addEventListener("DOMContentLoaded", () => {
                 confidence,
                 headTargetDeg: Object(metadata.head_target_deg || {}),
                 emotion: metadata.emotion,
+                identity: metadata.identity,
             };
             latestVisionOverlay = overlayState;
             renderDetectionOverlay(overlayState);
             const emotionText = humanizeEmotionVersions(metadata.emotion);
+            const identityText = humanizeIdentity(metadata.identity);
+            renderEmotionCompare(metadata.emotion);
+            setRealtimeHud({
+                direction,
+                confidence,
+                headTargetDeg: overlayState.headTargetDeg,
+                identity: metadata.identity,
+                acquired: true,
+            });
             if (visionSource) {
+                const sourceParts = [
+                    String(metadata.source || "reactive_vision"),
+                    Number.isFinite(confidence)
+                        ? `conf ${(confidence * 100).toFixed(0)}%`
+                        : "",
+                ].filter(Boolean);
                 visionSource.textContent = Number.isFinite(confidence)
-                    ? `${String(metadata.source || "reactive_vision")} · conf ${(confidence * 100).toFixed(0)}%${emotionText ? ` · ${emotionText}` : ""}`
+                    ? sourceParts.join(" · ")
                     : `source: ${String(metadata.source || "reactive_vision")}`;
             }
             if (visionEventName) {
@@ -756,12 +1005,16 @@ document.addEventListener("DOMContentLoaded", () => {
             if (visionEmotion) {
                 visionEmotion.textContent = emotionText || "无表情结果";
             }
+            if (visionIdentity) {
+                visionIdentity.textContent = identityText || "无身份结果";
+            }
             if (visionReleaseReason) {
                 visionReleaseReason.textContent = "-";
             }
             setVisionStatus("已检测到目标", "active");
             const detailParts = [
                 `检测链正在关注${humanizeDirection(direction)}的人脸`,
+                identityText,
                 emotionText,
                 humanizeHeadMotion(overlayState.headTargetDeg),
             ].filter(Boolean);
@@ -776,6 +1029,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 const logParts = [
                     `${formatClockTime(new Date())}`,
                     `tracking ${trackingEnabled ? "enabled" : "disabled"}`,
+                    identityText,
                     emotionText,
                     humanizeHeadMotion(overlayState.headTargetDeg),
                 ].filter(Boolean);
@@ -790,6 +1044,7 @@ document.addEventListener("DOMContentLoaded", () => {
         if (signalName === "idle_entered" && String(metadata.source || "") === "reactive_vision") {
             const reason = humanizeReleaseReason(metadata.reason || "released");
             clearDetectionOverlay();
+            setRealtimeHud({ acquired: false });
             lastVisionLogKey = `released:${reason}`;
             if (visionSource) {
                 visionSource.textContent = `source: ${String(metadata.source || "reactive_vision")}`;
@@ -803,6 +1058,7 @@ document.addEventListener("DOMContentLoaded", () => {
             if (visionEmotion) {
                 visionEmotion.textContent = "未锁定";
             }
+            renderEmotionCompare(null);
             if (visionReleaseReason) {
                 visionReleaseReason.textContent = reason;
             }
@@ -833,6 +1089,8 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     function createMessage(role, text = "") {
+        const demos = chatLog.querySelectorAll(".demo-message");
+        demos.forEach((node) => node.remove());
         const wrapper = document.createElement("div");
         wrapper.className = `message ${role}`;
 
@@ -869,8 +1127,8 @@ document.addEventListener("DOMContentLoaded", () => {
             return;
         }
         micButton.textContent = recognitionSupported
-            ? (recognitionActive ? "Stop" : "Talk")
-            : "Mic N/A";
+            ? (recognitionActive ? "停止" : "说话")
+            : "无麦克风";
         micButton.dataset.active = recognitionActive ? "true" : "false";
     }
 
@@ -879,12 +1137,12 @@ document.addEventListener("DOMContentLoaded", () => {
             return;
         }
         if (!cameraSupported) {
-            cameraToggle.textContent = "Camera N/A";
+            cameraToggle.textContent = "无相机";
             cameraToggle.disabled = true;
             return;
         }
         cameraToggle.disabled = false;
-        cameraToggle.textContent = cameraActive ? "Stop Camera" : "Start Camera";
+        cameraToggle.textContent = cameraActive ? "关闭相机" : "开启相机";
         cameraToggle.dataset.active = cameraActive ? "true" : "false";
     }
 
@@ -1465,6 +1723,7 @@ document.addEventListener("DOMContentLoaded", () => {
             cameraPreview.hidden = true;
         }
         clearDetectionOverlay();
+        setRealtimeHud({ acquired: false });
         renderCameraPlaceholder("点击 Start Camera 预览本机相机", false);
         setCameraStatus("相机未启动", "idle");
         updateCameraButton();
@@ -1497,6 +1756,13 @@ document.addEventListener("DOMContentLoaded", () => {
                 await cameraPreview.play();
             }
             renderDetectionOverlay();
+            setRealtimeHud({
+                acquired: Boolean(latestVisionOverlay),
+                direction: latestVisionOverlay?.direction || "front",
+                confidence: latestVisionOverlay?.confidence,
+                headTargetDeg: latestVisionOverlay?.headTargetDeg || {},
+                identity: latestVisionOverlay?.identity,
+            });
             renderCameraPlaceholder("", true);
             setCameraStatus("本机摄像头已连接", "ready");
             startBrowserCameraBridge();
@@ -2025,6 +2291,10 @@ document.addEventListener("DOMContentLoaded", () => {
     if (visionEmotion) {
         visionEmotion.textContent = "等待结果";
     }
+    if (visionIdentity) {
+        visionIdentity.textContent = "等待结果";
+    }
+    renderEmotionCompare(null);
     if (visionReleaseReason) {
         visionReleaseReason.textContent = "-";
     }
@@ -2037,6 +2307,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (petLastUpdated) {
         petLastUpdated.textContent = "尚未收到";
     }
+    setRealtimeHud({ acquired: false });
     updateMicButton();
     updateCameraButton();
     if (cameraPreview) {

@@ -30,10 +30,16 @@ class HeadTracker:
         emotion_device: str = "auto",
         emotion_min_interval_s: float = 0.25,
         poster_var_model_path: str | Path = "",
+        face_identity_enabled: bool = False,
+        known_faces_dir: str | Path = "",
+        face_identity_threshold: float = 0.42,
+        face_identity_model_name: str = "buffalo_l",
+        face_identity_min_interval_s: float = 0.5,
     ) -> None:
         self.confidence_threshold = confidence_threshold
         self.emotion_classifier: Any | None = None
         self.emotion_classifiers: list[tuple[str, Any]] = []
+        self.identity_recognizer: Any | None = None
         try:
             from supervision import Detections
             from ultralytics import YOLO
@@ -92,6 +98,13 @@ class HeadTracker:
             )
         if self.emotion_classifiers:
             self.emotion_classifier = self.emotion_classifiers[-1][1]
+        if face_identity_enabled:
+            self._add_identity_recognizer(
+                known_faces_dir=known_faces_dir,
+                threshold=face_identity_threshold,
+                model_name=face_identity_model_name,
+                min_interval_s=face_identity_min_interval_s,
+            )
 
     def _add_torchscript_classifier(
         self,
@@ -159,6 +172,25 @@ class HeadTracker:
                     min_interval_s=emotion_min_interval_s,
                 ),
             )
+        )
+
+    def _add_identity_recognizer(
+        self,
+        *,
+        known_faces_dir: str | Path,
+        threshold: float,
+        model_name: str,
+        min_interval_s: float,
+    ) -> None:
+        from reachy_mini.runtime.vision.face_identity import (
+            InsightFaceIdentityRecognizer,
+        )
+
+        self.identity_recognizer = InsightFaceIdentityRecognizer(
+            known_faces_dir,
+            threshold=threshold,
+            model_name=model_name,
+            min_interval_s=min_interval_s,
         )
 
     def _select_best_face(self, detections: Any) -> int | None:
@@ -240,6 +272,9 @@ class HeadTracker:
             emotion = self._predict_emotion(img, bbox)
             if emotion is not None:
                 observation["emotion"] = emotion
+            identity = self._predict_identity(img, bbox)
+            if identity is not None:
+                observation["identity"] = identity
             return face_center, 0.0, confidence, observation
         except Exception as exc:  # pragma: no cover - runtime fallback
             logger.warning("YOLO head tracking failed: %s", exc)
@@ -267,3 +302,19 @@ class HeadTracker:
         primary["versions"] = versions
         primary["primary_model"] = str(primary.get("model", ""))
         return primary
+
+    def _predict_identity(
+        self,
+        img: NDArray[np.uint8],
+        bbox: NDArray[np.float32],
+    ) -> dict[str, Any] | None:
+        if self.identity_recognizer is None:
+            return None
+        prediction = self.identity_recognizer.predict(
+            img,
+            bbox,
+            now=time.monotonic(),
+        )
+        if prediction is None:
+            return None
+        return prediction.to_metadata()

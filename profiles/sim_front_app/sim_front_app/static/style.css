@@ -1,21 +1,22 @@
 body {
-    --bg: #f7f3eb;
-    --panel: rgba(255, 252, 246, 0.9);
-    --panel-strong: #fffdf8;
-    --ink: #1e2521;
-    --muted: #58655d;
-    --line: rgba(76, 94, 85, 0.16);
-    --accent: #d46a3a;
-    --accent-deep: #9f4621;
-    --user-bubble: #efe3d1;
+    --bg: #f4f6f8;
+    --panel: #ffffff;
+    --panel-strong: #f8fafc;
+    --ink: #17211d;
+    --muted: #66746d;
+    --line: #dfe5e1;
+    --line-strong: #cbd6d0;
+    --accent: #256f4a;
+    --accent-deep: #174b33;
+    --accent-soft: #e5f3eb;
+    --warning: #b88216;
+    --danger: #b9443d;
+    --user-bubble: #e7f0ea;
     --assistant-bubble: #ffffff;
     font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
     margin: 0;
     min-height: 100vh;
-    background:
-        radial-gradient(circle at top left, rgba(212, 106, 58, 0.18), transparent 32%),
-        radial-gradient(circle at top right, rgba(94, 132, 115, 0.14), transparent 28%),
-        linear-gradient(180deg, #fbf7f0 0%, #f4eee2 100%);
+    background: var(--bg);
     color: var(--ink);
 }
 
@@ -24,30 +25,29 @@ body {
 }
 
 .shell {
-    max-width: 1320px;
+    max-width: 1440px;
     margin: 0 auto;
-    padding: 32px 20px 40px;
+    padding: 18px 18px 28px;
 }
 
 .layout {
     display: grid;
-    grid-template-columns: minmax(360px, 1fr) minmax(620px, 1.08fr);
-    gap: 20px;
+    grid-template-columns: minmax(360px, 0.78fr) minmax(660px, 1.22fr);
+    gap: 14px;
     align-items: start;
 }
 
 .side-panel {
     display: grid;
-    gap: 20px;
+    gap: 14px;
 }
 
 .card {
     background: var(--panel);
     border: 1px solid var(--line);
-    border-radius: 24px;
-    padding: 24px;
-    box-shadow: 0 18px 45px rgba(71, 57, 36, 0.08);
-    backdrop-filter: blur(12px);
+    border-radius: 8px;
+    padding: 18px;
+    box-shadow: 0 10px 28px rgba(24, 40, 33, 0.06);
 }
 
 .pet-mode-stack {
@@ -266,15 +266,16 @@ body {
     justify-content: space-between;
     gap: 20px;
     align-items: flex-start;
-    margin-bottom: 20px;
+    margin-bottom: 14px;
+    padding: 16px 18px;
 }
 
 .eyebrow {
-    margin: 0 0 10px;
-    font-size: 12px;
-    letter-spacing: 0.16em;
+    margin: 0 0 6px;
+    font-size: 11px;
+    letter-spacing: 0.12em;
     text-transform: uppercase;
-    color: var(--accent-deep);
+    color: var(--accent);
 }
 
 h1,
@@ -284,9 +285,15 @@ p {
 }
 
 h1 {
-    margin-bottom: 10px;
-    font-size: clamp(2rem, 4vw, 3rem);
-    line-height: 1;
+    margin-bottom: 6px;
+    font-size: clamp(1.7rem, 2.8vw, 2.4rem);
+    line-height: 1.05;
+}
+
+h2 {
+    margin-bottom: 8px;
+    font-size: 18px;
+    line-height: 1.2;
 }
 
 .subtitle,
@@ -302,8 +309,8 @@ ul {
     display: inline-flex;
     align-items: center;
     gap: 10px;
-    padding: 10px 14px;
-    border-radius: 999px;
+    padding: 8px 12px;
+    border-radius: 8px;
     background: rgba(255, 255, 255, 0.7);
     border: 1px solid var(--line);
     white-space: nowrap;
@@ -313,37 +320,39 @@ ul {
     width: 10px;
     height: 10px;
     border-radius: 999px;
-    background: #c58d76;
-    box-shadow: 0 0 0 6px rgba(212, 106, 58, 0.12);
+    background: var(--warning);
+    box-shadow: 0 0 0 4px rgba(184, 130, 22, 0.14);
 }
 
 .status-dot[data-ready="true"] {
-    background: #4a8e62;
-    box-shadow: 0 0 0 6px rgba(74, 142, 98, 0.14);
+    background: var(--accent);
+    box-shadow: 0 0 0 4px rgba(37, 111, 74, 0.16);
 }
 
 .chat-card {
     display: flex;
     flex-direction: column;
-    gap: 18px;
-    min-height: 70vh;
+    gap: 14px;
+    min-height: calc(100vh - 116px);
 }
 
 .chat-header {
     display: flex;
     justify-content: space-between;
     gap: 16px;
-    align-items: baseline;
+    align-items: flex-start;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--line);
 }
 
 .chat-log {
     display: flex;
     flex-direction: column;
-    gap: 14px;
-    min-height: 360px;
-    max-height: 60vh;
+    gap: 10px;
+    min-height: 320px;
+    max-height: calc(100vh - 360px);
     overflow-y: auto;
-    padding: 8px 4px 6px;
+    padding: 2px 2px 4px;
 }
 
 .message {
@@ -356,21 +365,21 @@ ul {
 
 .bubble {
     max-width: min(78%, 680px);
-    padding: 14px 16px;
-    border-radius: 18px;
+    padding: 12px 14px;
+    border-radius: 8px;
     line-height: 1.6;
     white-space: pre-wrap;
-    box-shadow: 0 10px 22px rgba(80, 61, 36, 0.06);
+    border: 1px solid var(--line);
+    box-shadow: none;
 }
 
 .message.user .bubble {
     background: var(--user-bubble);
-    border-bottom-right-radius: 6px;
+    border-color: #cfe0d5;
 }
 
 .message.assistant .bubble {
     background: var(--assistant-bubble);
-    border-bottom-left-radius: 6px;
 }
 
 .composer {
@@ -382,28 +391,30 @@ ul {
 
 .speech-preview {
     padding: 12px 14px;
-    border-radius: 16px;
-    border: 1px dashed rgba(212, 106, 58, 0.35);
-    background: rgba(212, 106, 58, 0.08);
+    border-radius: 8px;
+    border: 1px dashed #b9c7c0;
+    background: var(--panel-strong);
     color: var(--muted);
     line-height: 1.5;
 }
 
 .camera-shell {
     position: relative;
-    margin-top: 14px;
+    margin-top: 12px;
     aspect-ratio: 16 / 10;
-    min-height: clamp(320px, 40vw, 540px);
-    border-radius: 20px;
+    min-height: clamp(300px, 38vw, 520px);
+    border-radius: 8px;
     overflow: hidden;
-    border: 1px solid var(--line);
+    border: 1px solid #202b27;
     background:
-        radial-gradient(circle at top, rgba(212, 106, 58, 0.12), transparent 36%),
-        linear-gradient(180deg, rgba(41, 50, 46, 0.95) 0%, rgba(19, 24, 22, 0.98) 100%);
+        linear-gradient(135deg, rgba(255, 255, 255, 0.05) 25%, transparent 25%),
+        linear-gradient(225deg, rgba(255, 255, 255, 0.05) 25%, transparent 25%),
+        #111816;
+    background-size: 18px 18px;
 }
 
 .camera-card {
-    padding: 28px;
+    padding: 18px;
 }
 
 .camera-preview {
@@ -434,8 +445,8 @@ ul {
     position: absolute;
     min-width: 28px;
     min-height: 28px;
-    border-radius: 18px;
-    border: 3px solid rgba(122, 226, 167, 0.98);
+    border-radius: 6px;
+    border: 2px solid rgba(99, 224, 154, 0.98);
     box-shadow:
         0 0 0 1px rgba(16, 20, 19, 0.5),
         0 0 0 9999px rgba(16, 20, 19, 0.08),
@@ -467,7 +478,7 @@ ul {
     top: 10px;
     max-width: calc(100% - 20px);
     padding: 8px 12px;
-    border-radius: 12px;
+    border-radius: 6px;
     background: rgba(9, 16, 14, 0.82);
     color: rgba(248, 252, 250, 0.96);
     font-size: 12px;
@@ -491,7 +502,7 @@ ul {
 }
 
 .camera-bar {
-    margin-top: 14px;
+    margin-top: 12px;
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -504,7 +515,7 @@ ul {
     align-items: center;
     gap: 8px;
     padding: 8px 12px;
-    border-radius: 999px;
+    border-radius: 8px;
     border: 1px solid var(--line);
     background: rgba(255, 255, 255, 0.6);
     color: var(--muted);
@@ -516,23 +527,23 @@ ul {
     width: 8px;
     height: 8px;
     border-radius: 999px;
-    background: #c58d76;
-    box-shadow: 0 0 0 4px rgba(212, 106, 58, 0.12);
+    background: var(--warning);
+    box-shadow: 0 0 0 4px rgba(184, 130, 22, 0.12);
 }
 
 .camera-status[data-state="ready"]::before {
-    background: #4a8e62;
-    box-shadow: 0 0 0 5px rgba(74, 142, 98, 0.16);
+    background: var(--accent);
+    box-shadow: 0 0 0 4px rgba(37, 111, 74, 0.16);
 }
 
 .camera-status[data-state="requesting"]::before {
-    background: #c4912f;
-    box-shadow: 0 0 0 5px rgba(196, 145, 47, 0.16);
+    background: var(--warning);
+    box-shadow: 0 0 0 4px rgba(184, 130, 22, 0.16);
 }
 
 .camera-status[data-state="error"]::before {
-    background: #b44d43;
-    box-shadow: 0 0 0 5px rgba(180, 77, 67, 0.16);
+    background: var(--danger);
+    box-shadow: 0 0 0 4px rgba(185, 68, 61, 0.16);
 }
 
 .vision-overview {
@@ -1190,5 +1201,969 @@ body[data-view="desktop-pet"] .composer-actions button {
 
     body[data-view="desktop-pet"] .pet-stage {
         min-height: 176px;
+    }
+}
+
+/* Vision console default view */
+body:not([data-view="desktop-pet"]) {
+    --bg: #f5f6f4;
+    --panel: #ffffff;
+    --panel-strong: #f8faf8;
+    --ink: #18211d;
+    --muted: #66716b;
+    --line: #e1e6e2;
+    --line-strong: #cdd7d1;
+    --accent: #27714c;
+    --accent-deep: #164b33;
+    --accent-soft: #e7f3ec;
+    --warning: #b47a18;
+    --danger: #b7433d;
+    --user-bubble: #e7f1eb;
+    --assistant-bubble: #ffffff;
+    background:
+        linear-gradient(180deg, #fbfbf8 0%, #f5f6f4 42%, #eef2ef 100%);
+}
+
+body:not([data-view="desktop-pet"]) .shell {
+    max-width: 1440px;
+    min-height: 100vh;
+    box-sizing: border-box;
+    padding: 14px 24px 24px;
+}
+
+body:not([data-view="desktop-pet"]) .hero {
+    align-items: center;
+    margin-bottom: 14px;
+    padding: 10px 16px;
+    background: rgba(255, 255, 255, 0.86);
+    box-shadow: 0 8px 22px rgba(24, 40, 33, 0.045);
+}
+
+body:not([data-view="desktop-pet"]) .hero h1 {
+    margin: 0;
+    font-size: clamp(1.45rem, 1.8vw, 1.9rem);
+}
+
+body:not([data-view="desktop-pet"]) .subtitle {
+    margin: 4px 0 0;
+    font-size: 13px;
+}
+
+body:not([data-view="desktop-pet"]) .layout {
+    grid-template-columns: minmax(520px, 1.12fr) minmax(430px, 0.88fr);
+    gap: 18px;
+}
+
+body:not([data-view="desktop-pet"]) .card {
+    border-radius: 8px;
+    border-color: var(--line);
+    background: rgba(255, 255, 255, 0.9);
+    box-shadow: 0 12px 30px rgba(24, 40, 33, 0.055);
+}
+
+body:not([data-view="desktop-pet"]) .section-heading,
+body:not([data-view="desktop-pet"]) .chat-header,
+body:not([data-view="desktop-pet"]) .emotion-summary-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 14px;
+}
+
+body:not([data-view="desktop-pet"]) .section-heading h2,
+body:not([data-view="desktop-pet"]) .chat-header h2,
+body:not([data-view="desktop-pet"]) .emotion-summary-row h2 {
+    margin: 0;
+}
+
+body:not([data-view="desktop-pet"]) .chat-card {
+    min-height: calc(100vh - 126px);
+    padding: 20px;
+    gap: 16px;
+}
+
+body:not([data-view="desktop-pet"]) .chat-header {
+    padding-bottom: 14px;
+}
+
+body:not([data-view="desktop-pet"]) .chat-mode-chip,
+body:not([data-view="desktop-pet"]) .emotion-summary,
+body:not([data-view="desktop-pet"]) .vision-overview span,
+body:not([data-view="desktop-pet"]) .status-wrap,
+body:not([data-view="desktop-pet"]) .vision-source,
+body:not([data-view="desktop-pet"]) .camera-status,
+body:not([data-view="desktop-pet"]) .vision-status,
+body:not([data-view="desktop-pet"]) .mic-status {
+    min-height: 34px;
+    box-sizing: border-box;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: rgba(255, 255, 255, 0.78);
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 600;
+}
+
+body:not([data-view="desktop-pet"]) .chat-mode-chip,
+body:not([data-view="desktop-pet"]) .emotion-summary {
+    display: inline-flex;
+    align-items: center;
+    padding: 7px 12px;
+    white-space: nowrap;
+}
+
+body:not([data-view="desktop-pet"]) .chat-log {
+    min-height: 420px;
+    max-height: calc(100vh - 350px);
+    gap: 14px;
+    padding: 4px 6px 8px 2px;
+}
+
+body:not([data-view="desktop-pet"]) .bubble {
+    max-width: min(74%, 680px);
+    padding: 13px 15px;
+    line-height: 1.62;
+    border-radius: 8px;
+    box-shadow: 0 8px 16px rgba(24, 40, 33, 0.04);
+}
+
+body:not([data-view="desktop-pet"]) .message.assistant .bubble {
+    border-color: #e5ebe7;
+}
+
+body:not([data-view="desktop-pet"]) .message.user .bubble {
+    border-color: #cfe1d5;
+}
+
+body:not([data-view="desktop-pet"]) .composer {
+    margin-top: auto;
+    padding: 14px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--panel-strong);
+}
+
+body:not([data-view="desktop-pet"]) textarea {
+    min-height: 82px;
+    border-radius: 8px;
+    background: #ffffff;
+}
+
+body:not([data-view="desktop-pet"]) button {
+    border-radius: 8px;
+    padding: 11px 16px;
+}
+
+body:not([data-view="desktop-pet"]) .secondary-button {
+    box-shadow: inset 0 0 0 1px rgba(76, 94, 85, 0.04);
+}
+
+body:not([data-view="desktop-pet"]) .side-panel {
+    gap: 14px;
+}
+
+body:not([data-view="desktop-pet"]) .camera-card,
+body:not([data-view="desktop-pet"]) .vision-card,
+body:not([data-view="desktop-pet"]) .emotion-card {
+    padding: 14px;
+}
+
+body:not([data-view="desktop-pet"]) .camera-shell {
+    height: clamp(190px, 16vw, 220px);
+    min-height: 0;
+    margin-top: 12px;
+    aspect-ratio: auto;
+    border-radius: 8px;
+    border-color: #17221e;
+}
+
+body:not([data-view="desktop-pet"]) .camera-bar {
+    margin-top: 12px;
+}
+
+body:not([data-view="desktop-pet"]) .vision-card {
+    display: grid;
+    gap: 14px;
+}
+
+body:not([data-view="desktop-pet"]) .vision-card > summary {
+    list-style: none;
+    cursor: pointer;
+}
+
+body:not([data-view="desktop-pet"]) .vision-card > summary::-webkit-details-marker {
+    display: none;
+}
+
+body:not([data-view="desktop-pet"]) .vision-card > summary::after {
+    content: "展开";
+    align-self: center;
+    flex: 0 0 auto;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 700;
+}
+
+body:not([data-view="desktop-pet"]) .vision-card[open] > summary::after {
+    content: "收起";
+}
+
+body:not([data-view="desktop-pet"]) .vision-overview {
+    margin-top: 0;
+}
+
+body:not([data-view="desktop-pet"]) .vision-overview span {
+    display: inline-flex;
+    align-items: center;
+    padding: 7px 11px;
+}
+
+body:not([data-view="desktop-pet"]) .vision-direction-card {
+    margin-top: 0;
+    border-radius: 8px;
+    padding: 16px;
+    background:
+        linear-gradient(135deg, rgba(231, 243, 236, 0.96) 0%, rgba(255, 255, 255, 0.92) 62%),
+        #ffffff;
+}
+
+body:not([data-view="desktop-pet"]) .vision-direction-icon {
+    width: 52px;
+    height: 52px;
+    border-radius: 8px;
+}
+
+body:not([data-view="desktop-pet"]) .vision-metrics {
+    margin: 0;
+    gap: 10px;
+}
+
+body:not([data-view="desktop-pet"]) .vision-metrics div {
+    border-radius: 8px;
+    padding: 11px 12px;
+    background: var(--panel-strong);
+}
+
+body:not([data-view="desktop-pet"]) .vision-metrics dd {
+    margin-top: 6px;
+    overflow-wrap: anywhere;
+}
+
+body:not([data-view="desktop-pet"]) .vision-log-wrap {
+    margin-top: 0;
+    border-top: 1px solid var(--line);
+    padding-top: 12px;
+}
+
+body:not([data-view="desktop-pet"]) .vision-log-wrap summary {
+    cursor: pointer;
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 700;
+}
+
+body:not([data-view="desktop-pet"]) .vision-log {
+    margin-top: 10px;
+}
+
+body:not([data-view="desktop-pet"]) .vision-log-entry,
+body:not([data-view="desktop-pet"]) .vision-log-empty {
+    border-radius: 8px;
+    padding: 10px 12px;
+}
+
+body:not([data-view="desktop-pet"]) .emotion-card {
+    overflow: hidden;
+}
+
+body:not([data-view="desktop-pet"]) .emotion-card > summary {
+    list-style: none;
+    cursor: pointer;
+}
+
+body:not([data-view="desktop-pet"]) .emotion-card > summary::-webkit-details-marker {
+    display: none;
+}
+
+body:not([data-view="desktop-pet"]) .emotion-summary-row::after {
+    content: "收起";
+    align-self: center;
+    flex: 0 0 auto;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 700;
+}
+
+body:not([data-view="desktop-pet"]) .emotion-card:not([open]) .emotion-summary-row::after {
+    content: "展开";
+}
+
+body:not([data-view="desktop-pet"]) .emotion-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+    margin-top: 12px;
+}
+
+body:not([data-view="desktop-pet"]) .emotion-empty {
+    grid-column: 1 / -1;
+    padding: 18px;
+    border-radius: 8px;
+    border: 1px dashed var(--line-strong);
+    background: var(--panel-strong);
+    color: var(--muted);
+    text-align: center;
+}
+
+body:not([data-view="desktop-pet"]) .emotion-model-card {
+    min-width: 0;
+    padding: 10px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #ffffff;
+}
+
+body:not([data-view="desktop-pet"]) .emotion-model-title {
+    margin-bottom: 8px;
+    color: var(--ink);
+    font-size: 14px;
+    font-weight: 800;
+}
+
+body:not([data-view="desktop-pet"]) .emotion-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-height: 25px;
+    padding: 4px 7px;
+    border-radius: 7px;
+    color: var(--muted);
+    font-size: 13px;
+}
+
+body:not([data-view="desktop-pet"]) .emotion-row[data-active="true"] {
+    background: var(--accent-soft);
+    color: var(--accent-deep);
+    font-weight: 800;
+}
+
+body:not([data-view="desktop-pet"]) .emotion-row strong {
+    color: inherit;
+    font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 1120px) {
+    body:not([data-view="desktop-pet"]) .layout {
+        grid-template-columns: 1fr;
+    }
+
+    body:not([data-view="desktop-pet"]) .chat-card {
+        min-height: 560px;
+    }
+}
+
+@media (max-width: 720px) {
+    body:not([data-view="desktop-pet"]) .shell {
+        padding: 12px;
+    }
+
+    body:not([data-view="desktop-pet"]) .hero,
+    body:not([data-view="desktop-pet"]) .chat-header,
+    body:not([data-view="desktop-pet"]) .section-heading,
+    body:not([data-view="desktop-pet"]) .composer-bar {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    body:not([data-view="desktop-pet"]) .chat-log {
+        min-height: 280px;
+        max-height: 48vh;
+    }
+
+    body:not([data-view="desktop-pet"]) .bubble {
+        max-width: 100%;
+    }
+
+    body:not([data-view="desktop-pet"]) .emotion-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+/* Target console layout */
+body:not([data-view="desktop-pet"]) {
+    background: #f7f9fb;
+    color: #101820;
+}
+
+body:not([data-view="desktop-pet"]) .shell {
+    max-width: none;
+    height: 100vh;
+    padding: 0;
+    display: grid;
+    grid-template-rows: 64px minmax(0, 1fr) 58px;
+    background: #f7f9fb;
+    overflow: hidden;
+}
+
+body:not([data-view="desktop-pet"]) .topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+    padding: 0 20px;
+    border-bottom: 1px solid #dce3ea;
+    background: rgba(255, 255, 255, 0.96);
+}
+
+body:not([data-view="desktop-pet"]) .brand,
+body:not([data-view="desktop-pet"]) .topbar-status {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+}
+
+body:not([data-view="desktop-pet"]) .brand-mark {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    border: 1px solid #cfd9e3;
+    border-radius: 999px;
+    background: #ffffff;
+}
+
+body:not([data-view="desktop-pet"]) .brand-mark::before {
+    content: "";
+    position: absolute;
+    width: 22px;
+    height: 16px;
+    bottom: 8px;
+    border: 2px solid #27313b;
+    border-radius: 9px;
+}
+
+body:not([data-view="desktop-pet"]) .brand-eye {
+    position: relative;
+    z-index: 1;
+    width: 5px;
+    height: 5px;
+    margin: 7px 2px 0;
+    border-radius: 999px;
+    background: #27313b;
+}
+
+body:not([data-view="desktop-pet"]) .brand h1 {
+    margin: 0;
+    font-size: 22px;
+    line-height: 1;
+}
+
+body:not([data-view="desktop-pet"]) .endpoint {
+    color: #4f5d6b;
+    font-size: 13px;
+    white-space: nowrap;
+}
+
+body:not([data-view="desktop-pet"]) .topbar-button,
+body:not([data-view="desktop-pet"]) .theme-button {
+    min-height: 34px;
+    padding: 0 14px;
+    border: 1px solid #d7e0e9;
+    border-radius: 6px;
+    background: #ffffff;
+    color: #1f2a36;
+    box-shadow: none;
+}
+
+body:not([data-view="desktop-pet"]) .theme-button {
+    width: 34px;
+    padding: 0;
+}
+
+body:not([data-view="desktop-pet"]) .theme-button::before {
+    content: "☀";
+}
+
+body:not([data-view="desktop-pet"]) .status-wrap {
+    min-height: 32px;
+    padding: 0 12px;
+    border-radius: 6px;
+    background: #ffffff;
+}
+
+body:not([data-view="desktop-pet"]) .layout {
+    display: grid;
+    grid-template-columns: minmax(520px, 1fr) minmax(560px, 0.98fr);
+    gap: 20px;
+    min-height: 0;
+    height: 100%;
+    box-sizing: border-box;
+    overflow: hidden;
+    padding: 20px 20px 18px;
+}
+
+body:not([data-view="desktop-pet"]) .card,
+body:not([data-view="desktop-pet"]) .status-card {
+    border: 1px solid #dce3ea;
+    border-radius: 8px;
+    background: #ffffff;
+    box-shadow: none;
+}
+
+body:not([data-view="desktop-pet"]) .chat-card {
+    min-height: 0;
+    height: 100%;
+    padding: 18px 20px;
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    overflow: hidden;
+}
+
+body:not([data-view="desktop-pet"]) .chat-header {
+    border: 0;
+    padding: 0;
+}
+
+body:not([data-view="desktop-pet"]) .chat-header h2,
+body:not([data-view="desktop-pet"]) .section-heading h2,
+body:not([data-view="desktop-pet"]) .emotion-summary-row h2,
+body:not([data-view="desktop-pet"]) .status-card h3 {
+    margin: 0;
+    color: #111820;
+    font-size: 16px;
+    line-height: 1.3;
+}
+
+body:not([data-view="desktop-pet"]) .chat-log {
+    min-height: 0;
+    max-height: none;
+    padding: 54px 0 22px;
+    gap: 26px;
+    overflow-y: auto;
+}
+
+body:not([data-view="desktop-pet"]) .message {
+    align-items: flex-end;
+    gap: 10px;
+}
+
+body:not([data-view="desktop-pet"]) .message.assistant::before,
+body:not([data-view="desktop-pet"]) .message.user::after {
+    content: "";
+    flex: 0 0 auto;
+    width: 34px;
+    height: 34px;
+    border: 1px solid #d6e0ea;
+    border-radius: 999px;
+    background:
+        radial-gradient(circle at 42% 45%, #1b2733 0 3px, transparent 4px),
+        radial-gradient(circle at 58% 45%, #1b2733 0 3px, transparent 4px),
+        linear-gradient(#ffffff, #ffffff);
+    box-shadow: inset 0 -9px 0 -6px #1b2733;
+}
+
+body:not([data-view="desktop-pet"]) .message.user {
+    justify-content: flex-end;
+}
+
+body:not([data-view="desktop-pet"]) .bubble {
+    max-width: min(56%, 390px);
+    padding: 16px 18px;
+    border: 1px solid #dce4ed;
+    border-radius: 8px;
+    background: #ffffff;
+    color: #111820;
+    font-size: 17px;
+    line-height: 1.55;
+    box-shadow: 0 10px 22px rgba(15, 24, 34, 0.035);
+}
+
+body:not([data-view="desktop-pet"]) .message-time {
+    display: block;
+    margin-top: 8px;
+    color: #7a8795;
+    font-size: 12px;
+    font-weight: 400;
+}
+
+body:not([data-view="desktop-pet"]) .message.user .bubble {
+    border-color: #b9d5ff;
+    background: #f7fbff;
+}
+
+body:not([data-view="desktop-pet"]) .composer {
+    margin: 0;
+    padding: 0;
+    border: 0;
+    display: grid;
+    gap: 14px;
+    background: transparent;
+}
+
+body:not([data-view="desktop-pet"]) .composer-bar {
+    min-height: 54px;
+    padding: 0 14px;
+    border: 1px solid #dce4ed;
+    border-radius: 8px;
+    background: #ffffff;
+}
+
+body:not([data-view="desktop-pet"]) .composer-meta {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+}
+
+body:not([data-view="desktop-pet"]) .mic-status {
+    border: 0;
+    background: transparent;
+    color: #168549;
+}
+
+body:not([data-view="desktop-pet"]) .input-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 12px;
+    align-items: center;
+    padding: 10px 12px;
+    border: 1px solid #dce4ed;
+    border-radius: 8px;
+    background: #ffffff;
+}
+
+body:not([data-view="desktop-pet"]) textarea {
+    min-height: 46px;
+    max-height: 88px;
+    padding: 10px 8px;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+}
+
+body:not([data-view="desktop-pet"]) textarea:focus {
+    outline: none;
+}
+
+body:not([data-view="desktop-pet"]) .send-button {
+    width: 48px;
+    min-height: 48px;
+    height: 48px;
+    overflow: hidden;
+    color: transparent;
+    border-radius: 8px;
+    background: #1669e8;
+    display: grid;
+    place-items: center;
+    padding: 0;
+}
+
+body:not([data-view="desktop-pet"]) .send-button::before {
+    content: "➤";
+    color: #ffffff;
+    font-size: 21px;
+}
+
+body:not([data-view="desktop-pet"]) .side-panel {
+    display: grid;
+    grid-template-rows: minmax(300px, 0.93fr) auto minmax(280px, 0.82fr);
+    gap: 14px;
+    min-height: 0;
+    height: 100%;
+    overflow: hidden;
+}
+
+body:not([data-view="desktop-pet"]) .camera-card {
+    padding: 16px;
+    min-height: 0;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+}
+
+body:not([data-view="desktop-pet"]) .section-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+}
+
+body:not([data-view="desktop-pet"]) .camera-heading-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+}
+
+body:not([data-view="desktop-pet"]) .camera-toggle-button {
+    min-height: 34px;
+    padding: 0 14px;
+    border: 1px solid #1a8e50;
+    border-radius: 999px;
+    background: #168549;
+    color: #ffffff;
+    font-size: 13px;
+    font-weight: 700;
+    box-shadow: none;
+}
+
+body:not([data-view="desktop-pet"]) .camera-shell {
+    position: relative;
+    height: auto;
+    min-height: 0;
+    margin: 0;
+    border: 0;
+    border-radius: 7px;
+    background:
+        linear-gradient(135deg, rgba(255, 255, 255, 0.05) 25%, transparent 25%),
+        linear-gradient(225deg, rgba(255, 255, 255, 0.05) 25%, transparent 25%),
+        #151d1b;
+    background-size: 18px 18px;
+}
+
+body:not([data-view="desktop-pet"]) .camera-hud {
+    position: absolute;
+    z-index: 4;
+    color: #ffffff;
+    font-size: 13px;
+    pointer-events: none;
+}
+
+body:not([data-view="desktop-pet"]) .camera-hud-left {
+    top: 12px;
+    left: 12px;
+    display: grid;
+    gap: 8px;
+}
+
+body:not([data-view="desktop-pet"]) .camera-target-chip {
+    display: inline-flex;
+    align-items: center;
+    min-height: 28px;
+    padding: 0 12px;
+    border-radius: 6px;
+    background: rgba(34, 144, 82, 0.9);
+    color: #ffffff;
+    font-weight: 700;
+}
+
+body:not([data-view="desktop-pet"]) .camera-target-chip[data-state="idle"] {
+    background: rgba(23, 31, 38, 0.72);
+}
+
+body:not([data-view="desktop-pet"]) .camera-hud-right {
+    top: 12px;
+    right: 12px;
+    display: grid;
+    gap: 10px;
+    min-width: 128px;
+    padding: 12px;
+    border-radius: 6px;
+    background: rgba(13, 18, 22, 0.68);
+}
+
+body:not([data-view="desktop-pet"]) .camera-identity-badge {
+    position: absolute;
+    left: 50%;
+    bottom: 22px;
+    z-index: 4;
+    transform: translateX(-50%);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 42px;
+    padding: 0 18px;
+    border-radius: 6px;
+    background: rgba(7, 13, 18, 0.78);
+    color: #ffffff;
+    font-size: 15px;
+    pointer-events: none;
+}
+
+body:not([data-view="desktop-pet"]) .camera-identity-badge strong {
+    color: #56d981;
+}
+
+body:not([data-view="desktop-pet"]) .camera-bar {
+    display: flex;
+    margin-top: 8px;
+    justify-content: flex-start;
+}
+
+body:not([data-view="desktop-pet"]) .vision-source {
+    padding: 5px 10px;
+    border: 1px solid #dce4ed;
+    border-radius: 999px;
+    background: #ffffff;
+    color: #5a6876;
+    font-size: 12px;
+}
+
+body:not([data-view="desktop-pet"]) .summary-grid {
+    display: grid;
+    grid-template-columns: 1.1fr 0.9fr;
+    gap: 14px;
+    min-height: 100px;
+}
+
+body:not([data-view="desktop-pet"]) .status-card {
+    padding: 14px 16px;
+}
+
+body:not([data-view="desktop-pet"]) .summary-line,
+body:not([data-view="desktop-pet"]) .identity-line {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 12px;
+}
+
+body:not([data-view="desktop-pet"]) .summary-subline {
+    margin-top: 8px;
+    color: #627080;
+    font-size: 13px;
+}
+
+body:not([data-view="desktop-pet"]) .identity-icon {
+    width: 32px;
+    height: 32px;
+    border-radius: 999px;
+    background: #d8dee6;
+}
+
+body:not([data-view="desktop-pet"]) .identity-line strong {
+    color: #168549;
+}
+
+body:not([data-view="desktop-pet"]) .emotion-card {
+    padding: 16px;
+    min-height: 0;
+    overflow: hidden;
+}
+
+body:not([data-view="desktop-pet"]) .emotion-summary-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+body:not([data-view="desktop-pet"]) .emotion-summary-row::after {
+    content: "⌃";
+    color: #1f2a36;
+}
+
+body:not([data-view="desktop-pet"]) .emotion-card:not([open]) .emotion-summary-row::after {
+    content: "⌄";
+}
+
+body:not([data-view="desktop-pet"]) .emotion-summary {
+    margin-left: auto;
+    padding: 6px 16px;
+    border: 0;
+    border-radius: 999px;
+    background: #e7f4ec;
+    color: #13723f;
+}
+
+body:not([data-view="desktop-pet"]) .emotion-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 18px;
+    margin-top: 14px;
+    min-height: 0;
+}
+
+body:not([data-view="desktop-pet"]) .emotion-model-card {
+    padding: 14px;
+    border: 1px solid #dce4ed;
+    border-radius: 8px;
+    background: #ffffff;
+}
+
+body:not([data-view="desktop-pet"]) .emotion-model-title {
+    margin-bottom: 12px;
+    font-size: 14px;
+    font-weight: 700;
+}
+
+body:not([data-view="desktop-pet"]) .emotion-row {
+    min-height: 28px;
+    padding: 3px 10px;
+    border-radius: 6px;
+    color: #3e4b59;
+    font-size: 14px;
+}
+
+body:not([data-view="desktop-pet"]) .emotion-row[data-active="true"] {
+    border: 1px solid #9bd8b3;
+    background: #ebf8f0;
+    color: #13723f;
+}
+
+body:not([data-view="desktop-pet"]) .vision-card {
+    display: none;
+    padding: 0 16px;
+    border: 0;
+    background: transparent;
+}
+
+body:not([data-view="desktop-pet"]) .vision-card > summary {
+    justify-content: flex-end;
+    color: #4f5d6b;
+}
+
+body:not([data-view="desktop-pet"]) .vision-card > summary::after {
+    content: "";
+}
+
+body:not([data-view="desktop-pet"]) .console-footer {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    align-items: center;
+    gap: 20px;
+    padding: 0 28px;
+    border-top: 1px solid #dce3ea;
+    background: #ffffff;
+    color: #4f5d6b;
+    font-size: 13px;
+}
+
+body:not([data-view="desktop-pet"]) .console-footer span:last-child {
+    text-align: right;
+}
+
+@media (max-width: 1180px) {
+    body:not([data-view="desktop-pet"]) .layout {
+        grid-template-columns: 1fr;
+    }
+
+    body:not([data-view="desktop-pet"]) .chat-card {
+        height: 620px;
+    }
+}
+
+@media (max-width: 760px) {
+    body:not([data-view="desktop-pet"]) .topbar,
+    body:not([data-view="desktop-pet"]) .topbar-status,
+    body:not([data-view="desktop-pet"]) .summary-grid,
+    body:not([data-view="desktop-pet"]) .emotion-grid,
+    body:not([data-view="desktop-pet"]) .console-footer {
+        grid-template-columns: 1fr;
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    body:not([data-view="desktop-pet"]) .shell {
+        grid-template-rows: auto 1fr auto;
+    }
+
+    body:not([data-view="desktop-pet"]) .topbar {
+        padding: 12px;
+    }
+
+    body:not([data-view="desktop-pet"]) .layout {
+        padding: 12px;
     }
 }

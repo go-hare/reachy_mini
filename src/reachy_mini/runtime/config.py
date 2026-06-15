@@ -70,6 +70,11 @@ class VisionRuntimeConfig:
     emotion_device: str = "auto"
     emotion_min_interval_s: float = 0.25
     poster_var_model_path: str = ""
+    face_identity_enabled: bool = False
+    known_faces_dir: str = ""
+    face_identity_threshold: float = 0.42
+    face_identity_model_name: str = "buffalo_l"
+    face_identity_min_interval_s: float = 0.5
 
 
 @dataclass(slots=True)
@@ -191,6 +196,41 @@ def load_profile_runtime_config(profile: ProfileBundle) -> ProfileRuntimeConfig:
                         config.vision.poster_var_model_path,
                     )
                     or ""
+                ),
+                face_identity_enabled=bool(
+                    record.get(
+                        "face_identity_enabled",
+                        config.vision.face_identity_enabled,
+                    )
+                ),
+                known_faces_dir=str(
+                    record.get("known_faces_dir", config.vision.known_faces_dir)
+                    or ""
+                ),
+                face_identity_threshold=max(
+                    0.0,
+                    float(
+                        record.get(
+                            "face_identity_threshold",
+                            config.vision.face_identity_threshold,
+                        )
+                    ),
+                ),
+                face_identity_model_name=str(
+                    record.get(
+                        "face_identity_model_name",
+                        config.vision.face_identity_model_name,
+                    )
+                    or config.vision.face_identity_model_name
+                ),
+                face_identity_min_interval_s=max(
+                    0.0,
+                    float(
+                        record.get(
+                            "face_identity_min_interval_s",
+                            config.vision.face_identity_min_interval_s,
+                        )
+                    ),
                 ),
             )
             continue

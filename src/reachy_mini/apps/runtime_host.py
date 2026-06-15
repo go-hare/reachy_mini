@@ -362,6 +362,22 @@ class AppRuntimeHostAdapter:
                 poster_var_model_path=str(
                     getattr(vision_config, "poster_var_model_path", "") or ""
                 ).strip(),
+                face_identity_enabled=bool(
+                    getattr(vision_config, "face_identity_enabled", False)
+                ),
+                known_faces_dir=self._resolve_profile_path(
+                    str(getattr(vision_config, "known_faces_dir", "") or "").strip()
+                ),
+                face_identity_threshold=float(
+                    getattr(vision_config, "face_identity_threshold", 0.42)
+                ),
+                face_identity_model_name=str(
+                    getattr(vision_config, "face_identity_model_name", "buffalo_l")
+                    or "buffalo_l"
+                ).strip(),
+                face_identity_min_interval_s=float(
+                    getattr(vision_config, "face_identity_min_interval_s", 0.5)
+                ),
             )
         if tracker_kind == "mediapipe":
             try:
@@ -373,6 +389,15 @@ class AppRuntimeHostAdapter:
                 ) from exc
             return HeadTracker()
         raise ValueError(f"Unsupported head_tracker setting: {tracker_kind}")
+
+    def _resolve_profile_path(self, raw_path: str) -> str:
+        """Resolve relative runtime paths from the repository root."""
+        if not raw_path:
+            return ""
+        path = Path(raw_path).expanduser()
+        if path.is_absolute() or self.profile_root is None:
+            return str(path)
+        return str((self.profile_root.parent.parent / path).resolve())
 
     @staticmethod
     def _build_vision_processor(vision_config: Any) -> Any:

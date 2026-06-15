@@ -86,6 +86,11 @@ class VisionConfig:
     emotion_device: str = "auto"
     emotion_min_interval_s: float = 0.25
     poster_var_model_path: str = ""
+    face_identity_enabled: bool = False
+    known_faces_dir: str = ""
+    face_identity_threshold: float = 0.42
+    face_identity_model_name: str = "buffalo_l"
+    face_identity_min_interval_s: float = 0.5
 
 
 @dataclass(frozen=True)
@@ -247,6 +252,19 @@ def _build_vision_config(record: dict[str, Any]) -> VisionConfig:
             float(record.get("emotion_min_interval_s", 0.25)),
         ),
         poster_var_model_path=str(record.get("poster_var_model_path", "") or ""),
+        face_identity_enabled=bool(record.get("face_identity_enabled", False)),
+        known_faces_dir=str(record.get("known_faces_dir", "") or ""),
+        face_identity_threshold=max(
+            0.0,
+            float(record.get("face_identity_threshold", 0.42)),
+        ),
+        face_identity_model_name=str(
+            record.get("face_identity_model_name", "buffalo_l") or "buffalo_l"
+        ),
+        face_identity_min_interval_s=max(
+            0.0,
+            float(record.get("face_identity_min_interval_s", 0.5)),
+        ),
     )
 
 

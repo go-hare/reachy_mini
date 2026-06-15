@@ -3,24 +3,31 @@
 
 <head>
     <meta charset="UTF-8">
-    <title>Reachy Mini Desktop Pet</title>
+    <title>Reachy Vision Console</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <link rel="stylesheet" href="/static/style.css?v=20260331-desktop-pet-3">
+    <link rel="stylesheet" href="/static/style.css?v=20260615-vision-console-1">
 </head>
 
 <body>
     <div class="shell" id="app-shell">
-        <section class="hero card" id="hero-card">
-            <div>
-                <p class="eyebrow">Reachy Mini app</p>
-                <h1>Sim Front App</h1>
-                <p class="subtitle">这个页面直接挂在当前用户 app 的入口上，可以把消息送进这个 app 对应的常驻 runtime。</p>
+        <header class="topbar" id="hero-card">
+            <div class="brand">
+                <span class="brand-mark" aria-hidden="true">
+                    <span class="brand-eye"></span>
+                    <span class="brand-eye"></span>
+                </span>
+                <h1>Reachy Vision Console</h1>
             </div>
-            <div class="status-wrap">
-                <span class="status-dot" id="status-dot"></span>
-                <span id="status">Checking runtime...</span>
+            <div class="topbar-status">
+                <div class="status-wrap">
+                    <span class="status-dot" id="status-dot"></span>
+                    <span id="status">正在检查 runtime...</span>
+                </div>
+                <span class="endpoint">Reachy Mini（本地） · 127.0.0.1:8042</span>
+                <button type="button" class="topbar-button" aria-label="设置">设置</button>
+                <button type="button" class="theme-button" aria-label="主题"></button>
             </div>
-        </section>
+        </header>
 
         <section class="layout" id="app-layout">
             <div class="pet-mode-stack" id="pet-mode-stack" hidden>
@@ -77,112 +84,154 @@
 
             <div class="card chat-card" id="chat-card">
                 <div class="chat-header">
-                    <h2 id="chat-title">Chat</h2>
-                    <p id="chat-subtitle">文本输入和浏览器麦克风转写都会按当前 app 内部的 <code>profiles/</code> 文件来驱动前台和内核。</p>
+                    <h2 id="chat-title">对话</h2>
                 </div>
 
                 <div class="chat-log" id="chat-log">
+                    <div class="message user demo-message">
+                        <div class="bubble">你现在看到我了吗？<span class="message-time">21:35:02</span></div>
+                    </div>
                     <div class="message assistant">
-                        <div class="bubble">我已经在这里了。你可以直接发一句话，也可以点 Talk 用浏览器麦克风和我说话。</div>
+                        <div class="bubble">看到了，你在正前方，表情偏高兴。<span class="message-time">21:35:03</span></div>
+                    </div>
+                    <div class="message user demo-message">
+                        <div class="bubble">我是谁？<span class="message-time">21:35:07</span></div>
+                    </div>
+                    <div class="message assistant demo-message">
+                        <div class="bubble">身份还没有登记，我先按陌生人处理。<span class="message-time">21:35:08</span></div>
                     </div>
                 </div>
 
                 <form class="composer" id="chat-form">
                     <label class="sr-only" for="message-input">Message</label>
-                    <textarea id="message-input" rows="3" placeholder="比如：帮我看看这个 app 现在的行为对不对"></textarea>
-                    <div class="speech-preview" id="speech-preview" hidden></div>
                     <div class="composer-bar">
                         <div class="composer-meta">
-                            <span class="hint" id="composer-hint">Enter 发送，Shift+Enter 换行；Talk 可直接说话</span>
                             <span class="mic-status" id="mic-status" data-state="idle">麦克风待命</span>
+                            <span class="hint" id="composer-hint">Enter 发送，Shift+Enter 换行</span>
                         </div>
                         <div class="composer-actions">
-                            <button type="button" class="secondary-button" id="mic-button">Talk</button>
-                            <button type="submit" id="send-button">Send</button>
+                            <button type="button" class="secondary-button" id="mic-button">说话</button>
                         </div>
+                    </div>
+                    <div class="speech-preview" id="speech-preview" hidden></div>
+                    <div class="input-row">
+                        <textarea id="message-input" rows="2" placeholder="输入消息或按住说话..."></textarea>
+                        <button type="submit" class="send-button" id="send-button" aria-label="发送">发送</button>
                     </div>
                 </form>
             </div>
 
             <div class="side-panel" id="side-panel">
                 <div class="card camera-card">
-                    <h2>Browser Camera</h2>
-                    <p>这里预览的是这台 Mac 当前浏览器授权后的本机摄像头，不走 MuJoCo 仿真相机。</p>
+                    <div class="section-heading">
+                        <h2>实时画面</h2>
+                        <div class="camera-heading-actions">
+                            <span class="camera-status" id="camera-status" data-state="idle">相机未启动</span>
+                            <button type="button" class="camera-toggle-button" id="camera-toggle">开启相机</button>
+                        </div>
+                    </div>
                     <div class="camera-shell">
                         <video id="camera-preview" class="camera-preview" autoplay playsinline muted hidden></video>
+                        <div class="camera-hud camera-hud-left">
+                            <span class="camera-target-chip" id="camera-target-chip">等待目标</span>
+                            <span>FPS: <strong id="camera-fps">--</strong></span>
+                        </div>
+                        <div class="camera-hud camera-hud-right">
+                            <div>方向：<strong id="camera-direction">--</strong></div>
+                            <div>水平角：<strong id="camera-yaw">--</strong></div>
+                            <div>垂直角：<strong id="camera-pitch">--</strong></div>
+                            <div>距离：<strong id="camera-distance">--</strong></div>
+                        </div>
+                        <div class="camera-identity-badge">
+                            <span>身份识别：</span>
+                            <strong id="camera-identity">等待结果</strong>
+                        </div>
                         <div class="camera-overlay" id="camera-overlay" hidden>
                             <canvas id="camera-overlay-canvas" class="camera-overlay-canvas"></canvas>
                             <div class="detection-box" id="detection-box" data-direction="front" hidden>
                                 <div class="detection-label" id="detection-label">等待检测</div>
                             </div>
                         </div>
-                        <div class="camera-placeholder" id="camera-placeholder">点击 Start Camera 预览本机相机</div>
+                        <div class="camera-placeholder" id="camera-placeholder">点击开启相机预览本机摄像头</div>
                     </div>
                     <div class="camera-bar">
-                        <span class="camera-status" id="camera-status" data-state="idle">相机未启动</span>
-                        <button type="button" class="secondary-button" id="camera-toggle">Start Camera</button>
+                        <span class="vision-source" id="vision-source">tracker: yolo</span>
                     </div>
                 </div>
 
-                <div class="card">
-                    <h2>Detection</h2>
-                    <p>这里显示的是 runtime 检测链送回来的状态，重点看它现在有没有锁住目标、朝哪边在跟。</p>
+                <section class="summary-grid">
+                    <div class="status-card vision-summary-card">
+                        <h3>视觉检测</h3>
+                        <div class="summary-line">
+                            <span class="vision-status" id="vision-status" data-state="idle">等待检测链事件</span>
+                            <span id="vision-direction-label">方向：正前方</span>
+                        </div>
+                        <div class="summary-subline" id="vision-direction-subtitle">还没有收到 reactive vision 更新</div>
+                    </div>
+                    <div class="status-card identity-summary-card">
+                        <h3>身份识别</h3>
+                        <div class="identity-line">
+                            <span class="identity-icon" aria-hidden="true"></span>
+                            <strong id="vision-identity">等待结果</strong>
+                        </div>
+                        <div class="summary-subline">置信度 <span id="identity-confidence">--</span></div>
+                    </div>
+                </section>
+
+                <details class="card emotion-card" id="emotion-compare" open>
+                    <summary class="emotion-summary-row">
+                        <h2>表情对比</h2>
+                        <span class="emotion-summary" id="emotion-compare-summary">等待结果</span>
+                    </summary>
+                    <div class="emotion-grid" id="emotion-compare-grid">
+                        <div class="emotion-empty">等待三模型表情结果</div>
+                    </div>
+                </details>
+
+                <details class="card vision-card" id="vision-detail-panel">
+                    <summary>事件日志</summary>
                     <div class="vision-overview">
-                        <span class="vision-status" id="vision-status" data-state="idle">等待检测链事件</span>
-                        <span class="vision-source" id="vision-source">tracker: yolo</span>
+                        <span id="vision-event-name">idle</span>
+                        <span id="vision-last-updated">尚未收到</span>
                     </div>
                     <div class="vision-direction-card" id="vision-direction-card" data-direction="front">
                         <div class="vision-direction-icon"></div>
-                        <div>
-                            <div class="vision-direction-label" id="vision-direction-label">方向：正前方</div>
-                            <div class="vision-direction-subtitle" id="vision-direction-subtitle">还没有收到 reactive vision 更新</div>
-                        </div>
+                        <div>检测详情</div>
                     </div>
                     <dl class="vision-metrics">
                         <div>
-                            <dt>状态</dt>
-                            <dd id="vision-event-name">idle</dd>
+                            <dt>表情</dt>
+                            <dd id="vision-emotion">等待结果</dd>
                         </div>
                         <div>
                             <dt>追踪</dt>
                             <dd id="vision-tracking-enabled">unknown</dd>
                         </div>
                         <div>
-                            <dt>表情</dt>
-                            <dd id="vision-emotion">等待结果</dd>
-                        </div>
-                        <div>
-                            <dt>释放原因</dt>
+                            <dt>释放</dt>
                             <dd id="vision-release-reason">-</dd>
                         </div>
-                        <div>
-                            <dt>最近更新</dt>
-                            <dd id="vision-last-updated">尚未收到</dd>
-                        </div>
                     </dl>
-                    <div class="vision-log-wrap">
-                        <div class="vision-log-title">事件流</div>
+                    <details class="vision-log-wrap">
+                        <summary>事件流</summary>
                         <div class="vision-log" id="vision-log">
                             <div class="vision-log-empty" id="vision-log-empty">等待 runtime 推送检测事件</div>
                         </div>
-                    </div>
-                </div>
-
-                <div class="card">
-                    <h2>Flow</h2>
-                    <ol>
-                        <li><code>ReachyMiniApp</code> 常驻当前 app 的 v4 RuntimeSession</li>
-                        <li>页面通过 <code>/ws/agent</code> 把文本或浏览器音频帧发进 runtime</li>
-                        <li>Brain 产出 Claude Agent SDK 原生 <code>sdk_message</code></li>
-                        <li>ActionRuntime 执行动作并回 <code>action_result</code>；SDK task 状态走 <code>worker_event</code></li>
-                        <li>页面持续监听 <code>worker_event(task_id="__surface__")</code> 渲染 surface 状态</li>
-                    </ol>
-                </div>
+                    </details>
+                </details>
             </div>
         </section>
+
+        <footer class="console-footer">
+            <span>运行时长 <strong id="runtime-uptime">00:00:00</strong></span>
+            <span>帧率 <strong id="footer-fps">-- FPS</strong></span>
+            <span>分辨率 <strong id="footer-resolution">--</strong></span>
+            <span>模型置信度 <strong id="footer-confidence">--</strong></span>
+            <span>事件日志⌄</span>
+        </footer>
     </div>
 
-    <script src="/static/main.js?v=20260614-emotion-compare-1"></script>
+    <script src="/static/main.js?v=20260615-vision-console-1"></script>
 </body>
 
 </html>

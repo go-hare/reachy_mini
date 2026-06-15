@@ -444,6 +444,9 @@ class CameraWorker:
             emotion = observation.get("emotion")
             if isinstance(emotion, dict):
                 metadata["emotion"] = dict(emotion)
+            identity = observation.get("identity")
+            if isinstance(identity, dict):
+                metadata["identity"] = dict(identity)
         return metadata
 
     @staticmethod
