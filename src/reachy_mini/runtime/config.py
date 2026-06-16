@@ -63,10 +63,6 @@ class VisionRuntimeConfig:
     local_vision: bool = False
     local_vision_model: str = ""
     hf_home: str = ""
-    emotion_backend: str = "torchscript"
-    emotion_model_path: str = ""
-    emotion_model_name: str = "enet_b2_7"
-    emotion_engine: str = "onnx"
     emotion_device: str = "auto"
     emotion_min_interval_s: float = 0.25
     poster_var_model_path: str = ""
@@ -155,28 +151,6 @@ def load_profile_runtime_config(profile: ProfileBundle) -> ProfileRuntimeConfig:
                     or config.vision.local_vision_model
                 ),
                 hf_home=str(record.get("hf_home", config.vision.hf_home) or ""),
-                emotion_backend=str(
-                    record.get("emotion_backend", config.vision.emotion_backend)
-                    or config.vision.emotion_backend
-                ),
-                emotion_model_path=str(
-                    record.get(
-                        "emotion_model_path",
-                        config.vision.emotion_model_path,
-                    )
-                    or ""
-                ),
-                emotion_model_name=str(
-                    record.get(
-                        "emotion_model_name",
-                        config.vision.emotion_model_name,
-                    )
-                    or config.vision.emotion_model_name
-                ),
-                emotion_engine=str(
-                    record.get("emotion_engine", config.vision.emotion_engine)
-                    or config.vision.emotion_engine
-                ),
                 emotion_device=str(
                     record.get("emotion_device", config.vision.emotion_device)
                     or config.vision.emotion_device

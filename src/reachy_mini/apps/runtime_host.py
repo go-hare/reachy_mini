@@ -339,20 +339,6 @@ class AppRuntimeHostAdapter:
             from reachy_mini.runtime.vision.yolo_head_tracker import HeadTracker
 
             return HeadTracker(
-                emotion_backend=str(
-                    getattr(vision_config, "emotion_backend", "torchscript")
-                    or "torchscript"
-                ).strip(),
-                emotion_model_path=str(
-                    getattr(vision_config, "emotion_model_path", "") or ""
-                ).strip(),
-                emotion_model_name=str(
-                    getattr(vision_config, "emotion_model_name", "enet_b2_7")
-                    or "enet_b2_7"
-                ).strip(),
-                emotion_engine=str(
-                    getattr(vision_config, "emotion_engine", "onnx") or "onnx"
-                ).strip(),
                 emotion_device=str(
                     getattr(vision_config, "emotion_device", "auto") or "auto"
                 ).strip(),

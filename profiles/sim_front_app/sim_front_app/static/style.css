@@ -1499,9 +1499,7 @@ body:not([data-view="desktop-pet"]) .emotion-card:not([open]) .emotion-summary-r
 }
 
 body:not([data-view="desktop-pet"]) .emotion-grid {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 10px;
+    display: block;
     margin-top: 12px;
 }
 
@@ -1516,7 +1514,11 @@ body:not([data-view="desktop-pet"]) .emotion-empty {
 }
 
 body:not([data-view="desktop-pet"]) .emotion-model-card {
+    display: grid;
+    grid-template-columns: 110px repeat(8, minmax(72px, 1fr));
+    align-items: stretch;
     min-width: 0;
+    overflow-x: auto;
     padding: 10px;
     border: 1px solid var(--line);
     border-radius: 8px;
@@ -1524,7 +1526,10 @@ body:not([data-view="desktop-pet"]) .emotion-model-card {
 }
 
 body:not([data-view="desktop-pet"]) .emotion-model-title {
-    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    margin: 0;
+    padding-right: 12px;
     color: var(--ink);
     font-size: 14px;
     font-weight: 800;
@@ -1532,14 +1537,16 @@ body:not([data-view="desktop-pet"]) .emotion-model-title {
 
 body:not([data-view="desktop-pet"]) .emotion-row {
     display: flex;
+    flex-direction: column;
     align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    min-height: 25px;
-    padding: 4px 7px;
+    justify-content: center;
+    gap: 5px;
+    min-height: 58px;
+    padding: 7px 8px;
     border-radius: 7px;
     color: var(--muted);
     font-size: 13px;
+    text-align: center;
 }
 
 body:not([data-view="desktop-pet"]) .emotion-row[data-active="true"] {
@@ -1868,7 +1875,8 @@ body:not([data-view="desktop-pet"]) .send-button::before {
 
 body:not([data-view="desktop-pet"]) .side-panel {
     display: grid;
-    grid-template-rows: minmax(300px, 0.93fr) auto minmax(280px, 0.82fr);
+    grid-template-rows: minmax(300px, 1fr) auto auto auto;
+    align-content: start;
     gap: 14px;
     min-height: 0;
     height: 100%;
@@ -2037,7 +2045,7 @@ body:not([data-view="desktop-pet"]) .identity-line strong {
 }
 
 body:not([data-view="desktop-pet"]) .emotion-card {
-    padding: 16px;
+    padding: 12px 14px;
     min-height: 0;
     overflow: hidden;
 }
@@ -2068,32 +2076,43 @@ body:not([data-view="desktop-pet"]) .emotion-summary {
 }
 
 body:not([data-view="desktop-pet"]) .emotion-grid {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 18px;
-    margin-top: 14px;
+    display: block;
+    margin-top: 10px;
     min-height: 0;
 }
 
 body:not([data-view="desktop-pet"]) .emotion-model-card {
-    padding: 14px;
+    display: grid;
+    grid-template-columns: 104px repeat(8, minmax(66px, 1fr));
+    gap: 6px;
+    align-items: stretch;
+    overflow-x: auto;
+    padding: 8px 10px;
     border: 1px solid #dce4ed;
     border-radius: 8px;
     background: #ffffff;
 }
 
 body:not([data-view="desktop-pet"]) .emotion-model-title {
-    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    margin: 0;
     font-size: 14px;
     font-weight: 700;
 }
 
 body:not([data-view="desktop-pet"]) .emotion-row {
-    min-height: 28px;
-    padding: 3px 10px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    min-height: 42px;
+    padding: 4px 6px;
     border-radius: 6px;
     color: #3e4b59;
-    font-size: 14px;
+    font-size: 13px;
+    text-align: center;
 }
 
 body:not([data-view="desktop-pet"]) .emotion-row[data-active="true"] {

@@ -79,10 +79,6 @@ class VisionConfig:
     local_vision: bool = False
     frame_rate: int = 15
     min_confidence: float = 0.5
-    emotion_backend: str = "torchscript"
-    emotion_model_path: str = ""
-    emotion_model_name: str = "enet_b2_7"
-    emotion_engine: str = "onnx"
     emotion_device: str = "auto"
     emotion_min_interval_s: float = 0.25
     poster_var_model_path: str = ""
@@ -242,10 +238,6 @@ def _build_vision_config(record: dict[str, Any]) -> VisionConfig:
         local_vision=bool(record.get("local_vision", False)),
         frame_rate=max(1, int(record.get("frame_rate", 15))),
         min_confidence=float(record.get("min_confidence", 0.5)),
-        emotion_backend=str(record.get("emotion_backend", "torchscript") or "torchscript"),
-        emotion_model_path=str(record.get("emotion_model_path", "") or ""),
-        emotion_model_name=str(record.get("emotion_model_name", "enet_b2_7") or "enet_b2_7"),
-        emotion_engine=str(record.get("emotion_engine", "onnx") or "onnx"),
         emotion_device=str(record.get("emotion_device", "auto") or "auto"),
         emotion_min_interval_s=max(
             0.0,

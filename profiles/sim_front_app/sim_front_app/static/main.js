@@ -77,11 +77,10 @@ document.addEventListener("DOMContentLoaded", () => {
     const CAMERA_FRAME_WIDTH = 320;
     const CAMERA_FRAME_HEIGHT = 180;
     const CAMERA_FRAME_QUALITY = 0.55;
+    const PRIMARY_EMOTION_MODEL = "POSTER-Var";
     const EMOTION_LABELS_BY_MODEL = Object.freeze({
         "POSTER-Var": ["Neutral", "Happy", "Sad", "Surprise", "Fear", "Disgust", "Anger", "Contempt"],
-        EmotiEffLib: ["Neutral", "Happiness", "Sadness", "Surprise", "Fear", "Disgust", "Anger"],
-        TorchScript: ["Neutral", "Happiness", "Sadness", "Surprise", "Fear", "Disgust", "Anger"],
-        default: ["Neutral", "Happiness", "Sadness", "Surprise", "Fear", "Disgust", "Anger"],
+        default: ["Neutral", "Happy", "Sad", "Surprise", "Fear", "Disgust", "Anger", "Contempt"],
     });
     const EMOTION_LABELS_ZH = Object.freeze({
         Anger: "生气",
@@ -89,10 +88,8 @@ document.addEventListener("DOMContentLoaded", () => {
         Disgust: "厌恶",
         Fear: "害怕",
         Happy: "开心",
-        Happiness: "开心",
         Neutral: "平静",
         Sad: "难过",
-        Sadness: "难过",
         Surprise: "惊讶",
     });
     const PET_SPRITES = Object.freeze({
@@ -496,14 +493,11 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     function humanizeEmotionVersions(emotion) {
-        const versions = Array.isArray(emotion?.versions)
-            ? emotion.versions
-            : [];
-        const items = versions
+        const items = emotionVersionsForCompare(emotion)
             .map((item) => humanizeEmotion(item))
             .filter(Boolean);
         if (items.length) {
-            return items.join(" / ");
+            return items.join("");
         }
         return humanizeEmotion(emotion);
     }
@@ -532,11 +526,16 @@ document.addEventListener("DOMContentLoaded", () => {
             : emotion && typeof emotion === "object"
                 ? [emotion]
                 : [];
-        return versions.filter((item) => item && typeof item === "object");
+        return versions.filter((item) => {
+            if (!item || typeof item !== "object") {
+                return false;
+            }
+            return String(item.model || "").trim() === PRIMARY_EMOTION_MODEL;
+        });
     }
 
     function emptyEmotionVersions() {
-        return ["POSTER-Var", "EmotiEffLib", "TorchScript"].map((model) => ({
+        return [PRIMARY_EMOTION_MODEL].map((model) => ({
             model,
             index: 0,
             probabilities: [],
@@ -609,12 +608,6 @@ document.addEventListener("DOMContentLoaded", () => {
                     label,
                     score: Number(probabilities[index]),
                 }))
-                .sort((left, right) => {
-                    const leftScore = Number.isFinite(left.score) ? left.score : -1;
-                    const rightScore = Number.isFinite(right.score) ? right.score : -1;
-                    return rightScore - leftScore;
-                })
-                .slice(0, 5)
                 .forEach((item) => {
                 const row = document.createElement("div");
                 row.className = "emotion-row";

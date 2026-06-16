@@ -23,10 +23,6 @@ class HeadTracker:
         model_filename: str = "model.pt",
         confidence_threshold: float = 0.3,
         device: str = "cpu",
-        emotion_backend: str = "torchscript",
-        emotion_model_path: str | Path = "",
-        emotion_model_name: str = "enet_b2_7",
-        emotion_engine: str = "onnx",
         emotion_device: str = "auto",
         emotion_min_interval_s: float = 0.25,
         poster_var_model_path: str | Path = "",
@@ -38,7 +34,6 @@ class HeadTracker:
     ) -> None:
         self.confidence_threshold = confidence_threshold
         self.emotion_classifier: Any | None = None
-        self.emotion_classifiers: list[tuple[str, Any]] = []
         self.identity_recognizer: Any | None = None
         try:
             from supervision import Detections
@@ -53,51 +48,13 @@ class HeadTracker:
         model_path = hf_hub_download(repo_id=model_repo, filename=model_filename)
         self.model = YOLO(model_path).to(device)
         logger.info("YOLO face tracker loaded from %s", model_repo)
-        backend = str(emotion_backend or "torchscript").strip().lower()
-        emotion_path = str(emotion_model_path or "").strip()
         poster_var_path = str(poster_var_model_path or "").strip()
-        if backend in {"compare", "dual", "compare_all"}:
-            if emotion_path:
-                self._add_torchscript_classifier(
-                    emotion_path,
-                    emotion_device=emotion_device,
-                    emotion_min_interval_s=emotion_min_interval_s,
-                )
-            self._add_emotiefflib_classifier(
-                emotion_model_name=emotion_model_name,
-                emotion_engine=emotion_engine,
-                emotion_device=emotion_device,
-                emotion_min_interval_s=emotion_min_interval_s,
-            )
-            if poster_var_path:
-                self._add_poster_var_classifier(
-                    poster_var_path,
-                    emotion_device=emotion_device,
-                    emotion_min_interval_s=emotion_min_interval_s,
-                )
-        elif backend == "poster_var":
-            if not poster_var_path:
-                raise ValueError("poster_var backend requires poster_var_model_path.")
-            self._add_poster_var_classifier(
+        if poster_var_path:
+            self.emotion_classifier = self._build_poster_var_classifier(
                 poster_var_path,
                 emotion_device=emotion_device,
                 emotion_min_interval_s=emotion_min_interval_s,
             )
-        elif backend == "emotiefflib":
-            self._add_emotiefflib_classifier(
-                emotion_model_name=emotion_model_name,
-                emotion_engine=emotion_engine,
-                emotion_device=emotion_device,
-                emotion_min_interval_s=emotion_min_interval_s,
-            )
-        elif emotion_path:
-            self._add_torchscript_classifier(
-                emotion_path,
-                emotion_device=emotion_device,
-                emotion_min_interval_s=emotion_min_interval_s,
-            )
-        if self.emotion_classifiers:
-            self.emotion_classifier = self.emotion_classifiers[-1][1]
         if face_identity_enabled:
             self._add_identity_recognizer(
                 known_faces_dir=known_faces_dir,
@@ -106,72 +63,21 @@ class HeadTracker:
                 min_interval_s=face_identity_min_interval_s,
             )
 
-    def _add_torchscript_classifier(
-        self,
-        emotion_path: str,
-        *,
-        emotion_device: str,
-        emotion_min_interval_s: float,
-    ) -> None:
-        from reachy_mini.runtime.vision.emotion_classifier import (
-            TorchScriptEmotionClassifier,
-        )
-
-        self.emotion_classifiers.append(
-            (
-                "TorchScript",
-                TorchScriptEmotionClassifier(
-                    emotion_path,
-                    device=emotion_device,
-                    min_interval_s=emotion_min_interval_s,
-                ),
-            )
-        )
-
-    def _add_emotiefflib_classifier(
-        self,
-        *,
-        emotion_model_name: str,
-        emotion_engine: str,
-        emotion_device: str,
-        emotion_min_interval_s: float,
-    ) -> None:
-        from reachy_mini.runtime.vision.emotion_classifier import (
-            EmotiEffLibEmotionClassifier,
-        )
-
-        self.emotion_classifiers.append(
-            (
-                "EmotiEffLib",
-                EmotiEffLibEmotionClassifier(
-                    model_name=emotion_model_name,
-                    engine=emotion_engine,
-                    device=emotion_device,
-                    min_interval_s=emotion_min_interval_s,
-                ),
-            )
-        )
-
-    def _add_poster_var_classifier(
+    def _build_poster_var_classifier(
         self,
         poster_var_path: str,
         *,
         emotion_device: str,
         emotion_min_interval_s: float,
-    ) -> None:
+    ) -> Any:
         from reachy_mini.runtime.vision.emotion_classifier import (
             PosterVarEmotionClassifier,
         )
 
-        self.emotion_classifiers.append(
-            (
-                "POSTER-Var",
-                PosterVarEmotionClassifier(
-                    poster_var_path,
-                    device=emotion_device,
-                    min_interval_s=emotion_min_interval_s,
-                ),
-            )
+        return PosterVarEmotionClassifier(
+            poster_var_path,
+            device=emotion_device,
+            min_interval_s=emotion_min_interval_s,
         )
 
     def _add_identity_recognizer(
@@ -285,23 +191,16 @@ class HeadTracker:
         img: NDArray[np.uint8],
         bbox: NDArray[np.float32],
     ) -> dict[str, Any] | None:
-        if not self.emotion_classifiers:
+        if self.emotion_classifier is None:
             return None
         now = time.monotonic()
-        versions: list[dict[str, Any]] = []
-        for name, classifier in self.emotion_classifiers:
-            prediction = classifier.predict(img, bbox, now=now)
-            if prediction is None:
-                continue
-            metadata = prediction.to_metadata()
-            metadata["model"] = name
-            versions.append(metadata)
-        if not versions:
+        prediction = self.emotion_classifier.predict(img, bbox, now=now)
+        if prediction is None:
             return None
-        primary = versions[-1].copy()
-        primary["versions"] = versions
-        primary["primary_model"] = str(primary.get("model", ""))
-        return primary
+        metadata = prediction.to_metadata()
+        metadata["model"] = "POSTER-Var"
+        metadata["primary_model"] = "POSTER-Var"
+        return metadata
 
     def _predict_identity(
         self,

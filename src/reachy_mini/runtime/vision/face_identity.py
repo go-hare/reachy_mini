@@ -11,7 +11,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from reachy_mini.runtime.vision.emotion_classifier import TorchScriptEmotionClassifier
+from reachy_mini.runtime.vision.emotion_classifier import crop_face
 
 logger = logging.getLogger(__name__)
 
@@ -168,7 +168,7 @@ class InsightFaceIdentityRecognizer:
         ):
             return self._last_prediction
 
-        crop = TorchScriptEmotionClassifier._crop_face(frame_bgr, bbox_xyxy)
+        crop = crop_face(frame_bgr, bbox_xyxy)
         if crop is None:
             return None
 
