@@ -910,4 +910,21 @@ mod tests {
             assert_eq!(*state.generation.lock().unwrap(), i);
         }
     }
+
+    #[test]
+    fn simulation_backend_flag_maps_mockup_to_lightweight_backend() {
+        assert_eq!(simulation_backend_flag(Some("mockup")), "--mockup-sim");
+        assert_eq!(simulation_backend_flag(Some("mujoco")), "--sim");
+        assert_eq!(simulation_backend_flag(None), "--sim");
+        assert_eq!(simulation_backend_flag(Some("unknown")), "--sim");
+    }
+
+    #[test]
+    fn mockup_simulation_command_does_not_use_mujoco_flag() {
+        let (_program, args) = build_daemon_command(true, Some("mockup"));
+
+        assert!(args.iter().any(|arg| arg == "--desktop-app-daemon"));
+        assert!(args.iter().any(|arg| arg == "--mockup-sim"));
+        assert!(!args.iter().any(|arg| arg == "--sim"));
+    }
 }

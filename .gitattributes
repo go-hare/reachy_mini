@@ -13,6 +13,7 @@
 *.onnx filter=lfs diff=lfs merge=lfs -text
 *.bin filter=lfs diff=lfs merge=lfs -text
 *.svg filter=lfs diff=lfs merge=lfs -text
+profiles/sim_front_app/sim_front_app/static/assets/reachy-console-icon.svg -filter -diff -merge text
 *.heic filter=lfs diff=lfs merge=lfs -text
 *.webp filter=lfs diff=lfs merge=lfs -text
 

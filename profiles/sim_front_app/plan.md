@@ -145,6 +145,20 @@ conda run -n reachy reachy-mini-agent web sim_front_app
 - MuJoCo 仍然保留为独立模式，不并入桌宠
 - 右侧 app / profile 选择逻辑先不推倒重来
 
+## 2026-06-16 进展记录
+
+- 桌面端连接选择里 `Pet Mode` 已固定使用 `mockup` simulation backend。
+- 前端 `useDaemon()` 会把 `simulationBackend` 传给 Tauri `start_daemon` 命令。
+- Tauri 侧 `build_daemon_command(true, Some("mockup"))` 会生成 `--mockup-sim`，不会生成 `--sim`。
+- 已新增 Rust 回归测试锁定该映射，避免桌宠模式后续误退回 MuJoCo。
+- `ReachyMiniApp.wrapped_run()` 本身不自动启动 daemon，只连接已有 daemon；因此桌面端先启动 `--mockup-sim` 后，`sim_front_app` 可以继续沿用当前 app/profile 启动链。
+
+## 下一步页面清理建议
+
+- `sim_front_app` 当前仍保留 Vision Console 的完整 DOM / JS，只是在 `?view=desktop-pet` 下隐藏侧边视觉面板。
+- 直接删除相机、视觉对比、事件日志相关结构会影响现有 `main.js` 中的 selector、事件处理和 browser camera bridge，建议单独拆成 Phase 2。
+- Phase 2 更安全的做法是先抽出桌宠必需模块：聊天 WebSocket、语音输入、pet sprite/state/bubble；再删除普通 Vision Console 默认视图。
+
 ## 待你确认的问题
 
 问题 1：桌宠模式被选中后，是否要自动拉起轻量仿真？

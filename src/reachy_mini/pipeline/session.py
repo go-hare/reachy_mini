@@ -25,14 +25,13 @@ from .frames import (
     PipelineErrorFrame,
     SDKMessageFrame,
     SpeechActivityFrame,
-    SpeechPresenterFrame,
     TranscriptionFrame,
-    TTSAudioFrame,
     TTSStopFrame,
     VisionEventFrame,
     WorkerEventFrame,
 )
 from .output_bus import OutputBus, OutputSubscription
+from .pipecat_runtime import ReachyPipecatRuntime
 from .speech_presenter import SpeechPresenter
 from .tts_kokoro import KokoroAdapter
 
@@ -115,6 +114,7 @@ class RuntimeSession:
         self.clock = clock or _SystemClock()
         self.brain = BrainProcessor(agent)
         self.bus = OutputBus()
+        self.pipecat: ReachyPipecatRuntime | None = None
         self._turn_workers: dict[str, set[str]] = {}
         self._started = False
         self._stopping = False
@@ -175,6 +175,23 @@ class RuntimeSession:
         self._started = True
         self._stopping = False
         await self.agent.start()
+        self.pipecat = ReachyPipecatRuntime(
+            bus=self.bus,
+            brain=self.brain,
+            speech=self.speech,
+            tts=self.tts,
+            actions=self.actions,
+            on_interrupt=self._handle_interrupt,
+            on_sdk_message=self._handle_sdk_message_side_effects,
+            on_brain_timeout=self._handle_brain_timeout,
+            on_brain_error=self._handle_brain_exception,
+            brain_turn_timeout_s=BRAIN_TURN_TIMEOUT_S,
+            audio_in_sample_rate=int(
+                getattr(self.config.speech_input, "sample_rate", 16000) or 16000
+            ),
+            audio_out_sample_rate=self.config.speech.sample_rate,
+        )
+        await self.pipecat.start()
         await self._set_surface("idle")
 
     async def stop(self) -> None:
@@ -183,6 +200,9 @@ class RuntimeSession:
             return
         self._stopping = True
         self.executor.cancel()
+        if self.pipecat is not None:
+            await self.pipecat.stop()
+            self.pipecat = None
         await self._stop_sdk_tasks()
         await self.agent.stop()
         await self.bus.close()
@@ -218,12 +238,14 @@ class RuntimeSession:
             frame.payload.get("turn_id") or frame.session_id or self._make_turn_id()
         )
         await self._set_surface("replying")
-        await self._dispatch_brain(frame, turn_id=turn_id)
+        frame.payload["turn_id"] = turn_id
+        await self._submit_pipecat(frame)
+        await self._maybe_set_idle()
         return turn_id
 
     async def submit_audio_chunk(self, frame: AudioFrame) -> None:
         """Forward an audio frame to upstream consumers."""
-        await self.bus.publish(frame)
+        await self._submit_pipecat(frame, wait=False)
 
     async def submit_speech_activity(self, frame: SpeechActivityFrame) -> None:
         """Forward speech activity to BrainProcessor, surfacing barge-in interrupts."""
@@ -231,21 +253,21 @@ class RuntimeSession:
             await self._set_surface("listening")
         elif frame.state == "end":
             await self._set_surface("listening_wait")
-        outputs = await self.brain.process(frame)
-        await self._handle_processor_outputs(outputs, turn_id="")
+        await self._submit_pipecat(frame)
 
     async def submit_transcription(self, frame: TranscriptionFrame) -> None:
         """Push a final transcription through BrainProcessor and publish previews."""
         await self.bus.publish(frame)
         if not frame.is_final:
+            await self._submit_pipecat(frame, wait=False)
             return
         await self._set_surface("replying")
-        await self._dispatch_brain(frame, turn_id=frame.turn_id)
+        await self._submit_pipecat(frame)
+        await self._maybe_set_idle()
 
     async def submit_vision_event(self, frame: VisionEventFrame) -> None:
         """Push a vision event into Brain context."""
-        await self.brain.process(frame)
-        await self.bus.publish(frame)
+        await self._submit_pipecat(frame, wait=False)
 
     async def wait_for_turn_idle(
         self, turn_id: str, *, timeout: float | None = None
@@ -283,6 +305,12 @@ class RuntimeSession:
             return
         await self._handle_processor_outputs(outputs, turn_id=turn_id)
 
+    async def _submit_pipecat(self, frame: object, *, wait: bool = True) -> None:
+        if self.pipecat is None:
+            await self._dispatch_brain(frame, turn_id=_turn_id_for_frame(frame))
+            return
+        await self.pipecat.submit(frame, wait=wait)
+
     async def _handle_processor_outputs(
         self,
         outputs: list[object],
@@ -300,45 +328,50 @@ class RuntimeSession:
             await self._maybe_set_idle()
 
     async def _handle_sdk_message(self, frame: SDKMessageFrame) -> None:
+        extra = await self._handle_sdk_message_side_effects(frame)
         await self.bus.publish(frame)
-        worker_frame = sdk_message_to_worker_event(frame)
-        if worker_frame is not None:
-            await self._handle_worker_event(frame.turn_id, worker_frame)
+        for item in extra:
+            await self.bus.publish(item)
 
-        speech_frames = await self.speech.process(frame)
-        for sf in speech_frames:
-            await self.bus.publish(sf)
-            if isinstance(sf, SpeechPresenterFrame):
-                tts_frames = await self.tts.process(sf)
-                for tf in tts_frames:
-                    if isinstance(tf, TTSAudioFrame):
-                        await self.brain.process(tf)
-                    await self.bus.publish(tf)
+    async def _handle_sdk_message_side_effects(
+        self,
+        frame: SDKMessageFrame,
+    ) -> list[object]:
+        worker_frame = sdk_message_to_worker_event(frame)
+        if worker_frame is None:
+            return []
+        return await self._handle_worker_event(frame.turn_id, worker_frame, publish=False)
 
     async def _handle_worker_event(
         self,
         turn_id: str,
         frame: WorkerEventFrame,
-    ) -> None:
+        *,
+        publish: bool = True,
+    ) -> list[object]:
         if turn_id and frame.event in {"started", "progress"}:
             self._turn_workers.setdefault(turn_id, set()).add(frame.task_id)
         await self.brain.process(frame)
-        await self.bus.publish(frame)
         if frame.event in {"completed", "failed", "stopped", "cancelled"}:
             bucket = self._turn_workers.get(turn_id)
             if bucket is not None:
                 bucket.discard(frame.task_id)
                 if not bucket:
                     self._turn_workers.pop(turn_id, None)
+        if publish:
+            await self.bus.publish(frame)
+            return []
+        return [frame]
 
     async def _handle_interrupt(self, interrupt: InterruptFrame) -> None:
-        speech_frames = await self.speech.process(interrupt)
-        for sf in speech_frames:
-            if isinstance(sf, TTSStopFrame):
-                tts_frames = await self.tts.process(sf)
-                for tf in tts_frames:
-                    await self.bus.publish(tf)
-            await self.bus.publish(sf)
+        if self.pipecat is None:
+            speech_frames = await self.speech.process(interrupt)
+            for sf in speech_frames:
+                if isinstance(sf, TTSStopFrame):
+                    tts_frames = await self.tts.process(sf)
+                    for tf in tts_frames:
+                        await self.bus.publish(tf)
+                await self.bus.publish(sf)
         await self.agent.interrupt()
         cancel_actions = InterruptFrame(
             scope="actions",
@@ -347,7 +380,6 @@ class RuntimeSession:
             ts_ms=interrupt.ts_ms,
         )
         await self.actions.process(cancel_actions)
-        await self.bus.publish(interrupt)
 
     async def _set_surface(self, phase: str) -> None:
         if phase == self._surface_phase:
@@ -379,6 +411,26 @@ class RuntimeSession:
             )
         )
         await self._set_surface("idle")
+
+    async def _handle_brain_timeout(self, turn_id: str) -> list[object]:
+        reason = f"brain turn timed out after {BRAIN_TURN_TIMEOUT_S:.0f}s"
+        LOGGER.warning("%s for turn %s", reason, turn_id)
+        await self._reset_agent_after_brain_error()
+        await self._set_surface("idle")
+        return [
+            PipelineErrorFrame(
+                component="brain",
+                reason=reason,
+                metadata={"turn_id": turn_id} if turn_id else {},
+            )
+        ]
+
+    async def _handle_brain_exception(self, exc: Exception) -> list[object]:
+        reason = self._safe_brain_error_reason(exc)
+        LOGGER.exception("Brain turn failed: %s", reason)
+        await self._reset_agent_after_brain_error()
+        await self._set_surface("idle")
+        return [PipelineErrorFrame(component="brain", reason=reason)]
 
     async def _reset_agent_after_brain_error(self) -> None:
         try:
@@ -415,3 +467,13 @@ class RuntimeSession:
 
     def _make_turn_id(self) -> str:
         return f"turn_{uuid.uuid4().hex[:12]}"
+
+
+def _turn_id_for_frame(frame: object) -> str:
+    if isinstance(frame, TranscriptionFrame):
+        return frame.turn_id
+    if isinstance(frame, BrowserInputFrame):
+        return str(frame.payload.get("turn_id") or frame.session_id or "")
+    if isinstance(frame, InterruptFrame):
+        return frame.turn_id
+    return ""
