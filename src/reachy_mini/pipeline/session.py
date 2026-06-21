@@ -4,23 +4,36 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
 from reachy_mini.action_runtime import ActionExecutor
-from reachy_mini.action_runtime.library import create_builtin_registry
+from reachy_mini.action_runtime import ActionSpec
+from reachy_mini.action_runtime.library import (
+    create_builtin_registry,
+    create_live2d_registry,
+)
 from reachy_mini.action_runtime.registry import ActionRegistry
 from reachy_mini.reachy_brain.agent import BrainAgent, ClientFactory
 from reachy_mini.reachy_brain.config import AgentConfig, from_profile
 from reachy_mini.reachy_brain.pipecat_bridge import sdk_message_to_worker_event
+from reachy_mini.reachy_brain.pipecat_bridge import extract_text_blocks
+from reachy_mini.runtime.live2d_avatar import (
+    live2d_tool_name,
+    live2d_system_prompt,
+    load_live2d_capabilities,
+)
 
 from .action_dispatcher import ActionDispatcher
 from .brain_processor import BrainProcessor
 from .frames import (
+    ActionResultFrame,
     AudioFrame,
     BrowserInputFrame,
+    EmbodimentFrame,
     InterruptFrame,
     PipelineErrorFrame,
     SDKMessageFrame,
@@ -114,11 +127,15 @@ class RuntimeSession:
         self.clock = clock or _SystemClock()
         self.brain = BrainProcessor(agent)
         self.bus = OutputBus()
+        if self.actions._publish is None:
+            self.actions._publish = self._publish_action_frame
         self.pipecat: ReachyPipecatRuntime | None = None
         self._turn_workers: dict[str, set[str]] = {}
         self._started = False
         self._stopping = False
         self._surface_phase = "idle"
+        self._active_turn_id = ""
+        self._turn_action_results: dict[str, list[ActionResultFrame]] = {}
 
     @classmethod
     def from_profile(
@@ -135,21 +152,23 @@ class RuntimeSession:
         """Build a runtime session from a profile directory."""
         del memory_root
         config = from_profile(profile_path, overrides=overrides)
-        registry = create_builtin_registry()
+        live2d_capabilities = load_live2d_capabilities(profile_path)
+        system_prompt_append = ""
+        if live2d_capabilities is None:
+            registry = create_builtin_registry()
+        else:
+            registry = create_live2d_registry(live2d_capabilities)
+            system_prompt_append = live2d_system_prompt(live2d_capabilities)
         mini = mini_factory(config) if mini_factory is not None else _NoopMini()
         executor = ActionExecutor(registry=registry, mini=mini)
-        bus = OutputBus()
-
-        async def publish_result(frame: Any) -> None:
-            await bus.publish(frame)
-
-        actions = ActionDispatcher(executor, publish=publish_result)
+        actions = ActionDispatcher(executor)
         agent = BrainAgent(
             config=config,
             registry=registry,
             run_action=actions.run_action,
             client_factory=client_factory,
             cwd=cwd,
+            system_prompt_append=system_prompt_append,
         )
         speech = SpeechPresenter(
             style={"voice": config.speech.voice, "speed": config.speech.speed}
@@ -165,7 +184,6 @@ class RuntimeSession:
             actions=actions,
             clock=clock,
         )
-        session.bus = bus
         return session
 
     async def start(self) -> None:
@@ -239,8 +257,14 @@ class RuntimeSession:
         )
         await self._set_surface("replying")
         frame.payload["turn_id"] = turn_id
-        await self._submit_pipecat(frame)
-        await self._maybe_set_idle()
+        previous_turn = self._active_turn_id
+        self._active_turn_id = turn_id
+        try:
+            await self._submit_pipecat(frame)
+            await self._maybe_set_idle()
+        finally:
+            self._active_turn_id = previous_turn
+            self._turn_action_results.pop(turn_id, None)
         return turn_id
 
     async def submit_audio_chunk(self, frame: AudioFrame) -> None:
@@ -262,11 +286,18 @@ class RuntimeSession:
             await self._submit_pipecat(frame, wait=False)
             return
         await self._set_surface("replying")
-        await self._submit_pipecat(frame)
-        await self._maybe_set_idle()
+        previous_turn = self._active_turn_id
+        self._active_turn_id = frame.turn_id
+        try:
+            await self._submit_pipecat(frame)
+            await self._maybe_set_idle()
+        finally:
+            self._active_turn_id = previous_turn
+            self._turn_action_results.pop(frame.turn_id, None)
 
     async def submit_vision_event(self, frame: VisionEventFrame) -> None:
         """Push a vision event into Brain context."""
+        await self.bus.publish(frame)
         await self._submit_pipecat(frame, wait=False)
 
     async def wait_for_turn_idle(
@@ -296,7 +327,12 @@ class RuntimeSession:
         except asyncio.TimeoutError:
             reason = f"brain turn timed out after {BRAIN_TURN_TIMEOUT_S:.0f}s"
             LOGGER.warning("%s for turn %s", reason, turn_id)
-            await self._publish_brain_error(reason, turn_id=turn_id)
+            fallback = await self._brain_timeout_fallback(turn_id)
+            if fallback is None:
+                await self._publish_brain_error(reason, turn_id=turn_id)
+            else:
+                await self._handle_sdk_message(fallback)
+                await self._set_surface("idle")
             return
         except Exception as exc:
             reason = self._safe_brain_error_reason(exc)
@@ -327,20 +363,57 @@ class RuntimeSession:
         if turn_id:
             await self._maybe_set_idle()
 
+    async def _publish_action_frame(self, frame: object) -> None:
+        """Publish action output and remember it for the active Brain turn."""
+        if isinstance(frame, ActionResultFrame) and self._active_turn_id:
+            self._turn_action_results.setdefault(self._active_turn_id, []).append(frame)
+        await self.bus.publish(frame)
+
     async def _handle_sdk_message(self, frame: SDKMessageFrame) -> None:
         extra = await self._handle_sdk_message_side_effects(frame)
         await self.bus.publish(frame)
         for item in extra:
             await self.bus.publish(item)
 
+    async def _run_claimed_live2d_actions(self, frame: SDKMessageFrame) -> None:
+        """Execute Live2D actions that a tool-incompatible model falsely claims."""
+
+        turn_id = frame.turn_id or self._active_turn_id
+        if not turn_id:
+            return
+        if any(
+            item.status == "ok" and item.name.startswith("live2d_")
+            for item in self._turn_action_results.get(turn_id, [])
+        ):
+            return
+        claimed_actions = _claimed_live2d_action_names(
+            "\n".join(extract_text_blocks(frame.message)),
+            self.registry,
+        )
+        for action_name in claimed_actions:
+            metadata = self.registry.get_metadata(action_name)
+            await self.actions.run_action(
+                ActionSpec(
+                    name=action_name,
+                    reason=f"live2d_claim_bridge:{action_name}",
+                    request_id=f"live2d_claim_{uuid.uuid4().hex}",
+                    owner_id="main-agent",
+                    priority=metadata.default_priority,
+                    interruptible=metadata.default_interruptible,
+                    deadline_s=metadata.default_duration_s,
+                )
+            )
+
     async def _handle_sdk_message_side_effects(
         self,
         frame: SDKMessageFrame,
     ) -> list[object]:
+        await self._run_claimed_live2d_actions(frame)
+        extra: list[object] = []
         worker_frame = sdk_message_to_worker_event(frame)
-        if worker_frame is None:
-            return []
-        return await self._handle_worker_event(frame.turn_id, worker_frame, publish=False)
+        if worker_frame is not None:
+            extra = await self._handle_worker_event(frame.turn_id, worker_frame, publish=False)
+        return extra
 
     async def _handle_worker_event(
         self,
@@ -393,6 +466,16 @@ class RuntimeSession:
             ts_ms=ts_ms,
         )
         await self.bus.publish(frame)
+        await self.bus.publish(
+            EmbodimentFrame(
+                action="surface_state",
+                payload={
+                    "phase": phase,
+                    **_surface_embodiment_for_phase(phase),
+                },
+                ts_ms=ts_ms,
+            )
+        )
 
     async def _maybe_set_idle(self) -> None:
         if self._stopping:
@@ -415,8 +498,10 @@ class RuntimeSession:
     async def _handle_brain_timeout(self, turn_id: str) -> list[object]:
         reason = f"brain turn timed out after {BRAIN_TURN_TIMEOUT_S:.0f}s"
         LOGGER.warning("%s for turn %s", reason, turn_id)
-        await self._reset_agent_after_brain_error()
+        fallback = await self._brain_timeout_fallback(turn_id)
         await self._set_surface("idle")
+        if fallback is not None:
+            return [fallback]
         return [
             PipelineErrorFrame(
                 component="brain",
@@ -431,6 +516,35 @@ class RuntimeSession:
         await self._reset_agent_after_brain_error()
         await self._set_surface("idle")
         return [PipelineErrorFrame(component="brain", reason=reason)]
+
+    async def _brain_timeout_fallback(self, turn_id: str) -> SDKMessageFrame | None:
+        """Return a successful Live2D fallback when actions already ran."""
+        live2d_results = [
+            frame
+            for frame in self._turn_action_results.get(turn_id, [])
+            if frame.status == "ok"
+            and frame.name.startswith("live2d_")
+        ]
+        if not live2d_results:
+            await self._reset_agent_after_brain_error()
+            return None
+
+        await self._reset_agent_after_brain_error()
+        actions = _summarize_live2d_actions(live2d_results)
+        text = (
+            f"收到，Live2D {actions}已执行。"
+            if actions
+            else "收到，Live2D 动作已执行。"
+        )
+        return SDKMessageFrame(
+            message=_assistant_message(
+                text,
+                session_id=turn_id,
+                model=self.config.model.model or "reachy-runtime",
+            ),
+            turn_id=turn_id,
+            metadata={"fallback": "live2d_action_after_brain_timeout"},
+        )
 
     async def _reset_agent_after_brain_error(self) -> None:
         try:
@@ -477,3 +591,133 @@ def _turn_id_for_frame(frame: object) -> str:
     if isinstance(frame, InterruptFrame):
         return frame.turn_id
     return ""
+
+
+def _summarize_live2d_actions(frames: list[ActionResultFrame]) -> str:
+    names: list[str] = []
+    for frame in frames:
+        if not isinstance(frame.result, dict):
+            continue
+        embodiment = frame.result.get("embodiment")
+        if not isinstance(embodiment, dict):
+            continue
+        payload = embodiment.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        name = str(payload.get("name") or "").strip()
+        if name:
+            names.append(name)
+    if not names:
+        return "动作"
+    return "、".join(dict.fromkeys(names))
+
+
+def _claimed_live2d_action_names(text: str, registry: ActionRegistry) -> list[str]:
+    """Return Live2D actions explicitly claimed as executed by assistant text."""
+
+    normalized = str(text or "").strip()
+    if not normalized or not _looks_like_live2d_execution_claim(normalized):
+        return []
+
+    matches: list[str] = []
+    for metadata in registry.list_metadata():
+        if not metadata.name.startswith("live2d_"):
+            continue
+        names = _live2d_claim_names_for_metadata(metadata)
+        if any(_text_contains_action_name(normalized, name) for name in names):
+            matches.append(metadata.name)
+    return list(dict.fromkeys(matches))
+
+
+def _looks_like_live2d_execution_claim(text: str) -> bool:
+    return bool(
+        re.search(r"(已|已经|成功|完成).{0,40}(执行|调用|触发|播放|应用)", text)
+        or re.search(r"(执行|调用|触发|播放|应用).{0,40}(完成|成功|了|啦)", text)
+        or re.search(r"(executed|called|triggered|played|applied)", text, re.I)
+    )
+
+
+def _live2d_claim_names_for_metadata(metadata: Any) -> set[str]:
+    names: set[str] = {str(metadata.name)}
+    tags = [str(tag) for tag in getattr(metadata, "tags", [])]
+    for tag in tags:
+        cleaned = tag.strip()
+        if not cleaned or cleaned.lower() in {"live2d", "avatar", "motion", "expression"}:
+            continue
+        names.add(cleaned)
+    if metadata.name.startswith("live2d_motion_"):
+        native = _native_live2d_name_from_description(metadata.description)
+        if native:
+            names.add(native)
+            names.add(live2d_tool_name("motion", native))
+    elif metadata.name.startswith("live2d_expression_"):
+        native = _native_live2d_name_from_description(metadata.description)
+        if native:
+            names.add(native)
+            names.add(live2d_tool_name("expression", native))
+    return names
+
+
+def _native_live2d_name_from_description(description: str) -> str:
+    match = re.search(r"Native name:\s*([^.\s]+)", str(description or ""))
+    return match.group(1).strip() if match else ""
+
+
+def _text_contains_action_name(text: str, name: str) -> bool:
+    candidate = str(name or "").strip()
+    if not candidate:
+        return False
+    if re.search(r"[\w]", candidate, re.ASCII):
+        return re.search(rf"(?<![A-Za-z0-9_]){re.escape(candidate)}(?![A-Za-z0-9_])", text, re.I) is not None
+    return candidate in text
+
+
+def _assistant_message(text: str, *, session_id: str, model: str) -> object:
+    try:
+        from claude_agent_sdk import AssistantMessage, TextBlock
+
+        return AssistantMessage(
+            content=[TextBlock(text=text)],
+            model=model,
+            session_id=session_id,
+        )
+    except Exception:
+        return _FallbackAssistantMessage(
+            content=[_FallbackTextBlock(text=text)],
+            model=model,
+            session_id=session_id,
+        )
+
+
+class _FallbackTextBlock:
+    def __init__(self, *, text: str) -> None:
+        self.text = text
+
+
+class _FallbackAssistantMessage:
+    def __init__(self, *, content: list[object], model: str, session_id: str) -> None:
+        self.content = content
+        self.model = model
+        self.session_id = session_id
+
+
+def _surface_embodiment_for_phase(phase: str) -> dict[str, Any]:
+    mapping: dict[str, dict[str, Any]] = {
+        "listening": {
+            "pose": "listen",
+            "attention": "front",
+        },
+        "listening_wait": {
+            "pose": "think",
+            "attention": "front",
+        },
+        "replying": {
+            "pose": "speak",
+            "attention": "front",
+        },
+        "idle": {
+            "pose": "idle",
+            "attention": "front",
+        },
+    }
+    return dict(mapping.get(phase, {"pose": "idle"}))

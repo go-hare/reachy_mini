@@ -18,6 +18,7 @@ from reachy_mini.pipeline.frames import (
     AudioFrame,
     BrowserInputFrame,
     CameraFrame,
+    EmbodimentFrame,
     InterruptFrame,
     PipelineErrorFrame,
     SDKMessageFrame,
@@ -84,6 +85,7 @@ def test_encode_action_result_frame() -> None:
         "name": "nod",
         "owner_id": "main-agent",
         "status": "ok",
+        "result": None,
         "error": None,
         "duration_ms": 42,
     }
@@ -157,6 +159,30 @@ def test_encode_supporting_frame_types() -> None:
     error = encode_frame(PipelineErrorFrame(component="stt", reason="boom"))
     assert error["type"] == "pipeline_error"
     assert error["payload"]["reason"] == "boom"
+
+
+def test_encode_embodiment_frame() -> None:
+    """EmbodimentFrame serializes body-agnostic expression events."""
+    envelope = encode_frame(
+        EmbodimentFrame(
+            action="surface_state",
+            target="avatar",
+            turn_id="T1",
+            payload={"phase": "replying", "pose": "speak"},
+            ts_ms=1234,
+        )
+    )
+
+    assert envelope == {
+        "type": "embodiment",
+        "ts_ms": 1234,
+        "payload": {
+            "action": "surface_state",
+            "target": "avatar",
+            "turn_id": "T1",
+            "payload": {"phase": "replying", "pose": "speak"},
+        },
+    }
 
 
 def test_encode_unsupported_frame_raises() -> None:

@@ -5,7 +5,7 @@
     <meta charset="UTF-8">
     <title>Reachy Vision Console</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <link rel="stylesheet" href="/static/style.css?v=20260618-brand-icon-sync-1">
+    <link rel="stylesheet" href="/static/style.css?v=20260621-live2d-visible-actions-3">
 </head>
 
 <body>
@@ -85,38 +85,52 @@
                     <h2 id="chat-title">对话</h2>
                 </div>
 
-                <div class="chat-log" id="chat-log">
-                    <div class="message user demo-message">
-                        <div class="bubble">你现在看到我了吗？<span class="message-time">21:35:02</span></div>
+                <div class="console-pet-scene" aria-hidden="true">
+                    <div class="console-pet-status">
+                        <span class="console-pet-chip" id="console-pet-runtime-chip" data-state="starting">连接中</span>
+                        <span class="console-pet-chip" id="console-pet-attention-chip" data-state="front">正前方</span>
                     </div>
-                    <div class="message assistant">
-                        <div class="bubble">看到了，你在正前方，表情偏高兴。<span class="message-time">21:35:03</span></div>
+                    <div class="console-pet-bubble" id="console-pet-bubble">我已经连上 v4 内核了。</div>
+                    <div class="console-pet-figure" id="console-pet-figure" data-avatar-mode="sprite">
+                        <span class="console-pet-ear-cue console-pet-ear-cue-left" aria-hidden="true"></span>
+                        <span class="console-pet-ear-cue console-pet-ear-cue-right" aria-hidden="true"></span>
+                        <img id="console-pet-sprite" src="/static/assets/desktop-pet/idle.png?v=20260331-desktop-pet-3" alt="">
+                        <div class="avatar-live2d-stage" id="avatar-live2d-stage" hidden>
+                            <canvas class="avatar-live2d-canvas" id="avatar-live2d-canvas"></canvas>
+                            <div class="avatar-live2d-face" id="avatar-live2d-placeholder" aria-hidden="true">
+                                <span class="avatar-live2d-eye avatar-live2d-eye-left"></span>
+                                <span class="avatar-live2d-eye avatar-live2d-eye-right"></span>
+                                <span class="avatar-live2d-mouth"></span>
+                            </div>
+                            <span class="avatar-mode-label">Live2D</span>
+                        </div>
                     </div>
-                    <div class="message user demo-message">
-                        <div class="bubble">我是谁？<span class="message-time">21:35:07</span></div>
-                    </div>
-                    <div class="message assistant demo-message">
-                        <div class="bubble">身份还没有登记，我先按陌生人处理。<span class="message-time">21:35:08</span></div>
-                    </div>
+                    <div class="console-pet-shadow"></div>
                 </div>
 
-                <form class="composer" id="chat-form">
-                    <label class="sr-only" for="message-input">Message</label>
-                    <div class="composer-bar">
-                        <div class="composer-meta">
-                            <span class="mic-status" id="mic-status" data-state="idle">麦克风待命</span>
-                            <span class="hint" id="composer-hint">Enter 发送，Shift+Enter 换行</span>
-                        </div>
-                        <div class="composer-actions">
-                            <button type="button" class="secondary-button" id="mic-button">说话</button>
-                        </div>
+                <div class="console-chat-sheet">
+                    <div class="chat-log" id="chat-log">
+                        <div class="chat-empty demo-message">还没有对话，直接输入或点击说话开始。</div>
                     </div>
-                    <div class="speech-preview" id="speech-preview" hidden></div>
-                    <div class="input-row">
-                        <textarea id="message-input" rows="2" placeholder="输入消息或按住说话..."></textarea>
-                        <button type="submit" class="send-button" id="send-button" aria-label="发送">发送</button>
-                    </div>
-                </form>
+
+                    <form class="composer" id="chat-form">
+                        <label class="sr-only" for="message-input">Message</label>
+                        <div class="composer-bar">
+                            <div class="composer-meta">
+                                <span class="mic-status" id="mic-status" data-state="idle">麦克风待命</span>
+                                <span class="hint" id="composer-hint">Enter 发送，Shift+Enter 换行</span>
+                            </div>
+                            <div class="composer-actions">
+                                <button type="button" class="secondary-button" id="mic-button">说话</button>
+                            </div>
+                        </div>
+                        <div class="speech-preview" id="speech-preview" hidden></div>
+                        <div class="input-row">
+                            <textarea id="message-input" rows="2" placeholder="输入消息或按住说话..."></textarea>
+                            <button type="submit" class="send-button" id="send-button" aria-label="发送">发送</button>
+                        </div>
+                    </form>
+                </div>
             </div>
 
             <div class="side-panel" id="side-panel">
@@ -229,7 +243,10 @@
         </footer>
     </div>
 
-    <script src="/static/main.js?v=20260616-poster-var-row-1"></script>
+    <script src="/static/vendor/live2d/live2dcubismcore.min.js?v=20260621-live2d-action-bridge-2"></script>
+    <script src="/static/vendor/live2d/pixi.min.js?v=20260621-live2d-action-bridge-2"></script>
+    <script src="/static/vendor/live2d/pixi-live2d-display.min.js?v=20260621-live2d-action-bridge-2"></script>
+    <script src="/static/main.js?v=20260621-live2d-visible-actions-3"></script>
 </body>
 
 </html>

@@ -10,6 +10,27 @@ from .common import BaseRobotAction, call_sdk, seconds
 
 DEFAULT_LIBRARY = "pollen-robotics/reachy-mini-emotions-library"
 
+EMOTION_ALIASES: dict[str, tuple[str, ...]] = {
+    "happy": ("cheerful1", "success1", "enthusiastic1", "proud1"),
+    "excited": ("enthusiastic1", "enthusiastic2", "no_excited1", "success1"),
+    "joy": ("cheerful1", "success1", "enthusiastic1"),
+    "joyful": ("cheerful1", "success1", "enthusiastic1"),
+    "glad": ("cheerful1", "success1"),
+    "sad": ("sad1", "sad2", "downcast1", "lonely1"),
+    "angry": ("furious1", "rage1", "irritated1"),
+    "mad": ("furious1", "rage1", "irritated1"),
+    "surprised": ("surprised1", "surprised2", "amazed1"),
+    "scared": ("scared1", "fear1", "anxiety1"),
+    "fear": ("fear1", "scared1", "anxiety1"),
+    "confused": ("confused1", "uncertain1", "incomprehensible2"),
+    "curious": ("curious1", "inquiring1", "inquiring2"),
+    "tired": ("tired1", "exhausted1", "sleep1"),
+    "sleepy": ("sleep1", "tired1", "exhausted1"),
+    "calm": ("calming1", "serenity1", "relief1"),
+    "yes": ("yes1", "yes_sad1"),
+    "no": ("no1", "no_excited1", "no_sad1"),
+}
+
 PARAMETER_SCHEMA: dict[str, Any] = {
     "type": "object",
     "required": ["name"],
@@ -48,6 +69,7 @@ class PlayEmotionAction(BaseRobotAction):
         speed = float(self.spec.params.get("speed", 1.0))
         await context.cancel_token.checkpoint()
         moves = await call_sdk(RecordedMoves, library)
+        move_name = resolve_emotion_move_name(move_name, moves.list_moves())
         move = await call_sdk(moves.get, move_name)
         if hasattr(context.mini, "async_play_move"):
             await context.mini.async_play_move(
@@ -64,6 +86,38 @@ class PlayEmotionAction(BaseRobotAction):
             )
         else:
             await call_sdk(context.mini.goto_target, duration=initial_goto)
+
+
+def resolve_emotion_move_name(requested_name: str, available_moves: list[str]) -> str:
+    """Map semantic emotion labels to concrete recorded-move names."""
+
+    requested = str(requested_name or "").strip()
+    available = list(available_moves)
+    if requested in available:
+        return requested
+
+    normalized = requested.lower().replace("-", "_").replace(" ", "_")
+    available_by_lower = {name.lower(): name for name in available}
+    if normalized in available_by_lower:
+        return available_by_lower[normalized]
+
+    for alias in EMOTION_ALIASES.get(normalized, ()):
+        if alias in available:
+            return alias
+
+    for candidate in available:
+        lowered = candidate.lower()
+        if lowered.startswith(f"{normalized}_") or lowered.startswith(normalized):
+            return candidate
+
+    for candidate in available:
+        if normalized and normalized in candidate.lower():
+            return candidate
+
+    raise ValueError(
+        f"Move {requested_name} not found in recorded moves library. "
+        f"Available moves: {available}"
+    )
 
 
 def build(spec: ActionSpec) -> PlayEmotionAction:

@@ -192,3 +192,10 @@ conda run -n reachy reachy-mini-agent web sim_front_app
 1. 把“桌宠模式”对应的 daemon 启动命令切到 `--mockup-sim`
 2. 确认右侧 profile / app 选择不会再误拉起 MuJoCo
 3. 再继续删 `sim_front_app` 里不属于桌宠的页面元素
+
+## 2026-06-19 动作协议补充
+
+- 当前目标切换为“一个脑子，多种身体”：同一套 runtime 输出要能驱动实体 Reachy Mini、轻量桌宠、后续 3D/VRM 虚拟人。
+- 第一阶段不直接上 Three.js/VRM，先补通用 `embodiment` websocket 帧，让现有桌宠 sprite 消费统一动作事件。
+- 后端只发布稳定的表现层意图：`surface_state` / `pose` / `attention` / `speech` 等，不把底层电机角度暴露给前端。
+- 这次最小验收：surface phase 变化能同时保持旧 `worker_event` 兼容，并新增 `embodiment` 帧；`sim_front_app` 能消费该帧更新桌宠状态。

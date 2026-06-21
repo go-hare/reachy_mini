@@ -17,6 +17,7 @@ from .frames import (
     AudioFrame,
     BrowserInputFrame,
     CameraFrame,
+    EmbodimentFrame,
     InterruptFrame,
     PipelineErrorFrame,
     SDKMessageFrame,
@@ -72,9 +73,21 @@ def encode_frame(frame: Any) -> dict[str, Any]:
                 "name": frame.name,
                 "owner_id": frame.owner_id,
                 "status": frame.status,
+                "result": _to_jsonable(frame.result),
                 "error": frame.error,
                 "duration_ms": frame.duration_ms,
             },
+        )
+    if isinstance(frame, EmbodimentFrame):
+        return _envelope(
+            "embodiment",
+            {
+                "action": frame.action,
+                "target": frame.target,
+                "turn_id": frame.turn_id,
+                "payload": _to_jsonable(frame.payload),
+            },
+            ts_ms=frame.ts_ms,
         )
     if isinstance(frame, WorkerEventFrame):
         return _envelope(

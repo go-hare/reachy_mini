@@ -78,6 +78,16 @@ class EmbodimentCoordinator:
         self._refresh_public_state()
         return dict(self._current_surface_state)
 
+    def __post_init__(self) -> None:
+        """Preserve camera tracking by default when a camera worker is configured."""
+        if self.camera_worker is None or not hasattr(
+            self.camera_worker,
+            "set_head_tracking_enabled",
+        ):
+            return
+        self._desired_head_tracking_enabled = True
+        self._sync_head_tracking(self._current_time())
+
     def apply_surface_state(self, state: Mapping[str, Any] | None) -> str:
         """Apply one surface-state snapshot and clear speech motion when needed."""
 

@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from reachy_mini.action_runtime import ActionExecutor, ActionSpec
-from reachy_mini.action_runtime.library import create_builtin_registry
+from reachy_mini.action_runtime import ActionExecutor, ActionSpec, UnknownActionError
+from reachy_mini.action_runtime.library import create_builtin_registry, create_live2d_registry
+from reachy_mini.pipeline.action_dispatcher import ActionDispatcher
+from reachy_mini.pipeline.frames import ActionResultFrame, EmbodimentFrame
+from reachy_mini.runtime.live2d_avatar import Live2DCapabilities
 
 
 class FakeMini:
@@ -111,3 +114,63 @@ async def test_head_and_antenna_actions_can_run_independently() -> None:
 
     assert head_result.status == "ok"
     assert antenna_result.status == "ok"
+
+
+@pytest.mark.asyncio
+async def test_live2d_action_publishes_native_embodiment_event() -> None:
+    """Live2D action emits a native Live2D event instead of robot motion."""
+    registry = create_live2d_registry(
+        Live2DCapabilities(
+            model_name="IceGirl",
+            root_url="/static/assets/live2d/IceGirl",
+            vtube_file="IceGirl.vtube.json",
+            model_file="IceGirl.model3.json",
+            idle_motion="DaiJi",
+            motions=("DaiJi", "HuiShou"),
+            expressions=("惊讶", "脸红"),
+        )
+    )
+    executor = ActionExecutor(registry=registry, mini=object())
+    frames: list[object] = []
+
+    async def publish(frame: object) -> None:
+        frames.append(frame)
+
+    dispatcher = ActionDispatcher(executor, publish=publish)
+
+    result = await dispatcher.run_action(
+        ActionSpec(
+            name="live2d_expression_jing_ya",
+            owner_id="main-agent",
+        )
+    )
+
+    assert result.status == "ok"
+    assert isinstance(frames[0], EmbodimentFrame)
+    assert frames[0].action == "live2d_expression"
+    assert frames[0].target == "live2d"
+    assert frames[0].payload == {"name": "惊讶"}
+    assert isinstance(frames[1], ActionResultFrame)
+    assert frames[1].name == "live2d_expression_jing_ya"
+
+
+@pytest.mark.asyncio
+async def test_live2d_registry_rejects_unknown_dynamic_tool() -> None:
+    """Unknown Live2D dynamic tool names fail before execution."""
+    registry = create_live2d_registry(
+        Live2DCapabilities(
+            model_name="IceGirl",
+            root_url="/static/assets/live2d/IceGirl",
+            vtube_file="IceGirl.vtube.json",
+            model_file="IceGirl.model3.json",
+            idle_motion="DaiJi",
+            motions=("DaiJi", "HuiShou"),
+            expressions=("惊讶", "脸红"),
+        )
+    )
+    executor = ActionExecutor(registry=registry, mini=object())
+
+    with pytest.raises(UnknownActionError) as exc_info:
+        registry.build(ActionSpec(name="live2d_motion_happy", owner_id="main-agent"))
+
+    assert "Unknown action: live2d_motion_happy" in str(exc_info.value)

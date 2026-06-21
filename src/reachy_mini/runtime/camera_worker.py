@@ -60,6 +60,8 @@ class CameraWorker:
         self._reactive_person_visible = False
         self._reactive_attention_active = False
         self._last_attention_update_at = 0.0
+        self._logged_external_frame = False
+        self._logged_missing_reactive_listeners = False
 
     def add_reactive_vision_listener(
         self,
@@ -117,6 +119,15 @@ class CameraWorker:
         normalized_frame = np.ascontiguousarray(frame)
         if normalized_frame.ndim != 3 or normalized_frame.shape[2] != 3:
             return
+
+        if not self._logged_external_frame:
+            self._logged_external_frame = True
+            logger.warning(
+                "Reactive vision received external camera frame: shape=%s tracker=%s tracking=%s",
+                tuple(normalized_frame.shape),
+                type(self.head_tracker).__name__ if self.head_tracker is not None else "None",
+                self.is_head_tracking_enabled,
+            )
 
         with self.frame_lock:
             self.latest_frame = normalized_frame.copy()
@@ -362,6 +373,9 @@ class CameraWorker:
         with self._reactive_vision_listener_lock:
             listeners = list(self._reactive_vision_listeners)
         if not listeners:
+            if not self._logged_missing_reactive_listeners:
+                self._logged_missing_reactive_listeners = True
+                logger.warning("Reactive vision event dropped without listeners: %s", name)
             return
 
         event = ReactiveVisionEvent(
@@ -371,6 +385,12 @@ class CameraWorker:
                 "source": "reactive_vision",
                 **dict(metadata),
             },
+        )
+        logger.warning(
+            "Reactive vision event emitted: %s listeners=%s metadata=%s",
+            event.name,
+            len(listeners),
+            event.metadata,
         )
         for listener in listeners:
             try:

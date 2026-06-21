@@ -1,0 +1,15 @@
+{
+  "mode": "live2d",
+  "fallback_mode": "sprite",
+  "live2d": {
+    "root": "/static/assets/live2d/IceGirl",
+    "vtube": "IceGirl.vtube.json",
+    "zoom": 1.08,
+    "offset_x": 0,
+    "offset_y": 0.03,
+    "message": "Live2D 模式已启用，动作和表情来自模型包原始配置。"
+  },
+  "sprite": {
+    "message": "当前使用轻量 2D sprite 桌宠。"
+  }
+}

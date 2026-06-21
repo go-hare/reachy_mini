@@ -81,13 +81,14 @@ class ActionExecutor:
                 )
             )
             await action.prepare(context)
-            await self._run_with_cancellation(action, context, run_timeout_s)
+            action_output = await self._run_with_cancellation(action, context, run_timeout_s)
             return ActionResult(
                 request_id=request_id,
                 action_id=action_id,
                 name=action.name,
                 owner_id=spec.owner_id,
                 status="ok",
+                result=action_output,
                 duration_ms=self._elapsed_ms(start),
             )
         except ActionCancelledError as exc:
@@ -139,7 +140,7 @@ class ActionExecutor:
         action: object,
         context: ExecutorActionContext,
         duration_s: float | None,
-    ) -> None:
+    ) -> object:
         run_coro = action.run(context)  # type: ignore[attr-defined]
         cancel_task = asyncio.create_task(context.cancel_token.wait())
         run_task = asyncio.create_task(run_coro)
@@ -156,8 +157,9 @@ class ActionExecutor:
             if cancel_task in done and context.cancel_token.is_cancelled:
                 run_task.cancel()
                 raise ActionCancelledError("Action was cancelled.")
-            await run_task
+            result = await run_task
             await context.cancel_token.checkpoint()
+            return result
         finally:
             for task in tasks:
                 if not task.done():

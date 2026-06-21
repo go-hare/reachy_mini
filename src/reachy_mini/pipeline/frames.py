@@ -110,6 +110,7 @@ class ActionResultFrame:
     status: str
     error: str | None
     duration_ms: int
+    result: Any = None
 
     @classmethod
     def from_result(cls, result: ActionResult) -> "ActionResultFrame":
@@ -119,9 +120,21 @@ class ActionResultFrame:
             name=result.name,
             owner_id=result.owner_id,
             status=result.status,
+            result=result.result,
             error=result.error,
             duration_ms=result.duration_ms,
         )
+
+
+@dataclass(frozen=True)
+class EmbodimentFrame:
+    """Body-agnostic expression event for robots, 3D bodies, and avatars."""
+
+    action: str
+    payload: dict[str, Any]
+    target: str = "all"
+    turn_id: str = ""
+    ts_ms: int = 0
 
 
 @dataclass(frozen=True)

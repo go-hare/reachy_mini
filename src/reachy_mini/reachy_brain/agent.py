@@ -66,6 +66,7 @@ class BrainAgent:
         owner_id: str = "main-agent",
         client_factory: ClientFactory | None = None,
         cwd: Path | str | None = None,
+        system_prompt_append: str = "",
     ) -> None:
         """Create a Brain agent bound to an ActionRuntime MCP facade."""
         self.config = config
@@ -73,6 +74,7 @@ class BrainAgent:
         self.run_action = run_action
         self.owner_id = owner_id
         self.cwd = Path(cwd).resolve() if cwd is not None else Path.cwd()
+        self.system_prompt_append = str(system_prompt_append or "").strip()
         self._client_factory = client_factory
         self._client: SDKClient | None = None
         self.options = self._build_options()
@@ -171,8 +173,13 @@ class BrainAgent:
             if not path.is_absolute():
                 path = self.cwd / path
             if path.is_file():
-                return path.read_text(encoding="utf-8")
-        return _load_prompt("system.md")
+                return self._append_system_prompt(path.read_text(encoding="utf-8"))
+        return self._append_system_prompt(_load_prompt("system.md"))
+
+    def _append_system_prompt(self, base: str) -> str:
+        if not self.system_prompt_append:
+            return base
+        return f"{base.rstrip()}\n\n{self.system_prompt_append}\n"
 
     def _sdk_env(self) -> dict[str, str]:
         env: dict[str, str] = {}

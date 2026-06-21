@@ -64,10 +64,13 @@ def action_allowed_tool_names(
     server_name: str = "reachy_actions",
 ) -> list[str]:
     """Return SDK MCP allowed tool names for all registered actions."""
-    return [
-        f"mcp__{server_name}__{metadata.name}"
-        for metadata in registry.list_metadata()
-    ]
+    names: list[str] = []
+    for metadata in registry.list_metadata():
+        # Claude Agent SDK examples use bare SDK MCP tool names, while the
+        # bundled CLI may expose MCP tools with a server-qualified name.
+        names.append(metadata.name)
+        names.append(f"mcp__{server_name}__{metadata.name}")
+    return names
 
 
 def _build_action_tool(

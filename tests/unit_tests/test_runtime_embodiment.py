@@ -161,6 +161,17 @@ def test_embodiment_coordinator_resets_speech_when_leaving_replying() -> None:
     assert speech_driver.head_wobbler.reset_calls == 1
 
 
+def test_embodiment_coordinator_enables_head_tracking_on_init_when_camera_worker_exists() -> None:
+    """Runtime startup should not silently disable camera-based tracking."""
+    camera_worker = FakeCameraWorker()
+
+    coordinator = EmbodimentCoordinator(
+        camera_worker=camera_worker,
+    )
+
+    assert camera_worker.enabled_states == [True]
+
+
 def test_embodiment_coordinator_exposes_current_surface_state_and_settling_hold() -> None:
     """Coordinator should surface the aggregate embodied state, not only the phase string."""
     fake_time = {"value": 10.0}

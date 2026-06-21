@@ -10,6 +10,14 @@ document.addEventListener("DOMContentLoaded", () => {
     const petSprite = document.getElementById("pet-sprite");
     const petFigure = document.getElementById("pet-figure");
     const petSpeechBubble = document.getElementById("pet-speech-bubble");
+    const consolePetBubble = document.getElementById("console-pet-bubble");
+    const consolePetSprite = document.getElementById("console-pet-sprite");
+    const consolePetFigure = document.getElementById("console-pet-figure");
+    const avatarLive2dStage = document.getElementById("avatar-live2d-stage");
+    const avatarLive2dCanvas = document.getElementById("avatar-live2d-canvas");
+    const avatarLive2dPlaceholder = document.getElementById("avatar-live2d-placeholder");
+    const consolePetRuntimeChip = document.getElementById("console-pet-runtime-chip");
+    const consolePetAttentionChip = document.getElementById("console-pet-attention-chip");
     const petStateLabel = document.getElementById("pet-state-label");
     const petStateCopy = document.getElementById("pet-state-copy");
     const petRuntimeChip = document.getElementById("pet-runtime-chip");
@@ -71,7 +79,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const cameraSupported =
         Boolean(navigator.mediaDevices) &&
         typeof navigator.mediaDevices.getUserMedia === "function";
-    const DESKTOP_PET_POSITION_KEY = "reachy-mini.desktop-pet.position.v1";
+    const DESKTOP_PET_POSITION_KEY = "reachy-mini.desktop-pet.position.v4";
     const DESKTOP_PET_MARGIN = 24;
     const CAMERA_FRAME_INTERVAL_MS = 200;
     const CAMERA_FRAME_WIDTH = 320;
@@ -100,6 +108,27 @@ document.addEventListener("DOMContentLoaded", () => {
         sleep: "/static/assets/desktop-pet/sleep.png?v=20260331-desktop-pet-3",
         drag: "/static/assets/desktop-pet/drag.png?v=20260331-desktop-pet-3",
     });
+    const AVATAR_CONFIG_URL = "/static/avatar.config.json?v=20260621-live2d-visible-actions-3";
+    const AVATAR_MODES = Object.freeze(["sprite", "live2d"]);
+    const LIVE2D_DEBUG_PARAMETER_IDS = Object.freeze([
+        "Param58",
+        "Param59",
+        "Param31",
+        "Param32",
+        "Param33",
+        "Param34",
+        "Param35",
+        "Param36",
+        "Param37",
+        "Param41",
+        "Param53",
+        "Param60",
+        "ParamBrowLForm",
+        "ParamBrowRForm",
+        "ParamMouthForm",
+        "ParamEyeLOpen",
+        "ParamEyeROpen",
+    ]);
 
     let socket = null;
     let socketReady = false;
@@ -127,6 +156,25 @@ document.addEventListener("DOMContentLoaded", () => {
     let desktopPetDrag = null;
     let desktopPetHoverActive = false;
     let desktopPetChatHideTimer = null;
+    let consolePetMotionTimer = null;
+    let avatarConfig = {};
+    let avatarMode = "sprite";
+    let live2dApp = null;
+    let live2dModel = null;
+    let live2dResizeHandler = null;
+    let live2dManifest = null;
+    let live2dDebugUnsubscribe = null;
+    let live2dDebugEventHandler = null;
+    let live2dMotionResetTimer = null;
+    let live2dExpressionResetTimer = null;
+    let live2dActiveExpressions = new Set();
+    let live2dExpressionUpdateHandler = null;
+    let live2dModelUpdateHandler = null;
+    let live2dActiveMotion = null;
+    let live2dUpdateTick = 0;
+    let live2dLastMotionStartedAtMs = 0;
+    let live2dLastMotionReplayedAtMs = 0;
+    let live2dAssistantReplayTimer = null;
     const DETECTION_BOX_SCALE_X = 1.14;
     const DETECTION_BOX_SCALE_Y = 1.18;
 
@@ -162,7 +210,9 @@ document.addEventListener("DOMContentLoaded", () => {
         if (petConnectionText) {
             petConnectionText.textContent = text;
         }
-        setPetRuntimeState(ready ? "已连接" : "连接中", ready ? "ready" : "starting");
+        if (avatarMode === "sprite") {
+            setPetRuntimeState(ready ? "已连接" : "连接中", ready ? "ready" : "starting");
+        }
     }
 
     function setMicStatus(text, state = "idle") {
@@ -227,6 +277,1107 @@ document.addEventListener("DOMContentLoaded", () => {
         return `${normalized.slice(0, maxLength - 1)}…`;
     }
 
+    function summarizePetSpeech(text) {
+        const normalized = compactText(text);
+        if (!normalized) {
+            return "";
+        }
+
+        if (normalized.length <= 42) {
+            return normalized;
+        }
+
+        const lower = normalized.toLowerCase();
+        if (lower.includes("error") || normalized.includes("失败") || normalized.includes("出错")) {
+            return "动作遇到问题，我把详情放在聊天记录里。";
+        }
+        if (normalized.includes("抱歉") || normalized.includes("对不起")) {
+            return "抱歉，我把完整说明放在聊天记录里。";
+        }
+        if (normalized.includes("可以") || normalized.includes("方案") || normalized.includes("建议")) {
+            return "我整理了一个方案，详情在下面。";
+        }
+        if (normalized.includes("看到") || normalized.includes("检测") || normalized.includes("识别")) {
+            return "我看到了一些信息，详情在下面。";
+        }
+
+        return "我有一段较长回复，完整内容在下面。";
+    }
+
+    function shouldShowAntennaMotion(text) {
+        const normalized = compactText(text).toLowerCase();
+        if (!normalized) {
+            return false;
+        }
+        return (
+            normalized.includes("set_antenna") ||
+            normalized.includes("antenna") ||
+            normalized.includes("耳朵") ||
+            normalized.includes("天线") ||
+            normalized.includes("摆摆") ||
+            normalized.includes("动完")
+        );
+    }
+
+    function normalizeAvatarMode(mode) {
+        const normalized = String(mode || "").toLowerCase().trim();
+        return AVATAR_MODES.includes(normalized) ? normalized : "sprite";
+    }
+
+    function numberOrDefault(value, fallback) {
+        const number = Number(value);
+        return Number.isFinite(number) ? number : fallback;
+    }
+
+    function setElementHidden(element, hidden) {
+        if (element) {
+            element.hidden = hidden;
+        }
+    }
+
+    function setLive2dPlaceholderVisible(visible) {
+        setElementHidden(avatarLive2dPlaceholder, !visible);
+        setElementHidden(avatarLive2dCanvas, visible);
+    }
+
+    function resetLive2dRenderer() {
+        if (live2dMotionResetTimer !== null) {
+            window.clearTimeout(live2dMotionResetTimer);
+            live2dMotionResetTimer = null;
+        }
+        if (live2dExpressionResetTimer !== null) {
+            window.clearTimeout(live2dExpressionResetTimer);
+            live2dExpressionResetTimer = null;
+        }
+        if (live2dAssistantReplayTimer !== null) {
+            window.clearTimeout(live2dAssistantReplayTimer);
+            live2dAssistantReplayTimer = null;
+        }
+        live2dActiveExpressions = new Set();
+        live2dActiveMotion = null;
+        live2dLastMotionStartedAtMs = 0;
+        live2dLastMotionReplayedAtMs = 0;
+        live2dUpdateTick = 0;
+        if (live2dDebugUnsubscribe) {
+            live2dDebugUnsubscribe();
+            live2dDebugUnsubscribe = null;
+        }
+        if (live2dExpressionUpdateHandler && live2dModel) {
+            live2dModel.internalModel?.off?.("beforeModelUpdate", live2dExpressionUpdateHandler);
+            live2dExpressionUpdateHandler = null;
+        }
+        if (live2dModelUpdateHandler && live2dModel) {
+            live2dModel.internalModel?.off?.("beforeModelUpdate", live2dModelUpdateHandler);
+            live2dModelUpdateHandler = null;
+        }
+        if (live2dDebugEventHandler) {
+            window.removeEventListener("reachy-live2d-debug-action", live2dDebugEventHandler);
+            live2dDebugEventHandler = null;
+        }
+        if (window.__reachyLive2dDebug) {
+            delete window.__reachyLive2dDebug;
+        }
+        if (window.__reachyLive2dDebugModel) {
+            delete window.__reachyLive2dDebugModel;
+        }
+        if (live2dResizeHandler) {
+            window.removeEventListener("resize", live2dResizeHandler);
+            live2dResizeHandler = null;
+        }
+        if (live2dApp) {
+            live2dApp.destroy(true, { children: true, texture: false, baseTexture: false });
+            live2dApp = null;
+        }
+        live2dModel = null;
+        live2dManifest = null;
+        if (avatarLive2dCanvas) {
+            // Do not call getContext("2d") here: a canvas cannot switch from 2D to WebGL later.
+            avatarLive2dCanvas.width = avatarLive2dCanvas.width;
+        }
+    }
+
+    function fitLive2dModel() {
+        if (!live2dApp || !live2dModel || !avatarLive2dStage) {
+            return;
+        }
+
+        const rect = avatarLive2dStage.getBoundingClientRect();
+        const width = Math.max(1, Math.floor(rect.width));
+        const height = Math.max(1, Math.floor(rect.height));
+        live2dApp.renderer.resize(width, height);
+
+        const bounds = live2dModel.getLocalBounds();
+        const modelWidth = Math.max(1, bounds.width);
+        const modelHeight = Math.max(1, bounds.height);
+        const live2dOptions = avatarConfig?.live2d || {};
+        const scale = Math.min(width / modelWidth, height / modelHeight) *
+            numberOrDefault(live2dOptions.zoom, 1);
+        const offsetX = numberOrDefault(live2dOptions.offset_x, 0);
+        const offsetY = numberOrDefault(live2dOptions.offset_y, 0);
+        live2dModel.scale.set(scale);
+        live2dModel.x = width * (0.5 + offsetX);
+        live2dModel.y = height * (0.5 + offsetY);
+    }
+
+    function joinLive2dPath(root, file) {
+        const cleanRoot = String(root || "").replace(/\/+$/, "");
+        const cleanFile = String(file || "").replace(/^\/+/, "");
+        return `${cleanRoot}/${cleanFile}`;
+    }
+
+    async function fetchJson(url) {
+        const response = await fetch(url, { cache: "no-store" });
+        if (!response.ok) {
+            throw new Error(`${url} ${response.status}`);
+        }
+        return response.json();
+    }
+
+    function stripLive2dExtension(file) {
+        return String(file || "")
+            .replace(/\.motion3\.json$/i, "")
+            .replace(/\.exp3\.json$/i, "");
+    }
+
+    function buildLive2dModelSettings(modelSettings, vtubeSettings, root) {
+        const normalized = JSON.parse(JSON.stringify(modelSettings || {}));
+        const fileReferences = normalized.FileReferences || {};
+        const hotkeys = Array.isArray(vtubeSettings?.Hotkeys) ? vtubeSettings.Hotkeys : [];
+        const motions = {};
+        const motionFiles = {};
+        const motionDurations = {};
+        const motionLoops = {};
+        const motionOptions = {};
+        const expressions = [];
+        const expressionFiles = {};
+        const expressionOptions = {};
+        const seenExpressions = new Set();
+        const idleAnimation = String(vtubeSettings?.FileReferences?.IdleAnimation || "").trim();
+
+        if (idleAnimation) {
+            const name = stripLive2dExtension(idleAnimation);
+            motions[name] = [{ File: idleAnimation }];
+            motionFiles[name] = idleAnimation;
+            motionDurations[name] = 0;
+            motionLoops[name] = false;
+            motionOptions[name] = {
+                fadeSeconds: 0,
+                deactivateAfterSeconds: false,
+                deactivateAfterSecondsAmount: 0,
+                stopsOnLastFrame: false,
+            };
+        }
+
+        for (const hotkey of hotkeys) {
+            const action = String(hotkey?.Action || "");
+            const file = String(hotkey?.File || "").trim();
+            if (!file) {
+                continue;
+            }
+            const name = stripLive2dExtension(file);
+            if (action === "TriggerAnimation") {
+                const fadeSeconds = Number(hotkey?.FadeSecondsAmount || 0);
+                motions[name] = [{
+                    File: file,
+                    FadeInTime: fadeSeconds,
+                    FadeOutTime: fadeSeconds,
+                }];
+                motionFiles[name] = file;
+                motionDurations[name] = Number(hotkey?.Duration || 0);
+                motionLoops[name] = false;
+                motionOptions[name] = {
+                    fadeSeconds,
+                    deactivateAfterSeconds: Boolean(hotkey?.DeactivateAfterSeconds),
+                    deactivateAfterSecondsAmount: Number(hotkey?.DeactivateAfterSecondsAmount || 0),
+                    stopsOnLastFrame: Boolean(hotkey?.StopsOnLastFrame),
+                };
+                continue;
+            }
+            if (action === "ToggleExpression" && !seenExpressions.has(name)) {
+                const fadeSeconds = Number(hotkey?.FadeSecondsAmount || 0);
+                expressions.push({ Name: name, File: file, FadeInTime: fadeSeconds, FadeOutTime: fadeSeconds });
+                expressionFiles[name] = file;
+                expressionOptions[name] = {
+                    fadeSeconds,
+                    deactivateAfterKeyUp: Boolean(hotkey?.DeactivateAfterKeyUp),
+                    deactivateAfterSeconds: Boolean(hotkey?.DeactivateAfterSeconds),
+                    deactivateAfterSecondsAmount: Number(hotkey?.DeactivateAfterSecondsAmount || 0),
+                };
+                seenExpressions.add(name);
+            }
+        }
+
+        fileReferences.Motions = motions;
+        fileReferences.Expressions = expressions;
+        normalized.FileReferences = fileReferences;
+        normalized.url = joinLive2dPath(root, vtubeSettings?.FileReferences?.Model || "model3.json");
+        return {
+            settings: normalized,
+            manifest: {
+                model: vtubeSettings?.FileReferences?.Model || "",
+                idle: stripLive2dExtension(idleAnimation),
+                motions: Object.keys(motions),
+                motionFiles,
+                motionDurations,
+                motionLoops,
+                motionOptions,
+                expressions: expressions.map((item) => item.Name),
+                expressionFiles,
+                expressionOptions,
+            },
+        };
+    }
+
+    async function readLive2dMotionMetadata(root, manifest) {
+        const motionFiles = manifest?.motionFiles || {};
+        const durations = { ...(manifest?.motionDurations || {}) };
+        const loops = { ...(manifest?.motionLoops || {}) };
+        const definitions = {};
+        const entries = Object.entries(motionFiles);
+        await Promise.all(entries.map(async ([name, file]) => {
+            if (!file) {
+                return;
+            }
+            try {
+                const motion = await fetchJson(joinLive2dPath(root, file));
+                if (!durations[name]) {
+                    durations[name] = Number(motion?.Meta?.Duration || 0);
+                }
+                loops[name] = Boolean(motion?.Meta?.Loop);
+                definitions[name] = parseLive2dMotionDefinition(motion);
+            } catch (error) {
+                console.warn("Failed to read Live2D motion metadata", name, error);
+            }
+        }));
+        return { durations, loops, definitions };
+    }
+
+    function parseLive2dMotionDefinition(motion) {
+        const meta = motion?.Meta || {};
+        const duration = Number(meta.Duration || 0);
+        const loop = Boolean(meta.Loop);
+        const curves = Array.isArray(motion?.Curves)
+            ? motion.Curves
+                .filter((curve) => curve?.Target === "Parameter" && curve?.Id)
+                .map((curve) => ({
+                    id: String(curve.Id),
+                    segments: normalizeLive2dMotionSegments(curve.Segments),
+                }))
+                .filter((curve) => curve.segments.length)
+            : [];
+        return {
+            duration,
+            loop,
+            curves,
+        };
+    }
+
+    function normalizeLive2dMotionSegments(rawSegments) {
+        if (!Array.isArray(rawSegments) || rawSegments.length < 2) {
+            return [];
+        }
+        const result = [];
+        let previous = {
+            time: Number(rawSegments[0]),
+            value: Number(rawSegments[1]),
+        };
+        if (!Number.isFinite(previous.time) || !Number.isFinite(previous.value)) {
+            return [];
+        }
+        let index = 2;
+        while (index < rawSegments.length) {
+            const type = Number(rawSegments[index]);
+            if (type === 0 && index + 2 < rawSegments.length) {
+                const point = {
+                    time: Number(rawSegments[index + 1]),
+                    value: Number(rawSegments[index + 2]),
+                };
+                if (Number.isFinite(point.time) && Number.isFinite(point.value)) {
+                    result.push({ type: "linear", from: previous, to: point });
+                    previous = point;
+                }
+                index += 3;
+                continue;
+            }
+            if (type === 1 && index + 6 < rawSegments.length) {
+                const c1 = {
+                    time: Number(rawSegments[index + 1]),
+                    value: Number(rawSegments[index + 2]),
+                };
+                const c2 = {
+                    time: Number(rawSegments[index + 3]),
+                    value: Number(rawSegments[index + 4]),
+                };
+                const point = {
+                    time: Number(rawSegments[index + 5]),
+                    value: Number(rawSegments[index + 6]),
+                };
+                if (
+                    Number.isFinite(c1.time) &&
+                    Number.isFinite(c1.value) &&
+                    Number.isFinite(c2.time) &&
+                    Number.isFinite(c2.value) &&
+                    Number.isFinite(point.time) &&
+                    Number.isFinite(point.value)
+                ) {
+                    result.push({ type: "bezier", from: previous, c1, c2, to: point });
+                    previous = point;
+                }
+                index += 7;
+                continue;
+            }
+            if ((type === 2 || type === 3) && index + 2 < rawSegments.length) {
+                const point = {
+                    time: Number(rawSegments[index + 1]),
+                    value: Number(rawSegments[index + 2]),
+                };
+                if (Number.isFinite(point.time) && Number.isFinite(point.value)) {
+                    result.push({
+                        type: type === 2 ? "stepped" : "inverseStepped",
+                        from: previous,
+                        to: point,
+                    });
+                    previous = point;
+                }
+                index += 3;
+                continue;
+            }
+            break;
+        }
+        return result;
+    }
+
+    async function readLive2dExpressionDefinitions(root, manifest) {
+        const expressionFiles = manifest?.expressionFiles || {};
+        const definitions = {};
+        const entries = Object.entries(expressionFiles);
+        await Promise.all(entries.map(async ([name, file]) => {
+            if (!file) {
+                return;
+            }
+            try {
+                const expression = await fetchJson(joinLive2dPath(root, file));
+                const parameters = Array.isArray(expression?.Parameters)
+                    ? expression.Parameters
+                    : [];
+                definitions[name] = parameters
+                    .map((parameter) => ({
+                        id: String(parameter?.Id || "").trim(),
+                        value: Number(parameter?.Value || 0),
+                        blend: String(parameter?.Blend || "Add").trim() || "Add",
+                    }))
+                    .filter((parameter) => parameter.id && Number.isFinite(parameter.value));
+            } catch (error) {
+                console.warn("Failed to read Live2D expression definition", name, error);
+            }
+        }));
+        return definitions;
+    }
+
+    async function loadLive2dNativeSettings(live2dOptions) {
+        const root = String(live2dOptions?.root || "").replace(/\/+$/, "");
+        const vtubeFile = String(live2dOptions?.vtube || "").trim();
+        if (!root || !vtubeFile) {
+            throw new Error("Live2D root/vtube is missing");
+        }
+
+        const vtubeUrl = joinLive2dPath(root, vtubeFile);
+        const vtubeSettings = await fetchJson(vtubeUrl);
+        const modelFile = String(vtubeSettings?.FileReferences?.Model || "").trim();
+        if (!modelFile) {
+            throw new Error("VTube settings does not reference a model3 file");
+        }
+
+        const modelSettings = await fetchJson(joinLive2dPath(root, modelFile));
+        const built = buildLive2dModelSettings(modelSettings, vtubeSettings, root);
+        const motionMetadata = await readLive2dMotionMetadata(root, built.manifest);
+        built.manifest.motionDurations = motionMetadata.durations;
+        built.manifest.motionLoops = motionMetadata.loops;
+        built.manifest.motionDefinitions = motionMetadata.definitions;
+        built.manifest.expressionDefinitions =
+            await readLive2dExpressionDefinitions(root, built.manifest);
+        return built;
+    }
+
+    function markLive2dManifest(manifest) {
+        live2dManifest = manifest || null;
+        if (!consolePetFigure) {
+            return;
+        }
+        consolePetFigure.dataset.live2dSource = "vtube";
+        consolePetFigure.dataset.live2dIdle = manifest?.idle || "";
+        consolePetFigure.dataset.live2dMotions = (manifest?.motions || []).join(",");
+        consolePetFigure.dataset.live2dExpressions = (manifest?.expressions || []).join(",");
+    }
+
+    function readLive2dRendererMotions() {
+        const definitions = live2dModel?.internalModel?.motionManager?.definitions;
+        if (!definitions || typeof definitions !== "object" || Array.isArray(definitions)) {
+            return [];
+        }
+        return Object.keys(definitions);
+    }
+
+    function readLive2dRendererExpressions() {
+        const definitions =
+            live2dModel?.internalModel?.motionManager?.expressionManager?.definitions;
+        if (!Array.isArray(definitions)) {
+            return [];
+        }
+        return definitions
+            .map((item) => String(item?.Name || "").trim())
+            .filter(Boolean);
+    }
+
+    function markLive2dRendererDefinitions() {
+        if (!consolePetFigure) {
+            return;
+        }
+        consolePetFigure.dataset.live2dLoadedMotions =
+            readLive2dRendererMotions().join(",");
+        consolePetFigure.dataset.live2dLoadedExpressions =
+            readLive2dRendererExpressions().join(",");
+    }
+
+    function setLive2dActionStatus(kind, name, status, message = "") {
+        if (!consolePetFigure) {
+            return;
+        }
+        consolePetFigure.dataset.live2dLastAction = `${kind}:${name}`;
+        consolePetFigure.dataset.live2dLastActionStatus = status;
+        if (avatarMode === "live2d") {
+            const kindLabel = kind === "expression" ? "表情" : "动作";
+            const statusLabel =
+                status === "pending" ? "准备" :
+                    status === "playing" ? "播放中" :
+                        status === "ok" ? "完成" :
+                            status === "fallback" ? "参数驱动" :
+                                status === "missing" ? "未找到" :
+                                    status === "error" ? "出错" :
+                                        status || "未知";
+            const readableName = name || "(empty)";
+            setPetRuntimeState(`Live2D ${kindLabel}: ${readableName} ${statusLabel}`, status === "error" ? "error" : "ready");
+            if (consolePetBubble && status !== "pending") {
+                consolePetBubble.textContent = `Live2D ${kindLabel} ${readableName}: ${statusLabel}`;
+            }
+        }
+        if (message) {
+            consolePetFigure.dataset.live2dLastActionError = message.slice(0, 180);
+        } else {
+            delete consolePetFigure.dataset.live2dLastActionError;
+        }
+    }
+
+    function applyLive2dExpressions() {
+        if (!live2dModel || !live2dManifest || !live2dActiveExpressions.size) {
+            return;
+        }
+        const coreModel = live2dModel.internalModel?.coreModel;
+        const definitions = live2dManifest.expressionDefinitions || {};
+        if (!coreModel || typeof coreModel.setParameterValueById !== "function") {
+            return;
+        }
+        for (const name of live2dActiveExpressions) {
+            const parameters = definitions[name] || [];
+            for (const parameter of parameters) {
+                const blend = String(parameter.blend || "Add").toLowerCase();
+                if (blend === "multiply") {
+                    coreModel.multiplyParameterValueById(parameter.id, parameter.value);
+                    continue;
+                }
+                if (blend === "overwrite" || blend === "replace") {
+                    coreModel.setParameterValueById(parameter.id, parameter.value);
+                    continue;
+                }
+                coreModel.addParameterValueById(parameter.id, parameter.value);
+            }
+        }
+    }
+
+    function readLive2dParameterValues(ids = LIVE2D_DEBUG_PARAMETER_IDS) {
+        const coreModel = live2dModel?.internalModel?.coreModel;
+        const values = {};
+        if (!coreModel || typeof coreModel.getParameterValueById !== "function") {
+            return values;
+        }
+        for (const id of ids) {
+            try {
+                values[id] = Number(coreModel.getParameterValueById(id)).toFixed(4);
+            } catch (_error) {
+                values[id] = "unavailable";
+            }
+        }
+        return values;
+    }
+
+    function markLive2dParameterSnapshot(label = "sample") {
+        if (!consolePetFigure) {
+            return {};
+        }
+        const snapshot = readLive2dParameterValues();
+        consolePetFigure.dataset.live2dLastParameterSample = label;
+        consolePetFigure.dataset.live2dParameterSnapshot = JSON.stringify(snapshot);
+        return snapshot;
+    }
+
+    function sampleLive2dMotionSegment(segment, seconds) {
+        const start = segment.from;
+        const end = segment.to;
+        if (!start || !end) {
+            return 0;
+        }
+        if (seconds <= start.time) {
+            return start.value;
+        }
+        if (seconds >= end.time) {
+            return end.value;
+        }
+        const span = Math.max(0.0001, end.time - start.time);
+        const t = Math.min(Math.max((seconds - start.time) / span, 0), 1);
+        if (segment.type === "stepped") {
+            return start.value;
+        }
+        if (segment.type === "inverseStepped") {
+            return end.value;
+        }
+        if (segment.type === "bezier" && segment.c1 && segment.c2) {
+            const oneMinusT = 1 - t;
+            return (
+                oneMinusT ** 3 * start.value +
+                3 * oneMinusT ** 2 * t * segment.c1.value +
+                3 * oneMinusT * t ** 2 * segment.c2.value +
+                t ** 3 * end.value
+            );
+        }
+        return start.value + (end.value - start.value) * t;
+    }
+
+    function sampleLive2dMotionCurve(curve, seconds) {
+        if (!curve?.segments?.length) {
+            return null;
+        }
+        for (const segment of curve.segments) {
+            if (seconds <= segment.to.time) {
+                return sampleLive2dMotionSegment(segment, seconds);
+            }
+        }
+        const last = curve.segments[curve.segments.length - 1];
+        return last?.to?.value ?? null;
+    }
+
+    function live2dMotionVisibleStartOffsetMs(motionName, definition) {
+        const idleName = String(live2dManifest?.idle || "").trim();
+        if (!motionName || motionName === idleName || !definition?.curves?.length) {
+            return 0;
+        }
+        const candidates = new Set([0.2, 0.45, 0.75, 1.0, 1.35]);
+        for (const curve of definition.curves) {
+            for (const segment of curve.segments || []) {
+                const from = Number(segment?.from?.time);
+                const to = Number(segment?.to?.time);
+                if (Number.isFinite(from)) {
+                    candidates.add(from);
+                }
+                if (Number.isFinite(to)) {
+                    candidates.add(to);
+                }
+            }
+        }
+        const duration = Math.max(0.0001, Number(definition.duration || 0));
+        let bestSecond = 0;
+        let bestScore = -1;
+        for (const candidate of candidates) {
+            if (!Number.isFinite(candidate) || candidate < 0 || candidate > duration) {
+                continue;
+            }
+            let score = 0;
+            for (const curve of definition.curves) {
+                const value = sampleLive2dMotionCurve(curve, candidate);
+                if (Number.isFinite(value)) {
+                    score += Math.abs(value);
+                }
+            }
+            if (score > bestScore) {
+                bestScore = score;
+                bestSecond = candidate;
+            }
+        }
+        return Math.round(bestSecond * 1000);
+    }
+
+    function startLive2dNativeMotionDriver(name) {
+        const motionName = String(name || "").trim();
+        const definition = live2dManifest?.motionDefinitions?.[motionName];
+        if (!motionName || !definition?.curves?.length) {
+            live2dActiveMotion = null;
+            if (consolePetFigure) {
+                consolePetFigure.dataset.live2dNativeDriver = "missing";
+            }
+            return false;
+        }
+        const visibleOffsetMs = live2dMotionVisibleStartOffsetMs(motionName, definition);
+        live2dActiveMotion = {
+            name: motionName,
+            definition,
+            startedAtMs: performance.now() - visibleOffsetMs,
+        };
+        if (consolePetFigure) {
+            consolePetFigure.dataset.live2dNativeDriver = motionName;
+            consolePetFigure.dataset.live2dNativeDriverOffsetMs = String(visibleOffsetMs);
+        }
+        return true;
+    }
+
+    function updateLive2dNativeMotionDriver() {
+        if (!live2dActiveMotion || !live2dModel) {
+            return;
+        }
+        const coreModel = live2dModel.internalModel?.coreModel;
+        if (!coreModel || typeof coreModel.setParameterValueById !== "function") {
+            return;
+        }
+        const { name, definition, startedAtMs } = live2dActiveMotion;
+        const duration = Math.max(0.0001, Number(definition.duration || 0));
+        let seconds = (performance.now() - startedAtMs) / 1000;
+        if (definition.loop) {
+            seconds %= duration;
+        } else if (seconds > duration) {
+            live2dActiveMotion = null;
+            return;
+        }
+        const written = {};
+        for (const curve of definition.curves) {
+            const value = sampleLive2dMotionCurve(curve, seconds);
+            if (!Number.isFinite(value)) {
+                continue;
+            }
+            coreModel.setParameterValueById(curve.id, value);
+            written[curve.id] = Number(value).toFixed(4);
+        }
+        live2dUpdateTick += 1;
+        if (consolePetFigure && live2dUpdateTick % 10 === 0) {
+            consolePetFigure.dataset.live2dNativeDriver = name;
+            consolePetFigure.dataset.live2dNativeDriverTime = seconds.toFixed(3);
+            consolePetFigure.dataset.live2dNativeDriverValues = JSON.stringify(written);
+            consolePetFigure.dataset.live2dLastParameterSample = "native_driver_update";
+            consolePetFigure.dataset.live2dParameterSnapshot =
+                JSON.stringify(readLive2dParameterValues());
+        }
+    }
+
+    function installLive2dDebugBridge() {
+        if (!live2dModel) {
+            return;
+        }
+        window.__reachyLive2dDebugModel = live2dModel;
+        window.__reachyLive2dDebug = {
+            playMotion: (name) => playLive2dNativeMotion(name),
+            applyExpression: (name) => applyLive2dNativeExpression(name),
+            sample: (label = "manual") => markLive2dParameterSnapshot(label),
+            state: () => ({
+                ready: consolePetFigure?.dataset.live2dReady || "",
+                loadedMotions: readLive2dRendererMotions(),
+                loadedExpressions: readLive2dRendererExpressions(),
+                lastAction: consolePetFigure?.dataset.live2dLastAction || "",
+                lastActionStatus: consolePetFigure?.dataset.live2dLastActionStatus || "",
+                nativeDriver: consolePetFigure?.dataset.live2dNativeDriver || "",
+                nativeDriverValues: consolePetFigure?.dataset.live2dNativeDriverValues || "",
+                parameters: readLive2dParameterValues(),
+            }),
+        };
+        live2dDebugEventHandler = (event) => {
+            const detail = event?.detail || {};
+            const type = String(detail.type || "").trim();
+            const name = String(detail.name || "").trim();
+            if (type === "motion") {
+                playLive2dNativeMotion(name);
+                return;
+            }
+            if (type === "expression") {
+                applyLive2dNativeExpression(name);
+            }
+        };
+        window.addEventListener("reachy-live2d-debug-action", live2dDebugEventHandler);
+        const updateAfterMotion = () => markLive2dParameterSnapshot("after_motion_update");
+        const updateBeforeModel = () => markLive2dParameterSnapshot("before_model_update");
+        live2dModel.internalModel?.on?.("afterMotionUpdate", updateAfterMotion);
+        live2dModel.internalModel?.on?.("beforeModelUpdate", updateBeforeModel);
+        live2dDebugUnsubscribe = () => {
+            live2dModel?.internalModel?.off?.("afterMotionUpdate", updateAfterMotion);
+            live2dModel?.internalModel?.off?.("beforeModelUpdate", updateBeforeModel);
+        };
+        markLive2dParameterSnapshot("ready");
+    }
+
+    function isLive2dLoopMotion(name) {
+        const motionName = String(name || "").trim();
+        return Boolean(motionName && live2dManifest?.motionLoops?.[motionName]);
+    }
+
+    async function configureLive2dMotion(name) {
+        const motionName = String(name || "").trim();
+        const manager = live2dModel?.internalModel?.motionManager;
+        if (!motionName || !manager || typeof manager.loadMotion !== "function") {
+            return;
+        }
+        try {
+            const motion = await manager.loadMotion(motionName, 0);
+            if (!motion) {
+                return;
+            }
+            const shouldLoop = isLive2dLoopMotion(motionName);
+            motion.setIsLoop?.(shouldLoop);
+            motion.setIsLoopFadeIn?.(!shouldLoop);
+        } catch (error) {
+            console.warn("Failed to configure Live2D motion", motionName, error);
+        }
+    }
+
+    async function configureLive2dMotions() {
+        const motionNames = Array.isArray(live2dManifest?.motions)
+            ? live2dManifest.motions
+            : [];
+        await Promise.all(motionNames.map((name) => configureLive2dMotion(name)));
+    }
+
+    function startLive2dNativeIdle(options = {}) {
+        const idle = live2dManifest?.idle;
+        if (!idle || !live2dModel) {
+            return;
+        }
+        const force = Boolean(options.force);
+        const currentAction = consolePetFigure?.dataset.live2dLastAction || "";
+        const currentStatus = consolePetFigure?.dataset.live2dLastActionStatus || "";
+        if (
+            !force &&
+            currentAction &&
+            currentAction !== `motion:${idle}` &&
+            ["pending", "playing", "ok"].includes(currentStatus)
+        ) {
+            return;
+        }
+        const priority = window.PIXI?.live2d?.MotionPriority?.IDLE ?? 1;
+        void configureLive2dMotion(idle)
+            .then(() => live2dModel.motion(idle, 0, priority))
+            .then((result) => {
+                if (result === false) {
+                    setLive2dActionStatus("motion", idle, "missing");
+                }
+                markLive2dParameterSnapshot(`motion:${idle}`);
+            })
+            .catch((error) => {
+                console.warn("Failed to start Live2D native idle", error);
+                setLive2dActionStatus("motion", idle, "error", error?.message || String(error));
+            });
+    }
+
+    function live2dPriority(name, fallback) {
+        return window.PIXI?.live2d?.MotionPriority?.[name] ?? fallback;
+    }
+
+    function playLive2dNativeMotion(name, options = {}) {
+        const motionName = String(name || "").trim();
+        if (!motionName || !live2dModel) {
+            setLive2dActionStatus("motion", motionName || "(empty)", "not_ready");
+            return false;
+        }
+        const priority = live2dPriority("FORCE", 3);
+        const durationMs = Math.max(
+            800,
+            Math.round((Number(live2dManifest?.motionDurations?.[motionName]) || 0) * 1000)
+        );
+        const isLoopMotion = isLive2dLoopMotion(motionName);
+        const idleName = String(live2dManifest?.idle || "").trim();
+        const shouldAutoReset = Boolean(motionName && motionName !== idleName && !isLoopMotion);
+        if (live2dMotionResetTimer !== null) {
+            window.clearTimeout(live2dMotionResetTimer);
+            live2dMotionResetTimer = null;
+        }
+        setLive2dActionStatus("motion", motionName, "pending");
+        if (consolePetFigure) {
+            consolePetFigure.dataset.live2dLastMotion = motionName;
+        }
+        if (options.trackTrigger !== false) {
+            live2dLastMotionStartedAtMs = performance.now();
+            live2dLastMotionReplayedAtMs = 0;
+        }
+        startLive2dNativeMotionDriver(motionName);
+        try {
+            live2dModel.internalModel?.motionManager?.stopAllMotions?.();
+        } catch (error) {
+            console.warn("Failed to stop previous Live2D motion", error);
+        }
+        window.setTimeout(() => {
+            const current = consolePetFigure?.dataset.live2dLastAction || "";
+            const status = consolePetFigure?.dataset.live2dLastActionStatus || "";
+            if (current === `motion:${motionName}` && status === "pending") {
+                setLive2dActionStatus("motion", motionName, "playing");
+                markLive2dParameterSnapshot(`motion:${motionName}:playing`);
+            }
+        }, 120);
+        void configureLive2dMotion(motionName)
+            .then(() => live2dModel.motion(motionName, 0, priority))
+            .then((result) => {
+                if (result === false) {
+                    setLive2dActionStatus("motion", motionName, "missing");
+                    return;
+                }
+                setLive2dActionStatus(
+                    "motion",
+                    motionName,
+                    isLoopMotion ? "playing" : "playing"
+                );
+                markLive2dParameterSnapshot(`motion:${motionName}`);
+                if (shouldAutoReset) {
+                    live2dMotionResetTimer = window.setTimeout(() => {
+                        live2dMotionResetTimer = null;
+                        setLive2dActionStatus("motion", motionName, "ok");
+                        try {
+                            live2dModel.internalModel?.motionManager?.stopAllMotions?.();
+                        } catch (error) {
+                            console.warn("Failed to stop Live2D motion after duration", error);
+                        }
+                        live2dActiveMotion = null;
+                        startLive2dNativeIdle({ force: true });
+                    }, durationMs);
+                }
+            })
+            .catch((error) => {
+                console.warn("Failed to play Live2D native motion", motionName, error);
+                setLive2dActionStatus(
+                    "motion",
+                    motionName,
+                    "error",
+                    error?.message || String(error)
+                );
+            });
+        return true;
+    }
+
+    function replayRecentLive2dMotion(reason = "assistant_reply") {
+        if (avatarMode !== "live2d" || !live2dModel || !consolePetFigure) {
+            return false;
+        }
+        const motionName = String(consolePetFigure.dataset.live2dLastMotion || "").trim();
+        const lastAction = String(consolePetFigure.dataset.live2dLastAction || "");
+        const lastStatus = String(consolePetFigure.dataset.live2dLastActionStatus || "");
+        if (!motionName || lastAction !== `motion:${motionName}`) {
+            return false;
+        }
+        if (["error", "missing", "not_ready"].includes(lastStatus)) {
+            return false;
+        }
+        if (!live2dLastMotionStartedAtMs || performance.now() - live2dLastMotionStartedAtMs > 15000) {
+            return false;
+        }
+        if (live2dLastMotionReplayedAtMs >= live2dLastMotionStartedAtMs) {
+            return false;
+        }
+        live2dLastMotionReplayedAtMs = performance.now();
+        consolePetFigure.dataset.live2dReplayReason = reason;
+        return playLive2dNativeMotion(motionName, { trackTrigger: false });
+    }
+
+    function applyLive2dNativeExpression(name) {
+        const expressionName = String(name || "").trim();
+        if (!expressionName || !live2dModel) {
+            setLive2dActionStatus("expression", expressionName || "(empty)", "not_ready");
+            return false;
+        }
+        if (live2dExpressionResetTimer !== null) {
+            window.clearTimeout(live2dExpressionResetTimer);
+            live2dExpressionResetTimer = null;
+        }
+        setLive2dActionStatus("expression", expressionName, "pending");
+        const expressionOptions = live2dManifest?.expressionOptions?.[expressionName] || {};
+        const clearDelayMs = expressionOptions.deactivateAfterSeconds
+            ? Math.max(200, Number(expressionOptions.deactivateAfterSecondsAmount || 0) * 1000)
+            : expressionOptions.deactivateAfterKeyUp
+                ? 1200
+                : 0;
+        void Promise.resolve(live2dModel.expression(expressionName))
+            .then((result) => {
+                if (result === false) {
+                    live2dActiveExpressions = new Set([expressionName]);
+                } else {
+                    live2dActiveExpressions = new Set();
+                }
+                setLive2dActionStatus("expression", expressionName, result === false ? "fallback" : "ok");
+                window.requestAnimationFrame(() => markLive2dParameterSnapshot(`expression:${expressionName}`));
+                if (clearDelayMs > 0) {
+                    live2dExpressionResetTimer = window.setTimeout(() => {
+                        live2dExpressionResetTimer = null;
+                        live2dActiveExpressions.delete(expressionName);
+                        live2dModel.internalModel?.motionManager?.expressionManager?.stopAllExpressions?.();
+                    }, clearDelayMs);
+                }
+            })
+            .catch((error) => {
+                console.warn("Failed to apply Live2D native expression", expressionName, error);
+                live2dActiveExpressions = new Set([expressionName]);
+                setLive2dActionStatus(
+                    "expression",
+                    expressionName,
+                    "fallback",
+                    error?.message || String(error)
+                );
+                window.requestAnimationFrame(() => markLive2dParameterSnapshot(`expression:${expressionName}`));
+            });
+        if (consolePetFigure) {
+            consolePetFigure.dataset.live2dLastExpression = expressionName;
+        }
+        return true;
+    }
+
+    async function initLive2dRenderer(live2dOptions) {
+        resetLive2dRenderer();
+        if (!avatarLive2dCanvas || !avatarLive2dStage) {
+            throw new Error("Live2D canvas is missing");
+        }
+        if (!window.PIXI || !window.PIXI.live2d?.Live2DModel) {
+            throw new Error("Live2D runtime is not loaded");
+        }
+
+        setLive2dPlaceholderVisible(false);
+        if (consolePetFigure) {
+            delete consolePetFigure.dataset.live2dError;
+        }
+        live2dApp = new window.PIXI.Application({
+            view: avatarLive2dCanvas,
+            autoStart: true,
+            resizeTo: avatarLive2dStage,
+            backgroundAlpha: 0,
+            antialias: true,
+        });
+
+        const { settings, manifest } = await loadLive2dNativeSettings(live2dOptions);
+        markLive2dManifest(manifest);
+        live2dModel = await window.PIXI.live2d.Live2DModel.from(settings, {
+            autoInteract: false,
+        });
+        live2dModel.anchor?.set?.(0.5, 0.5);
+        live2dApp.stage.addChild(live2dModel);
+        markLive2dRendererDefinitions();
+        installLive2dDebugBridge();
+        live2dModelUpdateHandler = () => {
+            updateLive2dNativeMotionDriver();
+            applyLive2dExpressions();
+        };
+        live2dModel.internalModel?.on?.("beforeModelUpdate", live2dModelUpdateHandler);
+        await configureLive2dMotions();
+        fitLive2dModel();
+        window.requestAnimationFrame(() => fitLive2dModel());
+        live2dResizeHandler = () => fitLive2dModel();
+        window.addEventListener("resize", live2dResizeHandler);
+    }
+
+    function restoreLive2dConsoleLayout() {
+        if (!isDesktopPetView || !appLayout || !chatCard) {
+            return;
+        }
+        if (chatCard.parentElement !== appLayout) {
+            const referenceNode = document.getElementById("side-panel");
+            appLayout.insertBefore(chatCard, referenceNode || null);
+        }
+        if (petModeStack && petModeStack.parentElement !== appLayout) {
+            appLayout.insertBefore(petModeStack, chatCard);
+        }
+        if (petModeStack) {
+            petModeStack.hidden = true;
+        }
+        if (petShell) {
+            petShell.hidden = true;
+            petShell.dataset.chatVisible = "false";
+        }
+    }
+
+    function applyAvatarMode(nextMode, config = {}) {
+        const normalizedMode = normalizeAvatarMode(nextMode);
+        const safeConfig = config && typeof config === "object" ? config : {};
+        avatarMode = normalizedMode;
+        avatarConfig = safeConfig;
+        document.body.dataset.avatarMode = normalizedMode;
+
+        if (consolePetFigure) {
+            consolePetFigure.dataset.avatarMode = normalizedMode;
+        }
+        if (petFigure) {
+            petFigure.dataset.avatarMode = normalizedMode;
+        }
+
+        setElementHidden(consolePetSprite, normalizedMode !== "sprite");
+        setElementHidden(avatarLive2dStage, normalizedMode !== "live2d");
+
+        if (normalizedMode === "live2d") {
+            restoreLive2dConsoleLayout();
+            if (chatCard && isDesktopPetView) {
+                chatCard.dataset.open = "true";
+            }
+            if (consolePetFigure) {
+                delete consolePetFigure.dataset.pose;
+                delete consolePetFigure.dataset.motion;
+            }
+            if (petFigure) {
+                delete petFigure.dataset.pose;
+            }
+            const live2dOptions = safeConfig.live2d || {};
+            const hasModel = Boolean(
+                String(live2dOptions.root || "").trim() &&
+                String(live2dOptions.vtube || "").trim()
+            );
+            if (consolePetFigure) {
+                consolePetFigure.dataset.live2dReady = hasModel ? "true" : "placeholder";
+            }
+            if (!hasModel) {
+                resetLive2dRenderer();
+                setLive2dPlaceholderVisible(true);
+                setPetRuntimeState("Live2D 占位", runtimeReady ? "ready" : "starting");
+                return;
+            }
+            setPetRuntimeState("Live2D 加载中", "starting");
+            initLive2dRenderer(live2dOptions)
+                .then(() => {
+                    if (consolePetFigure) {
+                        consolePetFigure.dataset.live2dReady = "true";
+                    }
+                    setPetRuntimeState("Live2D", runtimeReady ? "ready" : "starting");
+                    startLive2dNativeIdle();
+                })
+                .catch((error) => {
+                    console.error("Failed to initialize Live2D renderer", error);
+                    const message = error?.message || String(error);
+                    if (consolePetFigure) {
+                        consolePetFigure.dataset.live2dReady = "error";
+                        consolePetFigure.dataset.live2dError = message.slice(0, 180);
+                    }
+                    resetLive2dRenderer();
+                    setLive2dPlaceholderVisible(true);
+                    setPetRuntimeState("Live2D 加载失败", "error");
+                });
+            return;
+        }
+
+        resetLive2dRenderer();
+        if (petShell) {
+            petShell.hidden = false;
+        }
+        setPetRuntimeState(runtimeReady ? "已连接" : "连接中", runtimeReady ? "ready" : "starting");
+    }
+
+    async function loadAvatarConfig() {
+        try {
+            const response = await fetch(AVATAR_CONFIG_URL, { cache: "no-store" });
+            if (!response.ok) {
+                throw new Error(`avatar config ${response.status}`);
+            }
+            const config = await response.json();
+            applyAvatarMode(config?.mode || config?.fallback_mode, config);
+        } catch (error) {
+            console.warn("Failed to load avatar config, falling back to sprite", error);
+            applyAvatarMode("sprite", {});
+        }
+    }
+
     function updatePetTimestamp(value = new Date()) {
         if (!petLastUpdated) {
             return;
@@ -235,11 +1386,14 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     function setPetSpeech(text) {
-        if (!petSpeechBubble) {
-            return;
-        }
         const normalized = truncatePetText(text);
-        petSpeechBubble.textContent = normalized || "我会在这里等你下一句。";
+        const fallback = normalized || "我会在这里等你下一句。";
+        if (petSpeechBubble) {
+            petSpeechBubble.textContent = fallback;
+        }
+        if (consolePetBubble) {
+            consolePetBubble.textContent = fallback;
+        }
         updatePetTimestamp();
     }
 
@@ -247,6 +1401,10 @@ document.addEventListener("DOMContentLoaded", () => {
         if (petRuntimeChip) {
             petRuntimeChip.textContent = text;
             petRuntimeChip.dataset.state = state;
+        }
+        if (consolePetRuntimeChip) {
+            consolePetRuntimeChip.textContent = text;
+            consolePetRuntimeChip.dataset.state = state;
         }
     }
 
@@ -260,6 +1418,10 @@ document.addEventListener("DOMContentLoaded", () => {
             petAttentionChip.dataset.state = normalizedDirection;
             petAttentionChip.textContent = humanizeDirection(normalizedDirection);
         }
+        if (consolePetAttentionChip) {
+            consolePetAttentionChip.dataset.state = normalizedDirection;
+            consolePetAttentionChip.textContent = humanizeDirection(normalizedDirection);
+        }
         if (petVisionText && detail) {
             petVisionText.textContent = detail;
         }
@@ -269,13 +1431,22 @@ document.addEventListener("DOMContentLoaded", () => {
     function setPetPose(pose = "idle", options = {}) {
         const normalizedPose = PET_SPRITES[pose] ? pose : "idle";
 
-        if (petSprite) {
-            petSprite.src = PET_SPRITES[normalizedPose];
-            petSprite.dataset.pose = normalizedPose;
-        }
+        if (avatarMode === "sprite") {
+            if (petSprite) {
+                petSprite.src = PET_SPRITES[normalizedPose];
+                petSprite.dataset.pose = normalizedPose;
+            }
+            if (consolePetSprite) {
+                consolePetSprite.src = PET_SPRITES[normalizedPose];
+                consolePetSprite.dataset.pose = normalizedPose;
+            }
 
-        if (petFigure) {
-            petFigure.dataset.pose = normalizedPose;
+            if (petFigure) {
+                petFigure.dataset.pose = normalizedPose;
+            }
+            if (consolePetFigure) {
+                consolePetFigure.dataset.pose = normalizedPose;
+            }
         }
 
         if (petStateLabel && options.label) {
@@ -291,6 +1462,23 @@ document.addEventListener("DOMContentLoaded", () => {
         }
 
         updatePetTimestamp();
+    }
+
+    function pulseConsolePetMotion(motion = "celebrate", durationMs = 2800) {
+        if (!consolePetFigure) {
+            return;
+        }
+        if (avatarMode === "live2d") {
+            return;
+        }
+        if (consolePetMotionTimer !== null) {
+            window.clearTimeout(consolePetMotionTimer);
+        }
+        consolePetFigure.dataset.motion = motion;
+        consolePetMotionTimer = window.setTimeout(() => {
+            delete consolePetFigure.dataset.motion;
+            consolePetMotionTimer = null;
+        }, durationMs);
     }
 
     function clearPetIdleTimer() {
@@ -380,6 +1568,11 @@ document.addEventListener("DOMContentLoaded", () => {
         if (!isDesktopPetView || !chatCard) {
             return;
         }
+        if (avatarMode === "live2d") {
+            clearDesktopPetChatHideTimer();
+            setDesktopPetChatVisible(true);
+            return;
+        }
 
         clearDesktopPetChatHideTimer();
         if (shouldKeepDesktopPetChatOpen()) {
@@ -399,6 +1592,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
     function syncDesktopPetChatVisibility(options = {}) {
         if (!isDesktopPetView || !chatCard) {
+            return;
+        }
+        if (avatarMode === "live2d") {
+            clearDesktopPetChatHideTimer();
+            setDesktopPetChatVisible(true, { focusInput: Boolean(options.focusInput) });
             return;
         }
 
@@ -1101,7 +2299,7 @@ document.addEventListener("DOMContentLoaded", () => {
     function appendMessage(role, text) {
         createMessage(role, text);
         if (role === "assistant") {
-            setPetSpeech(text);
+            setPetSpeech(summarizePetSpeech(text));
         }
         syncDesktopPetChatVisibility({ preferOpen: true });
         scheduleDesktopPetChatHide(role === "assistant" ? 5200 : 3600);
@@ -1198,7 +2396,7 @@ document.addEventListener("DOMContentLoaded", () => {
             setPetPose("think", {
                 label: "正在组织回应",
                 copy: "Front 已经先给出一轮 hint，内核还在继续处理。",
-                speech: turnView[textKey],
+                speech: summarizePetSpeech(turnView[textKey]),
             });
             return;
         }
@@ -1206,7 +2404,7 @@ document.addEventListener("DOMContentLoaded", () => {
         setPetPose("speak", {
             label: "正在回复",
             copy: "桌宠窗口已经开始把这一轮最终回复吐出来了。",
-            speech: turnView[textKey],
+            speech: summarizePetSpeech(turnView[textKey]),
         });
     }
 
@@ -1223,6 +2421,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
     function applySurfaceStateToPet(phase) {
         if (!isDesktopPetView) {
+            return;
+        }
+        if (avatarMode === "live2d") {
             return;
         }
 
@@ -1249,10 +2450,79 @@ document.addEventListener("DOMContentLoaded", () => {
                 schedulePetIdle(1400);
                 return;
             case "idle":
+                if (avatarMode === "live2d") {
+                    return;
+                }
                 schedulePetIdle(300);
                 return;
             default:
                 return;
+        }
+    }
+
+    function handleEmbodimentEvent(payload) {
+        if (!isDesktopPetView) {
+            return;
+        }
+
+        const action = String(payload?.action || "");
+        const eventPayload = Object(payload?.payload || {});
+        if (action === "live2d_motion") {
+            playLive2dNativeMotion(eventPayload.name);
+            return;
+        }
+
+        if (action === "live2d_expression") {
+            applyLive2dNativeExpression(eventPayload.name);
+            return;
+        }
+
+        const pose = String(eventPayload.pose || "");
+        const label = String(eventPayload.label || "");
+        const speech = typeof eventPayload.speech === "string" ? eventPayload.speech : undefined;
+        const copy = typeof eventPayload.copy === "string" ? eventPayload.copy : undefined;
+
+        if (action === "surface_state") {
+            if (avatarMode === "live2d") {
+                return;
+            }
+            if (turnCompleted && ["settling", "idle"].includes(String(eventPayload.phase || ""))) {
+                return;
+            }
+            if (pose && PET_SPRITES[pose]) {
+                setPetPose(pose, {
+                    label: label || undefined,
+                    copy: copy || undefined,
+                    speech: typeof speech === "string" ? summarizePetSpeech(speech) : undefined,
+                });
+            }
+            if (eventPayload.attention) {
+                setPetAttention(eventPayload.attention);
+            }
+            return;
+        }
+
+        if (action === "speech") {
+            if (speech) {
+                setPetSpeech(summarizePetSpeech(speech));
+            }
+            if (pose && PET_SPRITES[pose]) {
+                setPetPose(pose, { label: label || undefined, copy: copy || undefined });
+            }
+            return;
+        }
+
+        if (action === "attention") {
+            setPetAttention(eventPayload.direction || eventPayload.attention || "front", copy || null);
+            return;
+        }
+
+        if (action === "pose" && pose && PET_SPRITES[pose]) {
+            setPetPose(pose, {
+                label: label || undefined,
+                copy: copy || undefined,
+                speech: typeof speech === "string" ? summarizePetSpeech(speech) : undefined,
+            });
         }
     }
 
@@ -1363,8 +2633,8 @@ document.addEventListener("DOMContentLoaded", () => {
         }
 
         positionDesktopPetShell(
-            window.innerWidth - shell.offsetWidth - DESKTOP_PET_MARGIN,
-            window.innerHeight - shell.offsetHeight - DESKTOP_PET_MARGIN
+            (window.innerWidth - shell.offsetWidth) / 2,
+            Math.max(DESKTOP_PET_MARGIN, Math.min(80, window.innerHeight * 0.12))
         );
     }
 
@@ -2036,6 +3306,16 @@ document.addEventListener("DOMContentLoaded", () => {
             turnCompleted = true;
             const turnId = String(payload.turn_id || "");
             updateStageBubble(turnId, "final", text, "replace");
+            if (live2dAssistantReplayTimer !== null) {
+                window.clearTimeout(live2dAssistantReplayTimer);
+            }
+            live2dAssistantReplayTimer = window.setTimeout(() => {
+                live2dAssistantReplayTimer = null;
+                replayRecentLive2dMotion("assistant_reply");
+            }, 80);
+            if (avatarMode !== "live2d" && shouldShowAntennaMotion(text)) {
+                pulseConsolePetMotion("wiggle", 3200);
+            }
             setStatus("Brain 已生成 SDK 回复。", true);
             finishTurn();
             return;
@@ -2045,10 +3325,26 @@ document.addEventListener("DOMContentLoaded", () => {
             const status = String(payload.status || "");
             const verb = status === "ok" ? "完成" : status === "cancelled" ? "已取消" : "失败";
             setStatus(`${payload.name || "action"} ${verb}（${payload.duration_ms || 0}ms）`, true);
+            if (status === "ok") {
+                const actionName = String(payload.name || "");
+                if (avatarMode !== "live2d") {
+                    pulseConsolePetMotion(actionName === "set_antenna" ? "wiggle" : "celebrate", 3200);
+                    setPetPose("speak", {
+                        speech: `${actionName || "动作"} 完成啦。`,
+                    });
+                    schedulePetIdle(3400);
+                }
+            }
             if (status !== "ok" && payload.error) {
                 appendMessage("assistant", `动作 ${payload.name} ${verb}：${payload.error}`);
                 setPetRuntimeState("动作出错", "error");
+                pulseConsolePetMotion("shake", 900);
             }
+            return;
+        }
+
+        if (eventType === "embodiment") {
+            handleEmbodimentEvent(payload);
             return;
         }
 
@@ -2256,6 +3552,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     configureDesktopPetView();
+    void loadAvatarConfig();
     setComposerEnabled(false);
     if (!recognitionSupported && composerHint) {
         composerHint.textContent = "Enter 发送，Shift+Enter 换行；语音输入需使用支持 SpeechRecognition 的浏览器";
@@ -2310,7 +3607,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     window.addEventListener("resize", () => {
         renderDetectionOverlay();
-        if (isDesktopPetView) {
+        if (isDesktopPetView && avatarMode !== "live2d") {
             const shell = petShell || ensureDesktopPetShell();
             if (shell) {
                 const rect = shell.getBoundingClientRect();

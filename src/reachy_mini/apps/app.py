@@ -81,6 +81,7 @@ class ReachyMiniApp:
         self.runtime_microphone: MicrophoneSource | None = None
         self._runtime_camera_ingest_busy = threading.Event()
         self._runtime_camera_vision_listener: Any | None = None
+        self._logged_runtime_camera_frame = False
 
         self.settings_app: FastAPI | None = None
         if self.custom_app_url is not None and not self.dont_start_webserver:
@@ -325,6 +326,12 @@ class ReachyMiniApp:
         image = self._decode_browser_camera_frame(frame)
         if image is None:
             return True
+        if not self._logged_runtime_camera_frame:
+            self._logged_runtime_camera_frame = True
+            self.logger.warning(
+                "Runtime websocket received camera_frame: image_shape=%s",
+                getattr(image, "shape", None),
+            )
         self._runtime_camera_ingest_busy.set()
         asyncio.create_task(self._ingest_runtime_camera_frame(camera_worker, image))
         return True
