@@ -90,6 +90,7 @@ class ActionExecutor:
                 status="ok",
                 result=action_output,
                 duration_ms=self._elapsed_ms(start),
+                reason=spec.reason,
             )
         except ActionCancelledError as exc:
             await self._cancel_action(action, context)
@@ -101,6 +102,7 @@ class ActionExecutor:
                 status="cancelled",
                 error=str(exc),
                 duration_ms=self._elapsed_ms(start),
+                reason=spec.reason,
             )
         except Exception as exc:
             if isinstance(exc, ActionRuntimeError):
@@ -116,6 +118,7 @@ class ActionExecutor:
                 status="error",
                 error=f"{type(error).__name__}: {error}",
                 duration_ms=self._elapsed_ms(start),
+                reason=spec.reason,
             )
         finally:
             try:

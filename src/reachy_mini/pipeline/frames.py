@@ -111,6 +111,7 @@ class ActionResultFrame:
     error: str | None
     duration_ms: int
     result: Any = None
+    reason: str = ""
 
     @classmethod
     def from_result(cls, result: ActionResult) -> "ActionResultFrame":
@@ -123,6 +124,7 @@ class ActionResultFrame:
             result=result.result,
             error=result.error,
             duration_ms=result.duration_ms,
+            reason=result.reason,
         )
 
 

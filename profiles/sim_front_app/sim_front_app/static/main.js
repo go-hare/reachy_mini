@@ -169,12 +169,12 @@ document.addEventListener("DOMContentLoaded", () => {
     let live2dExpressionResetTimer = null;
     let live2dActiveExpressions = new Set();
     let live2dExpressionUpdateHandler = null;
+    let live2dMotionUpdateHandler = null;
     let live2dModelUpdateHandler = null;
     let live2dActiveMotion = null;
+    let live2dMotionTicker = null;
     let live2dUpdateTick = 0;
     let live2dLastMotionStartedAtMs = 0;
-    let live2dLastMotionReplayedAtMs = 0;
-    let live2dAssistantReplayTimer = null;
     const DETECTION_BOX_SCALE_X = 1.14;
     const DETECTION_BOX_SCALE_Y = 1.18;
 
@@ -349,14 +349,10 @@ document.addEventListener("DOMContentLoaded", () => {
             window.clearTimeout(live2dExpressionResetTimer);
             live2dExpressionResetTimer = null;
         }
-        if (live2dAssistantReplayTimer !== null) {
-            window.clearTimeout(live2dAssistantReplayTimer);
-            live2dAssistantReplayTimer = null;
-        }
         live2dActiveExpressions = new Set();
         live2dActiveMotion = null;
+        stopLive2dNativeMotionDriver();
         live2dLastMotionStartedAtMs = 0;
-        live2dLastMotionReplayedAtMs = 0;
         live2dUpdateTick = 0;
         if (live2dDebugUnsubscribe) {
             live2dDebugUnsubscribe();
@@ -365,6 +361,10 @@ document.addEventListener("DOMContentLoaded", () => {
         if (live2dExpressionUpdateHandler && live2dModel) {
             live2dModel.internalModel?.off?.("beforeModelUpdate", live2dExpressionUpdateHandler);
             live2dExpressionUpdateHandler = null;
+        }
+        if (live2dMotionUpdateHandler && live2dModel) {
+            live2dModel.internalModel?.off?.("afterMotionUpdate", live2dMotionUpdateHandler);
+            live2dMotionUpdateHandler = null;
         }
         if (live2dModelUpdateHandler && live2dModel) {
             live2dModel.internalModel?.off?.("beforeModelUpdate", live2dModelUpdateHandler);
@@ -543,8 +543,12 @@ document.addEventListener("DOMContentLoaded", () => {
                 if (!durations[name]) {
                     durations[name] = Number(motion?.Meta?.Duration || 0);
                 }
-                loops[name] = Boolean(motion?.Meta?.Loop);
+                const idleName = String(manifest?.idle || "").trim();
+                loops[name] = name === idleName && Boolean(motion?.Meta?.Loop);
                 definitions[name] = parseLive2dMotionDefinition(motion);
+                if (name !== idleName && definitions[name]) {
+                    definitions[name].loop = false;
+                }
             } catch (error) {
                 console.warn("Failed to read Live2D motion metadata", name, error);
             }
@@ -739,12 +743,15 @@ document.addEventListener("DOMContentLoaded", () => {
             readLive2dRendererExpressions().join(",");
     }
 
-    function setLive2dActionStatus(kind, name, status, message = "") {
+    function setLive2dActionStatus(kind, name, status, message = "", source = "") {
         if (!consolePetFigure) {
             return;
         }
         consolePetFigure.dataset.live2dLastAction = `${kind}:${name}`;
         consolePetFigure.dataset.live2dLastActionStatus = status;
+        if (source) {
+            consolePetFigure.dataset.live2dLastActionSource = source.slice(0, 120);
+        }
         if (avatarMode === "live2d") {
             const kindLabel = kind === "expression" ? "表情" : "动作";
             const statusLabel =
@@ -756,9 +763,10 @@ document.addEventListener("DOMContentLoaded", () => {
                                     status === "error" ? "出错" :
                                         status || "未知";
             const readableName = name || "(empty)";
-            setPetRuntimeState(`Live2D ${kindLabel}: ${readableName} ${statusLabel}`, status === "error" ? "error" : "ready");
+            const sourceLabel = source ? ` · ${source}` : "";
+            setPetRuntimeState(`Live2D ${kindLabel}: ${readableName} ${statusLabel}${sourceLabel}`, status === "error" ? "error" : "ready");
             if (consolePetBubble && status !== "pending") {
-                consolePetBubble.textContent = `Live2D ${kindLabel} ${readableName}: ${statusLabel}`;
+                consolePetBubble.textContent = `Live2D ${kindLabel} ${readableName}: ${statusLabel}${sourceLabel}`;
             }
         }
         if (message) {
@@ -908,6 +916,7 @@ document.addEventListener("DOMContentLoaded", () => {
     function startLive2dNativeMotionDriver(name) {
         const motionName = String(name || "").trim();
         const definition = live2dManifest?.motionDefinitions?.[motionName];
+        stopLive2dNativeMotionDriver();
         if (!motionName || !definition?.curves?.length) {
             live2dActiveMotion = null;
             if (consolePetFigure) {
@@ -925,7 +934,17 @@ document.addEventListener("DOMContentLoaded", () => {
             consolePetFigure.dataset.live2dNativeDriver = motionName;
             consolePetFigure.dataset.live2dNativeDriverOffsetMs = String(visibleOffsetMs);
         }
+        live2dMotionTicker = () => updateLive2dNativeMotionDriver();
+        live2dApp?.ticker?.add?.(live2dMotionTicker);
         return true;
+    }
+
+    function stopLive2dNativeMotionDriver() {
+        if (live2dMotionTicker && live2dApp?.ticker?.remove) {
+            live2dApp.ticker.remove(live2dMotionTicker);
+        }
+        live2dMotionTicker = null;
+        live2dActiveMotion = null;
     }
 
     function updateLive2dNativeMotionDriver() {
@@ -942,7 +961,7 @@ document.addEventListener("DOMContentLoaded", () => {
         if (definition.loop) {
             seconds %= duration;
         } else if (seconds > duration) {
-            live2dActiveMotion = null;
+            stopLive2dNativeMotionDriver();
             return;
         }
         const written = {};
@@ -1077,8 +1096,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
     function playLive2dNativeMotion(name, options = {}) {
         const motionName = String(name || "").trim();
+        const source = String(options.source || "").trim();
         if (!motionName || !live2dModel) {
-            setLive2dActionStatus("motion", motionName || "(empty)", "not_ready");
+            setLive2dActionStatus("motion", motionName || "(empty)", "not_ready", "", source);
             return false;
         }
         const priority = live2dPriority("FORCE", 3);
@@ -1093,13 +1113,12 @@ document.addEventListener("DOMContentLoaded", () => {
             window.clearTimeout(live2dMotionResetTimer);
             live2dMotionResetTimer = null;
         }
-        setLive2dActionStatus("motion", motionName, "pending");
+        setLive2dActionStatus("motion", motionName, "pending", "", source);
         if (consolePetFigure) {
             consolePetFigure.dataset.live2dLastMotion = motionName;
         }
         if (options.trackTrigger !== false) {
             live2dLastMotionStartedAtMs = performance.now();
-            live2dLastMotionReplayedAtMs = 0;
         }
         startLive2dNativeMotionDriver(motionName);
         try {
@@ -1111,7 +1130,7 @@ document.addEventListener("DOMContentLoaded", () => {
             const current = consolePetFigure?.dataset.live2dLastAction || "";
             const status = consolePetFigure?.dataset.live2dLastActionStatus || "";
             if (current === `motion:${motionName}` && status === "pending") {
-                setLive2dActionStatus("motion", motionName, "playing");
+                setLive2dActionStatus("motion", motionName, "playing", "", source);
                 markLive2dParameterSnapshot(`motion:${motionName}:playing`);
             }
         }, 120);
@@ -1119,19 +1138,21 @@ document.addEventListener("DOMContentLoaded", () => {
             .then(() => live2dModel.motion(motionName, 0, priority))
             .then((result) => {
                 if (result === false) {
-                    setLive2dActionStatus("motion", motionName, "missing");
+                    setLive2dActionStatus("motion", motionName, "missing", "", source);
                     return;
                 }
                 setLive2dActionStatus(
                     "motion",
                     motionName,
-                    isLoopMotion ? "playing" : "playing"
+                    isLoopMotion ? "playing" : "playing",
+                    "",
+                    source
                 );
                 markLive2dParameterSnapshot(`motion:${motionName}`);
                 if (shouldAutoReset) {
                     live2dMotionResetTimer = window.setTimeout(() => {
                         live2dMotionResetTimer = null;
-                        setLive2dActionStatus("motion", motionName, "ok");
+                        setLive2dActionStatus("motion", motionName, "ok", "", source);
                         try {
                             live2dModel.internalModel?.motionManager?.stopAllMotions?.();
                         } catch (error) {
@@ -1148,47 +1169,25 @@ document.addEventListener("DOMContentLoaded", () => {
                     "motion",
                     motionName,
                     "error",
-                    error?.message || String(error)
+                    error?.message || String(error),
+                    source
                 );
             });
         return true;
     }
 
-    function replayRecentLive2dMotion(reason = "assistant_reply") {
-        if (avatarMode !== "live2d" || !live2dModel || !consolePetFigure) {
-            return false;
-        }
-        const motionName = String(consolePetFigure.dataset.live2dLastMotion || "").trim();
-        const lastAction = String(consolePetFigure.dataset.live2dLastAction || "");
-        const lastStatus = String(consolePetFigure.dataset.live2dLastActionStatus || "");
-        if (!motionName || lastAction !== `motion:${motionName}`) {
-            return false;
-        }
-        if (["error", "missing", "not_ready"].includes(lastStatus)) {
-            return false;
-        }
-        if (!live2dLastMotionStartedAtMs || performance.now() - live2dLastMotionStartedAtMs > 15000) {
-            return false;
-        }
-        if (live2dLastMotionReplayedAtMs >= live2dLastMotionStartedAtMs) {
-            return false;
-        }
-        live2dLastMotionReplayedAtMs = performance.now();
-        consolePetFigure.dataset.live2dReplayReason = reason;
-        return playLive2dNativeMotion(motionName, { trackTrigger: false });
-    }
-
     function applyLive2dNativeExpression(name) {
         const expressionName = String(name || "").trim();
+        const source = String(arguments[1]?.source || "").trim();
         if (!expressionName || !live2dModel) {
-            setLive2dActionStatus("expression", expressionName || "(empty)", "not_ready");
+            setLive2dActionStatus("expression", expressionName || "(empty)", "not_ready", "", source);
             return false;
         }
         if (live2dExpressionResetTimer !== null) {
             window.clearTimeout(live2dExpressionResetTimer);
             live2dExpressionResetTimer = null;
         }
-        setLive2dActionStatus("expression", expressionName, "pending");
+        setLive2dActionStatus("expression", expressionName, "pending", "", source);
         const expressionOptions = live2dManifest?.expressionOptions?.[expressionName] || {};
         const clearDelayMs = expressionOptions.deactivateAfterSeconds
             ? Math.max(200, Number(expressionOptions.deactivateAfterSecondsAmount || 0) * 1000)
@@ -1202,7 +1201,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 } else {
                     live2dActiveExpressions = new Set();
                 }
-                setLive2dActionStatus("expression", expressionName, result === false ? "fallback" : "ok");
+                setLive2dActionStatus("expression", expressionName, result === false ? "fallback" : "ok", "", source);
                 window.requestAnimationFrame(() => markLive2dParameterSnapshot(`expression:${expressionName}`));
                 if (clearDelayMs > 0) {
                     live2dExpressionResetTimer = window.setTimeout(() => {
@@ -1219,7 +1218,8 @@ document.addEventListener("DOMContentLoaded", () => {
                     "expression",
                     expressionName,
                     "fallback",
-                    error?.message || String(error)
+                    error?.message || String(error),
+                    source
                 );
                 window.requestAnimationFrame(() => markLive2dParameterSnapshot(`expression:${expressionName}`));
             });
@@ -1259,8 +1259,9 @@ document.addEventListener("DOMContentLoaded", () => {
         live2dApp.stage.addChild(live2dModel);
         markLive2dRendererDefinitions();
         installLive2dDebugBridge();
+        live2dMotionUpdateHandler = () => updateLive2dNativeMotionDriver();
+        live2dModel.internalModel?.on?.("afterMotionUpdate", live2dMotionUpdateHandler);
         live2dModelUpdateHandler = () => {
-            updateLive2dNativeMotionDriver();
             applyLive2dExpressions();
         };
         live2dModel.internalModel?.on?.("beforeModelUpdate", live2dModelUpdateHandler);
@@ -2461,19 +2462,23 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     function handleEmbodimentEvent(payload) {
-        if (!isDesktopPetView) {
-            return;
-        }
-
         const action = String(payload?.action || "");
         const eventPayload = Object(payload?.payload || {});
         if (action === "live2d_motion") {
-            playLive2dNativeMotion(eventPayload.name);
+            playLive2dNativeMotion(eventPayload.name, {
+                source: String(eventPayload.source || ""),
+            });
             return;
         }
 
         if (action === "live2d_expression") {
-            applyLive2dNativeExpression(eventPayload.name);
+            applyLive2dNativeExpression(eventPayload.name, {
+                source: String(eventPayload.source || ""),
+            });
+            return;
+        }
+
+        if (!isDesktopPetView) {
             return;
         }
 
@@ -3306,13 +3311,6 @@ document.addEventListener("DOMContentLoaded", () => {
             turnCompleted = true;
             const turnId = String(payload.turn_id || "");
             updateStageBubble(turnId, "final", text, "replace");
-            if (live2dAssistantReplayTimer !== null) {
-                window.clearTimeout(live2dAssistantReplayTimer);
-            }
-            live2dAssistantReplayTimer = window.setTimeout(() => {
-                live2dAssistantReplayTimer = null;
-                replayRecentLive2dMotion("assistant_reply");
-            }, 80);
             if (avatarMode !== "live2d" && shouldShowAntennaMotion(text)) {
                 pulseConsolePetMotion("wiggle", 3200);
             }

@@ -174,9 +174,7 @@ def live2d_system_prompt(capabilities: Live2DCapabilities) -> str:
         "Native Live2D motion tools and meanings:\n"
         f"{motions}\n"
         "Native Live2D expression tools and meanings:\n"
-        f"{expressions}\n"
-        "Critical mapping: when the user asks for 挥手, 举手, 招手, 抬手, wave, "
-        "or raise hand, call live2d_motion_huishou."
+        f"{expressions}"
     )
 
 
@@ -340,41 +338,10 @@ def _aliases_for_native_action(
     kind: str,
 ) -> tuple[str, ...]:
     aliases: list[str] = [name, *parameter_labels]
-    comparable = {item.lower() for item in aliases}
 
     if kind == "motion":
-        if "huishou" in comparable or "挥手" in aliases:
-            aliases.extend(("挥手", "举手", "招手", "抬手", "wave", "raise hand", "hand up"))
-        if "meiyan" in comparable or "爱心轨迹" in aliases:
-            aliases.extend(("媚眼", "抛媚眼", "眨眼", "wink", "heart wink"))
-        if "daiji" in comparable:
-            aliases.extend(("待机", "空闲", "idle", "idle motion"))
         return _dedupe(aliases)
 
-    expression_aliases = {
-        "惊讶": ("惊讶", "吃惊", "震惊", "surprised", "surprise"),
-        "脸红": ("脸红", "害羞", "羞涩", "blush", "shy"),
-        "脸黑": ("脸黑", "黑脸", "阴沉", "dark face"),
-        "疑惑": ("疑惑", "困惑", "问号", "confused"),
-        "生气": ("生气", "愤怒", "怒", "angry"),
-        "爱心眼": ("爱心眼", "爱心", "heart eyes"),
-        "星星眼": ("星星眼", "星星", "star eyes"),
-        "金钱眼": ("金钱眼", "金钱", "money eyes"),
-        "白眼": ("白眼", "翻白眼", "roll eyes"),
-        "流泪": ("流泪", "哭", "哭泣", "tears", "cry"),
-        "披发": ("披发", "散发", "后发"),
-        "王冠": ("王冠", "皇冠", "crown"),
-        "翅膀": ("翅膀", "wing", "wings"),
-        "舌头": ("舌头", "吐舌", "tongue"),
-        "猫耳": ("猫耳", "耳朵", "cat ears"),
-        "手柄": ("手柄", "游戏手柄", "controller"),
-        "直播套装": ("直播套装", "直播", "家具", "streaming set"),
-        "马尾": ("马尾", "ponytail"),
-        "歪嘴": ("歪嘴", "坏笑", "smirk"),
-    }
-    for trigger, values in expression_aliases.items():
-        if trigger in name or trigger in aliases:
-            aliases.extend(values)
     return _dedupe(aliases)
 
 

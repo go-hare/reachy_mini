@@ -469,11 +469,11 @@ async def test_brain_timeout_publishes_error_and_resets_sdk(
 
 
 @pytest.mark.asyncio
-async def test_live2d_tool_success_falls_back_when_brain_text_times_out(
+async def test_live2d_tool_success_reports_brain_timeout_when_text_times_out(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Live2D tool success should complete the turn even if SDK text hangs."""
+    """Live2D tool events must not synthesize assistant text on SDK timeout."""
     monkeypatch.setattr(session_module, "BRAIN_TURN_TIMEOUT_S", 0.01)
     monkeypatch.setattr(session_module, "BRAIN_STOP_TIMEOUT_S", 0.5)
     profile_root = _write_live2d_profile(tmp_path)
@@ -499,7 +499,6 @@ async def test_live2d_tool_success_falls_back_when_brain_text_times_out(
     action_results = [frame for frame in frames if isinstance(frame, ActionResultFrame)]
     embodiment = [frame for frame in frames if isinstance(frame, EmbodimentFrame)]
 
-    assert not errors
     assert [frame.name for frame in action_results] == [
         "live2d_motion_huishou",
         "live2d_expression_jing_ya",
@@ -508,11 +507,11 @@ async def test_live2d_tool_success_falls_back_when_brain_text_times_out(
         "live2d_motion",
         "live2d_expression",
     ]
-    assert sdk_frames
-    assert sdk_frames[-1].metadata["fallback"] == "live2d_action_after_brain_timeout"
-    assert type(sdk_frames[-1].message).__name__ == "AssistantMessage"
-    assert "HuiShou" in sdk_frames[-1].message.content[0].text
-    assert "惊讶" in sdk_frames[-1].message.content[0].text
+    assert not sdk_frames
+    assert errors
+    assert errors[-1].component == "brain"
+    assert "timed out" in errors[-1].reason
+    assert errors[-1].metadata["turn_id"] == "T_live2d"
     assert created["client"].connected is False
     assert session.agent._client is None
 
@@ -551,10 +550,10 @@ async def test_live2d_plain_promise_does_not_trigger_runtime_action(
 
 
 @pytest.mark.asyncio
-async def test_live2d_claimed_native_action_runs_runtime_action(
+async def test_live2d_claimed_native_action_does_not_run_runtime_action(
     tmp_path: Path,
 ) -> None:
-    """Tool-incompatible models that claim a native Live2D action still drive UI."""
+    """Assistant text claims must not drive Live2D without an actual tool call."""
     profile_root = _write_live2d_profile(tmp_path)
     session = RuntimeSession.from_profile(
         profile_root,
@@ -578,14 +577,8 @@ async def test_live2d_claimed_native_action_runs_runtime_action(
 
     frames = await _drain(sub)
     action_results = [frame for frame in frames if isinstance(frame, ActionResultFrame)]
-    embodiment = [frame for frame in frames if isinstance(frame, EmbodimentFrame)]
 
-    assert [frame.name for frame in action_results if frame.name.startswith("live2d_")] == [
-        "live2d_motion_huishou"
-    ]
-    assert [frame.action for frame in embodiment if frame.target == "live2d"] == [
-        "live2d_motion"
-    ]
+    assert not [frame for frame in action_results if frame.name.startswith("live2d_")]
 
     await session.stop()
 

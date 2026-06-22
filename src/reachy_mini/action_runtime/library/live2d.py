@@ -146,11 +146,6 @@ def _tool_description(
         "This action already exists in the Live2D model; do not claim a developer "
         "must add it."
     )
-    if detail.name == "HuiShou":
-        description = (
-            f"{description} Important: HuiShou is the model's real 挥手 / 举手 / "
-            "招手 / 抬手 gesture."
-        )
     return description
 
 

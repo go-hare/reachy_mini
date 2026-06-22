@@ -45,7 +45,12 @@ class ActionDispatcher:
                     EmbodimentFrame(
                         action=str(embodiment.get("action") or ""),
                         target=str(embodiment.get("target") or "all"),
-                        payload=dict(embodiment.get("payload") or {}),
+                        payload={
+                            **dict(embodiment.get("payload") or {}),
+                            "request_id": result.request_id,
+                            "action_name": result.name,
+                            "source": result.reason or "action_runtime",
+                        },
                     )
                 )
         frames.append(ActionResultFrame.from_result(result))

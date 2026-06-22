@@ -138,3 +138,4 @@ class ActionResult:
     result: Any = None
     error: str | None = None
     duration_ms: int = 0
+    reason: str = ""
