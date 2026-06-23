@@ -763,10 +763,10 @@ document.addEventListener("DOMContentLoaded", () => {
                                     status === "error" ? "出错" :
                                         status || "未知";
             const readableName = name || "(empty)";
-            const sourceLabel = source ? ` · ${source}` : "";
-            setPetRuntimeState(`Live2D ${kindLabel}: ${readableName} ${statusLabel}${sourceLabel}`, status === "error" ? "error" : "ready");
+            setPetRuntimeState(`Live2D ${kindLabel}${statusLabel}`, status === "error" ? "error" : "ready");
             if (consolePetBubble && status !== "pending") {
-                consolePetBubble.textContent = `Live2D ${kindLabel} ${readableName}: ${statusLabel}${sourceLabel}`;
+                const suffix = status === "error" && message ? `：${message.slice(0, 36)}` : "";
+                consolePetBubble.textContent = `Live2D ${kindLabel} ${readableName}：${statusLabel}${suffix}`;
             }
         }
         if (message) {
