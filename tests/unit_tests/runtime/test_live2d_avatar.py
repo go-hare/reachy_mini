@@ -113,8 +113,7 @@ def test_load_live2d_capabilities_from_vtube_config(tmp_path: Path) -> None:
     assert capabilities.motion_details[1].file_name == "HuiShou.motion3.json"
     assert capabilities.motion_details[1].parameter_ids == ("Param58", "Param59")
     assert capabilities.motion_details[1].parameter_labels == ("挥手",)
-    assert "举手" in capabilities.motion_details[1].aliases
-    assert "招手" in capabilities.motion_details[1].aliases
+    assert capabilities.motion_details[1].aliases == ("HuiShou", "挥手")
     assert capabilities.expression_details[0].parameter_labels == ("惊讶",)
 
     prompt = live2d_system_prompt(capabilities)
@@ -123,7 +122,9 @@ def test_load_live2d_capabilities_from_vtube_config(tmp_path: Path) -> None:
     assert "mcp__reachy_actions__live2d_motion_huishou" in prompt
     assert "HuiShou.motion3.json" in prompt
     assert "挥手" in prompt
-    assert "举手" in prompt
-    assert "招手" in prompt
     assert "live2d_expression_jing_ya" in prompt
     assert "惊讶.exp3.json" in prompt
+    assert "Live2D action calls are model-driven" in prompt
+    assert "during normal chat you may choose" in prompt
+    assert "Never use keyword matching" in prompt
+    assert "If no listed action fits the turn" in prompt

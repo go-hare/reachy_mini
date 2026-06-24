@@ -137,12 +137,15 @@ def _tool_description(
         f"{verb} the exact native Live2D {file_type} {noun} from the "
         f"{capabilities.model_name} model. Tool: {tool_name}. "
         f"Native name: {detail.name}. Source file: {detail.file_name}. "
-        f"Meaning and request aliases: {aliases}."
+        f"Meaning and request aliases: {aliases}. "
+        "Use this tool when the user explicitly requests this native action, or "
+        "when your response would be better embodied by this motion/expression."
     )
     if parameters:
         description = f"{description} Model parameters: {parameters}."
     description = (
-        f"{description} If the user asks for any alias above, call this tool. "
+        f"{description} Do not rely on raw keyword matching; pick it only when "
+        "the turn intent and response style genuinely fit this native action. "
         "This action already exists in the Live2D model; do not claim a developer "
         "must add it."
     )

@@ -3036,6 +3036,16 @@ body:not([data-view="desktop-pet"]) .console-footer span:last-child {
 }
 
 /* Keep Live2D proportions close to the default console while fixing clipping. */
+body:not([data-view="desktop-pet"])[data-avatar-mode="live2d"] .chat-card {
+    grid-template-rows: auto minmax(400px, 1fr) minmax(200px, 0.52fr);
+}
+
+body:not([data-view="desktop-pet"])[data-avatar-mode="live2d"] .console-pet-scene {
+    justify-content: flex-start;
+    gap: 8px;
+    padding-top: 36px;
+}
+
 body:not([data-view="desktop-pet"])[data-avatar-mode="live2d"] .console-pet-status {
     max-width: min(560px, 84%);
 }
@@ -3069,13 +3079,13 @@ body:not([data-view="desktop-pet"])[data-avatar-mode="live2d"] .console-pet-bubb
 body:not([data-view="desktop-pet"])[data-avatar-mode="live2d"] .console-pet-figure[data-avatar-mode="live2d"] {
     width: clamp(220px, 36%, 320px);
     height: auto;
-    min-height: clamp(280px, 34vh, 360px);
+    min-height: clamp(240px, 28vh, 300px);
     margin-top: 4px;
 }
 
 body:not([data-view="desktop-pet"])[data-avatar-mode="live2d"] .console-pet-figure[data-avatar-mode="live2d"] .avatar-live2d-stage {
     height: auto;
-    min-height: clamp(280px, 34vh, 360px);
+    min-height: clamp(240px, 28vh, 300px);
 }
 
 body:not([data-view="desktop-pet"])[data-avatar-mode="live2d"] .console-pet-shadow {
@@ -3097,4 +3107,37 @@ body:not([data-view="desktop-pet"])[data-avatar-mode="live2d"] .composer-bar {
     flex-direction: row;
     align-items: center;
     min-height: 34px;
+}
+
+/* Final Live2D stage sizing overrides. Keep status inside the scene on compact layouts. */
+@media (max-width: 1180px) {
+    body:not([data-view="desktop-pet"])[data-avatar-mode="live2d"] .chat-card {
+        height: 720px;
+        grid-template-rows: auto minmax(400px, 1fr) minmax(220px, 0.58fr);
+    }
+
+    body:not([data-view="desktop-pet"])[data-avatar-mode="live2d"] .console-pet-scene {
+        gap: 8px;
+        padding-top: 36px;
+    }
+
+    body:not([data-view="desktop-pet"])[data-avatar-mode="live2d"] .console-pet-figure[data-avatar-mode="live2d"],
+    body:not([data-view="desktop-pet"])[data-avatar-mode="live2d"] .console-pet-figure[data-avatar-mode="live2d"] .avatar-live2d-stage {
+        min-height: clamp(240px, 30vh, 330px);
+    }
+}
+
+@media (max-width: 760px) {
+    body:not([data-view="desktop-pet"])[data-avatar-mode="live2d"] .chat-card {
+        height: 720px;
+        grid-template-rows: auto minmax(390px, 1fr) minmax(220px, 0.58fr);
+    }
+
+    body:not([data-view="desktop-pet"])[data-avatar-mode="live2d"] .console-pet-scene {
+        padding-top: 38px;
+    }
+
+    body:not([data-view="desktop-pet"])[data-avatar-mode="live2d"] .console-pet-figure[data-avatar-mode="live2d"] {
+        width: clamp(210px, 42%, 280px);
+    }
 }

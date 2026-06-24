@@ -304,21 +304,6 @@ document.addEventListener("DOMContentLoaded", () => {
         return "我有一段较长回复，完整内容在下面。";
     }
 
-    function shouldShowAntennaMotion(text) {
-        const normalized = compactText(text).toLowerCase();
-        if (!normalized) {
-            return false;
-        }
-        return (
-            normalized.includes("set_antenna") ||
-            normalized.includes("antenna") ||
-            normalized.includes("耳朵") ||
-            normalized.includes("天线") ||
-            normalized.includes("摆摆") ||
-            normalized.includes("动完")
-        );
-    }
-
     function normalizeAvatarMode(mode) {
         const normalized = String(mode || "").toLowerCase().trim();
         return AVATAR_MODES.includes(normalized) ? normalized : "sprite";
@@ -3311,9 +3296,6 @@ document.addEventListener("DOMContentLoaded", () => {
             turnCompleted = true;
             const turnId = String(payload.turn_id || "");
             updateStageBubble(turnId, "final", text, "replace");
-            if (avatarMode !== "live2d" && shouldShowAntennaMotion(text)) {
-                pulseConsolePetMotion("wiggle", 3200);
-            }
             setStatus("Brain 已生成 SDK 回复。", true);
             finishTurn();
             return;

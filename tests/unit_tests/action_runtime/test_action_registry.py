@@ -132,6 +132,8 @@ def test_live2d_registry_replaces_robot_actions() -> None:
     assert "招手" in wave_metadata.description
     assert "Param58(挥手)" in wave_metadata.description
     assert "already exists" in wave_metadata.description
+    assert "your response would be better embodied" in wave_metadata.description
+    assert "Do not rely on raw keyword matching" in wave_metadata.description
     assert wave_metadata.default_duration_s == 7
 
     surprise_metadata = registry.get_metadata("live2d_expression_jing_ya")

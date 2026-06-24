@@ -29,7 +29,6 @@ from .frames import (
     ActionResultFrame,
     AudioFrame,
     BrowserInputFrame,
-    EmbodimentFrame,
     InterruptFrame,
     PipelineErrorFrame,
     SDKMessageFrame,
@@ -422,16 +421,6 @@ class RuntimeSession:
             ts_ms=ts_ms,
         )
         await self.bus.publish(frame)
-        await self.bus.publish(
-            EmbodimentFrame(
-                action="surface_state",
-                payload={
-                    "phase": phase,
-                    **_surface_embodiment_for_phase(phase),
-                },
-                ts_ms=ts_ms,
-            )
-        )
 
     async def _maybe_set_idle(self) -> None:
         if self._stopping:
@@ -517,24 +506,3 @@ def _turn_id_for_frame(frame: object) -> str:
         return frame.turn_id
     return ""
 
-
-def _surface_embodiment_for_phase(phase: str) -> dict[str, Any]:
-    mapping: dict[str, dict[str, Any]] = {
-        "listening": {
-            "pose": "listen",
-            "attention": "front",
-        },
-        "listening_wait": {
-            "pose": "think",
-            "attention": "front",
-        },
-        "replying": {
-            "pose": "speak",
-            "attention": "front",
-        },
-        "idle": {
-            "pose": "idle",
-            "attention": "front",
-        },
-    }
-    return dict(mapping.get(phase, {"pose": "idle"}))
