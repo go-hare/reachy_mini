@@ -3051,13 +3051,15 @@ body:not([data-view="desktop-pet"])[data-avatar-mode="live2d"] .console-pet-bubb
     display: block;
     width: fit-content;
     max-width: min(430px, 72%);
+    height: auto;
+    min-height: 52px;
     max-height: none;
     padding: 12px 20px;
     overflow: hidden;
     text-overflow: clip;
     overflow-wrap: anywhere;
-    -webkit-box-orient: initial;
-    -webkit-line-clamp: initial;
+    -webkit-box-orient: unset;
+    -webkit-line-clamp: unset;
 }
 
 body:not([data-view="desktop-pet"])[data-avatar-mode="live2d"] .console-pet-bubble::after {
