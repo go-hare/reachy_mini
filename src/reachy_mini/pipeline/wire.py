@@ -11,6 +11,7 @@ from typing import Any, Mapping
 
 from reachy_mini.action_runtime import ActionResult
 from reachy_mini.reachy_brain.pipecat_bridge import sdk_message_to_payload
+from reachy_mini.robot_runtime.contracts import RobotEvent
 
 from .frames import (
     ActionResultFrame,
@@ -97,6 +98,12 @@ def encode_frame(frame: Any) -> dict[str, Any]:
                 "event": frame.event,
                 "payload": _to_jsonable(frame.payload),
             },
+            ts_ms=frame.ts_ms,
+        )
+    if isinstance(frame, RobotEvent):
+        return _envelope(
+            "robot_event",
+            _to_jsonable(frame.to_dict()),
             ts_ms=frame.ts_ms,
         )
     if isinstance(frame, TTSAudioFrame):

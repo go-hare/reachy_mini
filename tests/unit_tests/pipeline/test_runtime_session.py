@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -22,8 +23,7 @@ from sdk_fakes import (  # noqa: E402
     task_started,
 )
 
-from reachy_mini.action_runtime import ActionExecutor  # noqa: E402
-from reachy_mini.action_runtime import ActionSpec  # noqa: E402
+from reachy_mini.action_runtime import ActionExecutor, ActionSpec  # noqa: E402
 from reachy_mini.action_runtime.library import create_builtin_registry  # noqa: E402
 from reachy_mini.pipeline import session as session_module  # noqa: E402
 from reachy_mini.pipeline.action_dispatcher import ActionDispatcher  # noqa: E402
@@ -42,6 +42,21 @@ from reachy_mini.pipeline.speech_presenter import SpeechPresenter  # noqa: E402
 from reachy_mini.pipeline.tts_kokoro import KokoroAdapter  # noqa: E402
 from reachy_mini.reachy_brain.agent import BrainAgent  # noqa: E402
 from reachy_mini.reachy_brain.offline_sdk_client import OfflineSDKClient  # noqa: E402
+from reachy_mini.robot_runtime import (  # noqa: E402
+    LifecycleState,
+    RobotEvent,
+    RobotRuntime,
+    RobotRuntimeConfig,
+)
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+SIM_FRONT_ROBOT_RUNTIME_EXAMPLE = (
+    REPO_ROOT
+    / "profiles"
+    / "sim_front_app"
+    / "profiles"
+    / "robot_runtime.example.config.jsonl"
+)
 
 
 def _build_session(
@@ -50,6 +65,7 @@ def _build_session(
     offline: bool = False,
     speech_enabled: bool = False,
     client_factory_override: Any | None = None,
+    robot_runtime: RobotRuntime | None = None,
 ) -> RuntimeSession:
     config = agent_config(speech_enabled=speech_enabled)
     registry = create_builtin_registry()
@@ -86,6 +102,7 @@ def _build_session(
         speech=SpeechPresenter(),
         tts=KokoroAdapter(config.speech),
         actions=actions,
+        robot_runtime=robot_runtime,
     )
 
     async def publish_to_session(frame: ActionResultFrame) -> None:
@@ -93,6 +110,45 @@ def _build_session(
 
     actions._publish = publish_to_session  # test wiring mirrors from_profile()
     return session
+
+
+@pytest.mark.asyncio
+async def test_runtime_session_manages_optional_robot_runtime() -> None:
+    """RuntimeSession can own RobotRuntime without changing the default path."""
+    robot_runtime = RobotRuntime(config=RobotRuntimeConfig(tick_hz=100))
+    session = _build_session(robot_runtime=robot_runtime)
+
+    await session.start()
+
+    assert session.robot_tools is not None
+    assert robot_runtime.snapshot().state.lifecycle is LifecycleState.ACTIVE
+
+    await session.stop()
+
+    assert robot_runtime.snapshot().state.lifecycle is LifecycleState.INACTIVE
+
+
+@pytest.mark.asyncio
+async def test_runtime_session_publishes_robot_runtime_events() -> None:
+    """RobotRuntime trace events flow through RuntimeSession OutputBus."""
+    robot_runtime = RobotRuntime(config=RobotRuntimeConfig(tick_hz=100))
+    session = _build_session(robot_runtime=robot_runtime)
+    await session.start()
+    sub = session.subscribe(filter=lambda frame: isinstance(frame, RobotEvent))
+
+    assert session.robot_tools is not None
+    await session.robot_tools.emit_embodied_intent(
+        intent_type="greet",
+        modalities=["face"],
+        turn_id="turn_1",
+    )
+
+    frames = await _drain(sub)
+
+    assert any(frame.event_type == "intent_received" for frame in frames)
+    assert frames[-1].turn_id == "turn_1"
+
+    await session.stop()
 
 
 async def _drain(sub) -> list[Any]:
@@ -167,6 +223,15 @@ def _write_live2d_profile(tmp_path: Path) -> Path:
     return profile_root
 
 
+def _append_jsonl(target: Path, source: Path) -> None:
+    with source.open(encoding="utf-8") as source_file:
+        records = [json.loads(line) for line in source_file if line.strip()]
+    with target.open("a", encoding="utf-8") as target_file:
+        for record in records:
+            target_file.write(json.dumps(record, ensure_ascii=False, sort_keys=True))
+            target_file.write("\n")
+
+
 class _HangingSDKClient(ScriptedSDKClient):
     """SDK fake that never yields a terminal response."""
 
@@ -227,6 +292,270 @@ def test_from_profile_live2d_mode_replaces_builtin_action_registry(tmp_path: Pat
         "live2d_expression_jing_ya",
         "mcp__reachy_actions__live2d_expression_jing_ya",
     ]
+
+
+def test_from_profile_robot_runtime_can_hide_legacy_live2d_tools(tmp_path: Path) -> None:
+    """Opt-in RobotRuntime exposes intent tools instead of concrete Live2D tools."""
+    profile_root = _write_live2d_profile(tmp_path)
+    with (profile_root / "config.jsonl").open("a", encoding="utf-8") as file:
+        file.write(
+            '{"kind":"robot_runtime","enabled":true,'
+            '"intent_tools_enabled":true,'
+            '"legacy_live2d_tools_enabled":false}\n'
+        )
+
+    session = RuntimeSession.from_profile(
+        profile_root,
+        client_factory=lambda options: OfflineSDKClient(options),
+    )
+
+    assert session.robot_runtime is not None
+    assert session.robot_tools is not None
+    allowed_tools = set(session.agent.options.allowed_tools)
+    assert {
+        "emit_embodied_intent",
+        "query_robot_state",
+        "query_robot_trace",
+        "query_robot_metrics",
+        "query_robot_behavior_tree",
+        "query_robot_structured_log",
+        "request_robot_task",
+        "cancel_robot_task",
+        "mcp__reachy_robot__emit_embodied_intent",
+        "mcp__reachy_robot__query_robot_state",
+        "mcp__reachy_robot__query_robot_trace",
+        "mcp__reachy_robot__query_robot_metrics",
+        "mcp__reachy_robot__query_robot_behavior_tree",
+        "mcp__reachy_robot__query_robot_structured_log",
+        "mcp__reachy_robot__request_robot_task",
+        "mcp__reachy_robot__cancel_robot_task",
+    } <= allowed_tools
+    assert not any(
+        tool.startswith("live2d_motion_") or tool.startswith("live2d_expression_")
+        for tool in session.agent.options.allowed_tools
+    )
+    assert "emit_embodied_intent" in session.agent.system_prompt_append
+    assert "live2d_motion_huishou" not in session.agent.system_prompt_append
+    assert "HuiShou" not in session.agent.system_prompt_append
+    assert "reachy_robot" in session.agent.options.mcp_servers
+    assert "reachy_actions" not in session.agent.options.mcp_servers
+
+
+def test_from_profile_robot_runtime_defaults_to_intent_only_tools(tmp_path: Path) -> None:
+    """RobotRuntime opt-in defaults to the enterprise body-agnostic tool surface."""
+    profile_root = _write_live2d_profile(tmp_path)
+    with (profile_root / "config.jsonl").open("a", encoding="utf-8") as file:
+        file.write('{"kind":"robot_runtime","enabled":true}\n')
+
+    session = RuntimeSession.from_profile(
+        profile_root,
+        client_factory=lambda options: OfflineSDKClient(options),
+    )
+
+    assert session.robot_runtime is not None
+    assert session.robot_runtime.config.legacy_live2d_tools_enabled is False
+    assert "emit_embodied_intent" in session.agent.options.allowed_tools
+    assert not any(
+        tool.startswith("live2d_motion_") or tool.startswith("live2d_expression_")
+        for tool in session.agent.options.allowed_tools
+    )
+    assert "reachy_robot" in session.agent.options.mcp_servers
+    assert "reachy_actions" not in session.agent.options.mcp_servers
+    assert "emit_embodied_intent" in session.agent.system_prompt_append
+    assert "HuiShou" not in session.agent.system_prompt_append
+
+
+def test_from_profile_robot_runtime_can_explicitly_keep_legacy_live2d_tools(
+    tmp_path: Path,
+) -> None:
+    """Legacy concrete tools remain available only through an explicit flag."""
+    profile_root = _write_live2d_profile(tmp_path)
+    with (profile_root / "config.jsonl").open("a", encoding="utf-8") as file:
+        file.write(
+            '{"kind":"robot_runtime","enabled":true,'
+            '"legacy_live2d_tools_enabled":true}\n'
+        )
+
+    session = RuntimeSession.from_profile(
+        profile_root,
+        client_factory=lambda options: OfflineSDKClient(options),
+    )
+
+    assert session.robot_runtime is not None
+    assert session.robot_runtime.config.legacy_live2d_tools_enabled is True
+    assert "emit_embodied_intent" in session.agent.options.allowed_tools
+    assert "live2d_motion_huishou" in session.agent.options.allowed_tools
+    assert "reachy_robot" in session.agent.options.mcp_servers
+    assert "reachy_actions" in session.agent.options.mcp_servers
+    assert "HuiShou" in session.agent.system_prompt_append
+
+
+def test_from_profile_robot_runtime_disabled_keeps_legacy_live2d_tools(
+    tmp_path: Path,
+) -> None:
+    """Disabled RobotRuntime is a rollback switch and preserves legacy v4 tools."""
+    profile_root = _write_live2d_profile(tmp_path)
+    with (profile_root / "config.jsonl").open("a", encoding="utf-8") as file:
+        file.write(
+            '{"kind":"robot_runtime","enabled":false,'
+            '"intent_tools_enabled":true,'
+            '"legacy_live2d_tools_enabled":false}\n'
+        )
+
+    session = RuntimeSession.from_profile(
+        profile_root,
+        client_factory=lambda options: OfflineSDKClient(options),
+    )
+
+    assert session.robot_runtime is None
+    assert session.robot_tools is None
+    assert session.agent.options.allowed_tools == [
+        "live2d_motion_daiji",
+        "mcp__reachy_actions__live2d_motion_daiji",
+        "live2d_motion_huishou",
+        "mcp__reachy_actions__live2d_motion_huishou",
+        "live2d_expression_jing_ya",
+        "mcp__reachy_actions__live2d_expression_jing_ya",
+    ]
+    assert "reachy_actions" in session.agent.options.mcp_servers
+    assert "reachy_robot" not in session.agent.options.mcp_servers
+    assert "HuiShou" in session.agent.system_prompt_append
+
+
+@pytest.mark.asyncio
+async def test_robot_runtime_profile_intent_executes_live2d_adapter(tmp_path: Path) -> None:
+    """RobotRuntime intent path resolves to Live2D without model-visible concrete tools."""
+    profile_root = _write_live2d_profile(tmp_path)
+    with (profile_root / "config.jsonl").open("a", encoding="utf-8") as file:
+        file.write(
+            '{"kind":"robot_runtime","enabled":true,'
+            '"intent_tools_enabled":true,'
+            '"legacy_live2d_tools_enabled":false}\n'
+        )
+    session = RuntimeSession.from_profile(
+        profile_root,
+        client_factory=lambda options: OfflineSDKClient(options),
+    )
+    await session.start()
+    sub = session.subscribe(
+        filter=lambda frame: isinstance(frame, EmbodimentFrame | RobotEvent)
+    )
+
+    assert session.robot_tools is not None
+    result = await session.robot_tools.emit_embodied_intent(
+        intent_type="greet",
+        modalities=["gesture"],
+        turn_id="turn_live2d",
+    )
+
+    frames = await _drain(sub)
+    embodiment = [frame for frame in frames if isinstance(frame, EmbodimentFrame)]
+    events = [frame for frame in frames if isinstance(frame, RobotEvent)]
+
+    assert result["events"][-1]["event_type"] == "adapter_result"
+    assert embodiment[-1].action == "live2d_motion"
+    assert embodiment[-1].payload == {"name": "HuiShou"}
+    assert events[-1].event_type == "adapter_result"
+    assert events[-1].status == "completed"
+
+    await session.stop()
+
+
+@pytest.mark.asyncio
+async def test_from_profile_registers_configured_robot_adapters(tmp_path: Path) -> None:
+    """Robot adapter profile records drive RuntimeSession adapter registration."""
+    profile_root = _write_live2d_profile(tmp_path)
+    with (profile_root / "config.jsonl").open("a", encoding="utf-8") as file:
+        file.write(
+            '{"kind":"robot_runtime","enabled":true,'
+            '"adapters":["live2d","mujoco","reachy"],'
+            '"safety_profile":"simulation"}\n'
+        )
+        file.write(
+            '{"kind":"robot_adapter","adapter":"live2d",'
+            '"profile_source":"runtime_session_test"}\n'
+        )
+        file.write('{"kind":"robot_adapter","adapter":"reachy","dry_run":true}\n')
+    session = RuntimeSession.from_profile(
+        profile_root,
+        client_factory=lambda options: OfflineSDKClient(options),
+        mini_factory=lambda config: FakeMini(),
+    )
+
+    await session.start()
+
+    assert session.robot_runtime is not None
+    adapter_ids = sorted(session.robot_runtime.dependencies.adapters)
+    state = session.robot_runtime.snapshot().state
+
+    assert adapter_ids == ["live2d", "mujoco", "reachy"]
+    assert sorted(state.adapter_states) == ["live2d", "mujoco", "reachy"]
+    assert state.adapter_states["live2d"].metadata["options"] == {
+        "safety_profile": "simulation",
+        "profile_source": "runtime_session_test",
+    }
+    assert state.adapter_states["reachy"].metadata["dry_run"] is True
+
+    await session.stop()
+
+
+@pytest.mark.asyncio
+async def test_sim_front_robot_runtime_example_is_loadable_smoke(tmp_path: Path) -> None:
+    """The shipped sim_front_app RobotRuntime example is a loadable rollback-safe profile."""
+    profile_root = _write_live2d_profile(tmp_path)
+    _append_jsonl(profile_root / "config.jsonl", SIM_FRONT_ROBOT_RUNTIME_EXAMPLE)
+
+    session = RuntimeSession.from_profile(
+        profile_root,
+        client_factory=lambda options: OfflineSDKClient(options),
+        mini_factory=lambda config: FakeMini(),
+    )
+
+    assert session.robot_runtime is not None
+    assert session.robot_runtime.config.enabled is True
+    assert session.robot_runtime.config.mode.value == "hybrid"
+    assert session.robot_runtime.config.legacy_live2d_tools_enabled is False
+    assert session.robot_runtime.config.adapter_configs["reachy"].enabled is False
+    assert "emit_embodied_intent" in session.agent.options.allowed_tools
+    assert not any(
+        tool.startswith("live2d_motion_") or tool.startswith("live2d_expression_")
+        for tool in session.agent.options.allowed_tools
+    )
+
+    await session.start()
+    sub = session.subscribe(
+        filter=lambda frame: isinstance(frame, EmbodimentFrame | RobotEvent)
+    )
+
+    state = session.robot_runtime.snapshot().state
+    assert sorted(state.adapter_states) == ["live2d", "mujoco"]
+    assert state.safety_state.active_limits == {
+        "max_duration_ms": 1500,
+        "max_timeout_ms": 2000,
+    }
+
+    assert session.robot_tools is not None
+    result = await session.robot_tools.emit_embodied_intent(
+        intent_type="greet",
+        modalities=["gesture"],
+        turn_id="turn_example",
+    )
+    frames = await _drain(sub)
+
+    assert result["events"][-1]["event_type"] == "adapter_result"
+    assert result["events"][-1]["payload"]["adapter_id"] == "live2d"
+    assert any(
+        isinstance(frame, EmbodimentFrame)
+        and frame.action == "live2d_motion"
+        and frame.payload == {"name": "HuiShou"}
+        for frame in frames
+    )
+    assert not any(
+        isinstance(frame, RobotEvent) and frame.payload.get("adapter_id") == "reachy"
+        for frame in frames
+    )
+
+    await session.stop()
 
 
 @pytest.mark.asyncio

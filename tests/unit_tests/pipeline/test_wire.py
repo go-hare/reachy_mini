@@ -44,6 +44,7 @@ from reachy_mini.pipeline.wire import (
     decode_inbound,
     encode_frame,
 )
+from reachy_mini.robot_runtime import RobotEvent  # noqa: E402
 
 
 def _b64(data: bytes) -> str:
@@ -181,6 +182,40 @@ def test_encode_embodiment_frame() -> None:
             "target": "avatar",
             "turn_id": "T1",
             "payload": {"phase": "replying", "pose": "speak"},
+        },
+    }
+
+
+def test_encode_robot_event() -> None:
+    """RobotEvent serializes as a traceable robot_event envelope."""
+    envelope = encode_frame(
+        RobotEvent(
+            event_id="event_1",
+            source="runtime",
+            event_type="intent_received",
+            ts_ms=777,
+            turn_id="T1",
+            intent_id="intent_1",
+            payload={"intent_type": "greet"},
+        )
+    )
+
+    assert envelope == {
+        "type": "robot_event",
+        "ts_ms": 777,
+        "payload": {
+            "event_id": "event_1",
+            "ts_ms": 777,
+            "source": "runtime",
+            "severity": "info",
+            "event_type": "intent_received",
+            "turn_id": "T1",
+            "intent_id": "intent_1",
+            "plan_id": None,
+            "command_id": None,
+            "status": None,
+            "payload": {"intent_type": "greet"},
+            "reason": None,
         },
     }
 

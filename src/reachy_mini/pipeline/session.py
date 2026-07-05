@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 import uuid
@@ -18,6 +19,13 @@ from reachy_mini.action_runtime.registry import ActionRegistry
 from reachy_mini.reachy_brain.agent import BrainAgent, ClientFactory
 from reachy_mini.reachy_brain.config import AgentConfig, from_profile
 from reachy_mini.reachy_brain.pipecat_bridge import sdk_message_to_worker_event
+from reachy_mini.robot_runtime.adapters.factory import (
+    adapter_config_options,
+    build_profile_adapters,
+)
+from reachy_mini.robot_runtime.config import RobotRuntimeConfig
+from reachy_mini.robot_runtime.runtime import RobotRuntime
+from reachy_mini.robot_runtime.tools import RobotIntentTools
 from reachy_mini.runtime.live2d_avatar import (
     live2d_system_prompt,
     load_live2d_capabilities,
@@ -26,9 +34,9 @@ from reachy_mini.runtime.live2d_avatar import (
 from .action_dispatcher import ActionDispatcher
 from .brain_processor import BrainProcessor
 from .frames import (
-    ActionResultFrame,
     AudioFrame,
     BrowserInputFrame,
+    EmbodimentFrame,
     InterruptFrame,
     PipelineErrorFrame,
     SDKMessageFrame,
@@ -110,6 +118,8 @@ class RuntimeSession:
         tts: KokoroAdapter,
         actions: ActionDispatcher,
         clock: Clock | None = None,
+        robot_runtime: RobotRuntime | None = None,
+        robot_adapters: list[Any] | None = None,
     ) -> None:
         """Create a runtime session from prebuilt components."""
         self.config = config
@@ -119,9 +129,18 @@ class RuntimeSession:
         self.speech = speech
         self.tts = tts
         self.actions = actions
+        self.robot_runtime = robot_runtime
+        self.robot_tools = RobotIntentTools(robot_runtime) if robot_runtime else None
+        self._robot_adapters = list(robot_adapters or [])
+        self._robot_adapters_registered = False
         self.clock = clock or _SystemClock()
         self.brain = BrainProcessor(agent)
         self.bus = OutputBus()
+        if (
+            self.robot_runtime is not None
+            and self.robot_runtime.dependencies.publish_event is None
+        ):
+            self.robot_runtime.dependencies.publish_event = self.bus.publish
         if self.actions._publish is None:
             self.actions._publish = self._publish_action_frame
         self.pipecat: ReachyPipecatRuntime | None = None
@@ -146,14 +165,36 @@ class RuntimeSession:
         """Build a runtime session from a profile directory."""
         del memory_root
         config = from_profile(profile_path, overrides=overrides)
+        robot_runtime_config = RobotRuntimeConfig.from_records(
+            _read_profile_records(profile_path)
+        )
+        robot_runtime = (
+            RobotRuntime(config=robot_runtime_config)
+            if robot_runtime_config.enabled
+            else None
+        )
+        robot_tools = RobotIntentTools(robot_runtime) if robot_runtime else None
         live2d_capabilities = load_live2d_capabilities(profile_path)
         system_prompt_append = ""
         if live2d_capabilities is None:
             registry = create_builtin_registry()
+            if robot_runtime_config.enabled:
+                system_prompt_append = _robot_runtime_system_prompt()
         else:
             registry = create_live2d_registry(live2d_capabilities)
-            system_prompt_append = live2d_system_prompt(live2d_capabilities)
+            if (
+                robot_runtime_config.enabled
+                and not robot_runtime_config.legacy_live2d_tools_enabled
+            ):
+                system_prompt_append = _robot_runtime_system_prompt()
+            else:
+                system_prompt_append = live2d_system_prompt(live2d_capabilities)
         mini = mini_factory(config) if mini_factory is not None else _NoopMini()
+        adapter_build = build_profile_adapters(
+            robot_runtime_config,
+            live2d_capabilities=live2d_capabilities,
+            mini=mini,
+        )
         executor = ActionExecutor(registry=registry, mini=mini)
         actions = ActionDispatcher(executor)
         agent = BrainAgent(
@@ -163,6 +204,11 @@ class RuntimeSession:
             client_factory=client_factory,
             cwd=cwd,
             system_prompt_append=system_prompt_append,
+            robot_tools=robot_tools if robot_runtime_config.intent_tools_enabled else None,
+            action_tools_enabled=not (
+                robot_runtime_config.enabled
+                and not robot_runtime_config.legacy_live2d_tools_enabled
+            ),
         )
         speech = SpeechPresenter(
             style={"voice": config.speech.voice, "speed": config.speech.speed}
@@ -177,7 +223,11 @@ class RuntimeSession:
             tts=tts,
             actions=actions,
             clock=clock,
+            robot_runtime=robot_runtime,
+            robot_adapters=adapter_build.adapters,
         )
+        if robot_tools is not None:
+            session.robot_tools = robot_tools
         return session
 
     async def start(self) -> None:
@@ -186,6 +236,9 @@ class RuntimeSession:
             return
         self._started = True
         self._stopping = False
+        if self.robot_runtime is not None:
+            await self._register_robot_adapters()
+            await self.robot_runtime.start()
         await self.agent.start()
         self.pipecat = ReachyPipecatRuntime(
             bus=self.bus,
@@ -215,6 +268,8 @@ class RuntimeSession:
         if self.pipecat is not None:
             await self.pipecat.stop()
             self.pipecat = None
+        if self.robot_runtime is not None:
+            await self.robot_runtime.stop()
         await self._stop_sdk_tasks()
         await self.agent.stop()
         await self.bus.close()
@@ -232,6 +287,21 @@ class RuntimeSession:
     def unsubscribe(self, sub: OutputSubscription) -> None:
         """Unsubscribe from the output bus."""
         self.bus.unsubscribe(sub)
+
+    async def _register_robot_adapters(self) -> None:
+        if self.robot_runtime is None or self._robot_adapters_registered:
+            return
+        for adapter in self._robot_adapters:
+            if hasattr(adapter, "publish_frame") and getattr(adapter, "publish_frame") is None:
+                setattr(adapter, "publish_frame", self.bus.publish)
+            await self.robot_runtime.register_adapter(
+                adapter,
+                config=adapter_config_options(
+                    self.robot_runtime.config,
+                    adapter.adapter_id,
+                ),
+            )
+        self._robot_adapters_registered = True
 
     async def submit_text(self, text: str, *, turn_id: str | None = None) -> str:
         """Submit a text turn through the BrowserInputFrame path."""
@@ -414,13 +484,22 @@ class RuntimeSession:
             return
         self._surface_phase = phase
         ts_ms = int(self.clock.monotonic() * 1000)
-        frame = WorkerEventFrame(
+        state = _surface_state_payload(phase)
+        worker_frame = WorkerEventFrame(
             task_id=SURFACE_TASK_ID,
             event="state",
-            payload={"kind": "surface_state", "state": {"phase": phase}},
+            payload={"kind": "surface_state", "state": state},
             ts_ms=ts_ms,
         )
-        await self.bus.publish(frame)
+        embodiment_frame = EmbodimentFrame(
+            action="surface_state",
+            target="all",
+            turn_id=self._active_turn_id,
+            payload=state,
+            ts_ms=ts_ms,
+        )
+        await self.bus.publish(worker_frame)
+        await self.bus.publish(embodiment_frame)
 
     async def _maybe_set_idle(self) -> None:
         if self._stopping:
@@ -506,3 +585,46 @@ def _turn_id_for_frame(frame: object) -> str:
         return frame.turn_id
     return ""
 
+
+def _surface_state_payload(phase: str) -> dict[str, str]:
+    states = {
+        "idle": {"phase": "idle", "pose": "idle", "attention": "front"},
+        "listening": {"phase": "listening", "pose": "listen", "attention": "front"},
+        "listening_wait": {
+            "phase": "listening_wait",
+            "pose": "think",
+            "attention": "front",
+        },
+        "replying": {"phase": "replying", "pose": "speak", "attention": "front"},
+    }
+    return states.get(
+        phase,
+        {"phase": phase, "pose": "neutral", "attention": "front"},
+    )
+
+
+def _robot_runtime_system_prompt() -> str:
+    return (
+        "Current embodiment mode: RobotRuntime.\n"
+        "Use only the body-agnostic Robot Intent API for embodiment: "
+        "emit_embodied_intent, query_robot_state, query_robot_trace, "
+        "query_robot_metrics, query_robot_behavior_tree, "
+        "query_robot_structured_log, request_robot_task, and cancel_robot_task.\n"
+        "Do not call, mention, or invent concrete Live2D motion tools, "
+        "Live2D expression tools, .motion3.json files, .exp3.json files, or raw "
+        "motor commands. Express intent_type, affect, target, modalities, "
+        "speech_relation, timing_anchor, intensity, priority, and constraints; "
+        "RobotRuntime will resolve the correct body adapter and capability."
+    )
+
+
+def _read_profile_records(profile_path: Path) -> list[dict[str, Any]]:
+    config_path = profile_path if profile_path.is_file() else profile_path / "config.jsonl"
+    if not config_path.is_file():
+        return []
+    records: list[dict[str, Any]] = []
+    for line in config_path.read_text(encoding="utf-8").splitlines():
+        text = line.strip()
+        if text:
+            records.append(json.loads(text))
+    return records

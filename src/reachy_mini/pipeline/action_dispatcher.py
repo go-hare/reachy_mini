@@ -36,7 +36,9 @@ class ActionDispatcher:
             self.executor.cancel()
         return []
 
-    def _frames_from_result(self, result: ActionResult) -> list[ActionResultFrame | EmbodimentFrame]:
+    def _frames_from_result(
+        self, result: ActionResult
+    ) -> list[ActionResultFrame | EmbodimentFrame]:
         frames: list[ActionResultFrame | EmbodimentFrame] = []
         if result.status == "ok":
             embodiment = _result_embodiment_payload(result.result)
@@ -45,12 +47,7 @@ class ActionDispatcher:
                     EmbodimentFrame(
                         action=str(embodiment.get("action") or ""),
                         target=str(embodiment.get("target") or "all"),
-                        payload={
-                            **dict(embodiment.get("payload") or {}),
-                            "request_id": result.request_id,
-                            "action_name": result.name,
-                            "source": result.reason or "action_runtime",
-                        },
+                        payload=dict(embodiment.get("payload") or {}),
                     )
                 )
         frames.append(ActionResultFrame.from_result(result))

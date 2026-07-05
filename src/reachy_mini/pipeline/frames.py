@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from reachy_mini.action_runtime import ActionResult
+from reachy_mini.embodiment import EmbodimentFrame
 
 
 @dataclass(frozen=True)
@@ -129,17 +130,6 @@ class ActionResultFrame:
 
 
 @dataclass(frozen=True)
-class EmbodimentFrame:
-    """Body-agnostic expression event for robots, 3D bodies, and avatars."""
-
-    action: str
-    payload: dict[str, Any]
-    target: str = "all"
-    turn_id: str = ""
-    ts_ms: int = 0
-
-
-@dataclass(frozen=True)
 class WorkerEventFrame:
     """Worker status frame."""
 
@@ -185,3 +175,24 @@ class PipelineErrorFrame:
     component: str
     reason: str
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+__all__ = [
+    "ActionResultFrame",
+    "AudioFrame",
+    "BrowserInputFrame",
+    "CameraFrame",
+    "EmbodimentFrame",
+    "InterruptFrame",
+    "PipelineErrorFrame",
+    "SDKMessageFrame",
+    "SpeechActivityFrame",
+    "SpeechPresenterFrame",
+    "TTSAudioFrame",
+    "TTSStopFrame",
+    "TextFrame",
+    "TickFrame",
+    "TranscriptionFrame",
+    "VisionEventFrame",
+    "WorkerEventFrame",
+]

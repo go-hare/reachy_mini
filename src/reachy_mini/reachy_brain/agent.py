@@ -16,7 +16,9 @@ from .mcp_server import (
     ActionRunner,
     action_allowed_tool_names,
     create_action_mcp_server,
+    create_robot_mcp_server,
     require_claude_agent_sdk,
+    robot_allowed_tool_names,
 )
 
 
@@ -67,6 +69,8 @@ class BrainAgent:
         client_factory: ClientFactory | None = None,
         cwd: Path | str | None = None,
         system_prompt_append: str = "",
+        robot_tools: Any | None = None,
+        action_tools_enabled: bool = True,
     ) -> None:
         """Create a Brain agent bound to an ActionRuntime MCP facade."""
         self.config = config
@@ -75,6 +79,8 @@ class BrainAgent:
         self.owner_id = owner_id
         self.cwd = Path(cwd).resolve() if cwd is not None else Path.cwd()
         self.system_prompt_append = str(system_prompt_append or "").strip()
+        self.robot_tools = robot_tools
+        self.action_tools_enabled = action_tools_enabled
         self._client_factory = client_factory
         self._client: SDKClient | None = None
         self.options = self._build_options()
@@ -138,18 +144,29 @@ class BrainAgent:
         require_claude_agent_sdk()
         from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions
 
-        action_server = create_action_mcp_server(
-            registry=self.registry,
-            run_action=self.run_action,
-            owner_id=self.owner_id,
-        )
-        allowed_tools = action_allowed_tool_names(self.registry)
+        mcp_servers: dict[str, Any] = {}
+        allowed_tools: list[str] = []
+        agent_mcp_servers: list[str] = []
+        if self.action_tools_enabled:
+            mcp_servers["reachy_actions"] = create_action_mcp_server(
+                registry=self.registry,
+                run_action=self.run_action,
+                owner_id=self.owner_id,
+            )
+            allowed_tools.extend(action_allowed_tool_names(self.registry))
+            agent_mcp_servers.append("reachy_actions")
+        if self.robot_tools is not None:
+            mcp_servers["reachy_robot"] = create_robot_mcp_server(
+                robot_tools=self.robot_tools,
+            )
+            allowed_tools.extend(robot_allowed_tool_names())
+            agent_mcp_servers.append("reachy_robot")
         agents = {
             "reachy_background": AgentDefinition(
                 description="Run long-running Reachy Mini observations or plans in the background.",
                 prompt=_load_prompt("worker.md"),
                 tools=allowed_tools,
-                mcpServers=["reachy_actions"],
+                mcpServers=agent_mcp_servers,
                 background=True,
                 permissionMode="dontAsk",
                 effort="high",
@@ -160,7 +177,7 @@ class BrainAgent:
             system_prompt=self._system_prompt(),
             cwd=self.cwd,
             permission_mode="dontAsk",
-            mcp_servers={"reachy_actions": action_server},
+            mcp_servers=mcp_servers,
             allowed_tools=allowed_tools,
             agents=agents,
             env=self._sdk_env(),

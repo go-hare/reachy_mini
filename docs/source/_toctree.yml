@@ -55,6 +55,8 @@
       title: AI Integrations
     - local: SDK/v4-brain-action-architecture
       title: V4 大脑与动作架构
+    - local: SDK/robot-runtime-enterprise-plan
+      title: 企业级 RobotRuntime 架构规划
     - local: SDK/v4-phase1-implementation-plan
       title: V4 Phase 1 落地计划
     - local: SDK/core-concept

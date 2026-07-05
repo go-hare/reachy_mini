@@ -15,6 +15,8 @@ from .mcp_server import (
     ClaudeAgentSDKUnavailableError,
     action_allowed_tool_names,
     create_action_mcp_server,
+    create_robot_mcp_server,
+    robot_allowed_tool_names,
 )
 
 __all__ = [
@@ -30,5 +32,7 @@ __all__ = [
     "VisionConfig",
     "action_allowed_tool_names",
     "create_action_mcp_server",
+    "create_robot_mcp_server",
     "from_profile",
+    "robot_allowed_tool_names",
 ]

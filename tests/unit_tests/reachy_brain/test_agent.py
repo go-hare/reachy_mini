@@ -19,6 +19,7 @@ from reachy_mini.reachy_brain.config import (  # noqa: E402
     SpeechInputConfig,
     VisionConfig,
 )
+from reachy_mini.robot_runtime import RobotIntentTools, RobotRuntime  # noqa: E402
 
 
 async def _unused_action_runner(_spec):
@@ -98,6 +99,32 @@ def test_agent_options_pass_profile_endpoint_and_key_to_sdk_env() -> None:
     assert agent.options.env["ANTHROPIC_BASE_URL"] == "http://gateway.example/cc"
     assert agent.options.env["ANTHROPIC_API_KEY"] == "test-secret"
     assert agent.options.env["ANTHROPIC_AUTH_TOKEN"] == "test-secret"
+
+
+def test_agent_can_expose_robot_intent_tools_without_action_tools() -> None:
+    """RobotRuntime mode can hide concrete action tools from the model."""
+    registry = create_builtin_registry()
+    config = AgentConfig(
+        model=ModelConfig(provider="openai", model="claude-opus-4.6"),
+        speech=SpeechConfig(),
+        speech_input=SpeechInputConfig(enabled=False),
+        vision=VisionConfig(),
+        extras={},
+    )
+
+    agent = BrainAgent(
+        config=config,
+        registry=registry,
+        run_action=_unused_action_runner,
+        robot_tools=RobotIntentTools(RobotRuntime()),
+        action_tools_enabled=False,
+    )
+
+    assert "emit_embodied_intent" in agent.options.allowed_tools
+    assert "mcp__reachy_robot__emit_embodied_intent" in agent.options.allowed_tools
+    assert "nod" not in agent.options.allowed_tools
+    assert "reachy_robot" in agent.options.mcp_servers
+    assert "reachy_actions" not in agent.options.mcp_servers
 
 
 @pytest.mark.asyncio

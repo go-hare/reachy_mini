@@ -30,6 +30,7 @@ dependencies = [
     "pip>=25",
     "rich",
     "questionary",
+    "py-trees>=2.4,<3",
     "websockets>=12,<16",
     "toml",
     "rustypot>=1.4.2",
