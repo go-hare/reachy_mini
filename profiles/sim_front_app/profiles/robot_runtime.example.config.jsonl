@@ -1,0 +1,6 @@
+{"kind":"robot_runtime","enabled":true,"mode":"hybrid","tick_hz":30,"adapters":["live2d","mujoco","reachy"],"safety_profile":"simulation","intent_tools_enabled":true,"legacy_live2d_tools_enabled":false}
+{"kind":"robot_adapter","adapter":"live2d","enabled":true,"capabilities_from":"avatar.config.json"}
+{"kind":"robot_adapter","adapter":"mujoco","enabled":true,"headless":true,"scene":"empty"}
+{"kind":"robot_adapter","adapter":"reachy","enabled":false,"dry_run":true}
+{"kind":"robot_safety_profile","name":"simulation","max_timeout_ms":2000,"max_duration_ms":1500}
+{"kind":"robot_safety_profile","name":"hardware_lite","max_timeout_ms":1000,"max_duration_ms":800,"watchdog_timeout_ms":500}
