@@ -53,13 +53,16 @@ def sdk_message_to_worker_event(frame: SDKMessageFrame) -> WorkerEventFrame | No
 
 
 def extract_text_blocks(message: Any) -> list[str]:
-    """Extract text from SDK AssistantMessage/TextBlock content."""
+    """Extract text from SDK AssistantMessage/TextBlock content (incl. Pi duck-types)."""
+    # Claude SDK and PiBinaryBrain both use class name AssistantMessage.
     if type(message).__name__ != "AssistantMessage":
         return []
-    content = getattr(message, "content", [])
+    content = getattr(message, "content", []) or []
     texts: list[str] = []
     for block in content:
-        if type(block).__name__ == "TextBlock":
+        if type(block).__name__ == "TextBlock" or (
+            hasattr(block, "text") and not (hasattr(block, "name") and hasattr(block, "input"))
+        ):
             text = str(getattr(block, "text", "") or "").strip()
             if text:
                 texts.append(text)

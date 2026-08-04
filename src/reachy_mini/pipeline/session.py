@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 import uuid
 from pathlib import Path
@@ -18,7 +19,6 @@ from reachy_mini.action_runtime.library import (
 from reachy_mini.action_runtime.registry import ActionRegistry
 from reachy_mini.reachy_brain.agent import BrainAgent, ClientFactory
 from reachy_mini.reachy_brain.config import AgentConfig, from_profile
-from reachy_mini.reachy_brain.pipecat_bridge import sdk_message_to_worker_event
 from reachy_mini.robot_runtime.adapters.factory import (
     adapter_config_options,
     build_profile_adapters,
@@ -47,7 +47,6 @@ from .frames import (
     WorkerEventFrame,
 )
 from .output_bus import OutputBus, OutputSubscription
-from .pipecat_runtime import ReachyPipecatRuntime
 from .speech_presenter import SpeechPresenter
 from .tts_kokoro import KokoroAdapter
 
@@ -105,14 +104,14 @@ class _NoopMini:
 
 
 class RuntimeSession:
-    """Multi-turn v4 session around ClaudeSDKClient and ActionRuntime."""
+    """Multi-turn v4 session around ClaudeSDKClient / Pi RPC and ActionRuntime."""
 
     def __init__(
         self,
         *,
         config: AgentConfig,
         registry: ActionRegistry,
-        agent: BrainAgent,
+        agent: Any,
         executor: ActionExecutor,
         speech: SpeechPresenter,
         tts: KokoroAdapter,
@@ -120,6 +119,8 @@ class RuntimeSession:
         clock: Clock | None = None,
         robot_runtime: RobotRuntime | None = None,
         robot_adapters: list[Any] | None = None,
+        brain_backend: str = "claude_sdk",
+        tool_bridge_server: Any | None = None,
     ) -> None:
         """Create a runtime session from prebuilt components."""
         self.config = config
@@ -133,6 +134,8 @@ class RuntimeSession:
         self.robot_tools = RobotIntentTools(robot_runtime) if robot_runtime else None
         self._robot_adapters = list(robot_adapters or [])
         self._robot_adapters_registered = False
+        self.brain_backend = (brain_backend or "claude_sdk").strip().lower()
+        self.tool_bridge_server = tool_bridge_server
         self.clock = clock or _SystemClock()
         self.brain = BrainProcessor(agent)
         self.bus = OutputBus()
@@ -143,7 +146,7 @@ class RuntimeSession:
             self.robot_runtime.dependencies.publish_event = self.bus.publish
         if self.actions._publish is None:
             self.actions._publish = self._publish_action_frame
-        self.pipecat: ReachyPipecatRuntime | None = None
+        self.pipecat: Any | None = None
         self._turn_workers: dict[str, set[str]] = {}
         self._started = False
         self._stopping = False
@@ -197,19 +200,57 @@ class RuntimeSession:
         )
         executor = ActionExecutor(registry=registry, mini=mini)
         actions = ActionDispatcher(executor)
-        agent = BrainAgent(
-            config=config,
-            registry=registry,
-            run_action=actions.run_action,
-            client_factory=client_factory,
-            cwd=cwd,
-            system_prompt_append=system_prompt_append,
-            robot_tools=robot_tools if robot_runtime_config.intent_tools_enabled else None,
-            action_tools_enabled=not (
-                robot_runtime_config.enabled
-                and not robot_runtime_config.legacy_live2d_tools_enabled
-            ),
-        )
+        from reachy_mini.reachy_brain.pi_binary_brain import PiBinaryBrain
+        from reachy_mini.reachy_brain.pi_tool_bridge import PiToolBridge
+        from reachy_mini.reachy_brain.pi_tool_bridge_server import PiToolBridgeServer
+
+        brain_backend = _resolve_brain_backend(config, overrides)
+        use_pi = brain_backend == "pi_rpc"
+
+        tool_bridge_server: PiToolBridgeServer | None = None
+        if use_pi and robot_tools is not None and robot_runtime_config.intent_tools_enabled:
+            bridge_host = os.environ.get("REACHY_RUNTIME_HOST", "127.0.0.1").strip() or "127.0.0.1"
+            bridge_port = int(os.environ.get("REACHY_RUNTIME_PORT", "8787") or 8787)
+            bridge_token = os.environ.get("REACHY_RUNTIME_TOKEN") or None
+            tool_bridge_server = PiToolBridgeServer(
+                PiToolBridge(robot_tools=robot_tools, token=bridge_token),
+                host=bridge_host,
+                port=bridge_port,
+            )
+
+        if use_pi:
+            # Robot tools are registered in the TS extension; do not dual-mount MCP.
+            agent = PiBinaryBrain(
+                config=config,
+                cwd=cwd,
+                system_prompt_append=system_prompt_append,
+                tool_bridge=tool_bridge_server,
+                runtime_url=(
+                    os.environ.get("REACHY_RUNTIME_URL")
+                    or (
+                        f"http://{tool_bridge_server.host}:{tool_bridge_server.port}"
+                        if tool_bridge_server is not None
+                        else "http://127.0.0.1:8787"
+                    )
+                ),
+                runtime_token=os.environ.get("REACHY_RUNTIME_TOKEN") or None,
+                pi_bin=os.environ.get("REACHY_PI_BIN") or None,
+                extension_path=os.environ.get("REACHY_PI_EXT") or None,
+            )
+        else:
+            agent = BrainAgent(
+                config=config,
+                registry=registry,
+                run_action=actions.run_action,
+                client_factory=client_factory,
+                cwd=cwd,
+                system_prompt_append=system_prompt_append,
+                robot_tools=robot_tools if robot_runtime_config.intent_tools_enabled else None,
+                action_tools_enabled=not (
+                    robot_runtime_config.enabled
+                    and not robot_runtime_config.legacy_live2d_tools_enabled
+                ),
+            )
         speech = SpeechPresenter(
             style={"voice": config.speech.voice, "speed": config.speech.speed}
         )
@@ -225,6 +266,8 @@ class RuntimeSession:
             clock=clock,
             robot_runtime=robot_runtime,
             robot_adapters=adapter_build.adapters,
+            brain_backend=brain_backend,
+            tool_bridge_server=tool_bridge_server,
         )
         if robot_tools is not None:
             session.robot_tools = robot_tools
@@ -239,7 +282,17 @@ class RuntimeSession:
         if self.robot_runtime is not None:
             await self._register_robot_adapters()
             await self.robot_runtime.start()
+        # Tool bridge before brain so Pi TS tools can reach RobotIntentTools.
+        if self.tool_bridge_server is not None:
+            await self.tool_bridge_server.start()
+            from reachy_mini.reachy_brain.pi_binary_brain import PiBinaryBrain
+
+            if isinstance(self.agent, PiBinaryBrain):
+                self.agent.runtime_url = self.tool_bridge_server.base_url
         await self.agent.start()
+        # Lazy import: pipecat pulls heavy optional deps (nltk/regex).
+        from .pipecat_runtime import ReachyPipecatRuntime
+
         self.pipecat = ReachyPipecatRuntime(
             bus=self.bus,
             brain=self.brain,
@@ -268,10 +321,12 @@ class RuntimeSession:
         if self.pipecat is not None:
             await self.pipecat.stop()
             self.pipecat = None
-        if self.robot_runtime is not None:
-            await self.robot_runtime.stop()
         await self._stop_sdk_tasks()
         await self.agent.stop()
+        if self.tool_bridge_server is not None:
+            await self.tool_bridge_server.stop()
+        if self.robot_runtime is not None:
+            await self.robot_runtime.stop()
         await self.bus.close()
         self._started = False
         self._stopping = False
@@ -435,6 +490,8 @@ class RuntimeSession:
         frame: SDKMessageFrame,
     ) -> list[object]:
         extra: list[object] = []
+        from reachy_mini.reachy_brain.pipecat_bridge import sdk_message_to_worker_event
+
         worker_frame = sdk_message_to_worker_event(frame)
         if worker_frame is not None:
             extra = await self._handle_worker_event(frame.turn_id, worker_frame, publish=False)
@@ -616,6 +673,31 @@ def _robot_runtime_system_prompt() -> str:
         "speech_relation, timing_anchor, intensity, priority, and constraints; "
         "RobotRuntime will resolve the correct body adapter and capability."
     )
+
+
+def _resolve_brain_backend(
+    config: AgentConfig,
+    overrides: dict[str, Any] | None,
+) -> str:
+    """Resolve brain backend: override > env > profile extras > default claude_sdk."""
+    if overrides:
+        for key in ("brain.backend", "brain_backend"):
+            if key in overrides and overrides[key]:
+                return str(overrides[key]).strip().lower()
+    env = os.environ.get("REACHY_BRAIN_BACKEND", "").strip().lower()
+    if env:
+        return env
+    extras = getattr(config, "extras", {}) or {}
+    for kind in ("brain", "agent"):
+        records = extras.get(kind) or []
+        if isinstance(records, list):
+            for record in records:
+                if not isinstance(record, dict):
+                    continue
+                backend = record.get("backend") or record.get("brain_backend")
+                if backend:
+                    return str(backend).strip().lower()
+    return "claude_sdk"
 
 
 def _read_profile_records(profile_path: Path) -> list[dict[str, Any]]:

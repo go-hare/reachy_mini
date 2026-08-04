@@ -57,6 +57,8 @@
       title: V4 大脑与动作架构
     - local: SDK/robot-runtime-enterprise-plan
       title: 企业级 RobotRuntime 架构规划
+    - local: SDK/pi-robot-agent-integration
+      title: Pi Robot Agent 接入与 L3 后端切换
     - local: SDK/v4-phase1-implementation-plan
       title: V4 Phase 1 落地计划
     - local: SDK/core-concept

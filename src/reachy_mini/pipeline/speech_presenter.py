@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import re
 
-from reachy_mini.reachy_brain.pipecat_bridge import sdk_message_to_speech_frames
-
 from .frames import (
     InterruptFrame,
     SDKMessageFrame,
@@ -33,6 +31,11 @@ class SpeechPresenter:
         if isinstance(frame, SDKMessageFrame):
             if frame.turn_id in self._stopped_turns:
                 return []
+            # Lazy import avoids circular import with reachy_brain.pipecat_bridge.
+            from reachy_mini.reachy_brain.pipecat_bridge import (
+                sdk_message_to_speech_frames,
+            )
+
             raw_frames = sdk_message_to_speech_frames(frame, style=self.style)
             chunks: list[str] = []
             for raw in raw_frames:

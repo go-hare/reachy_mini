@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from reachy_mini.reachy_brain.agent import BrainAgent, BrainTurnInput
+from reachy_mini.reachy_brain.agent import BrainTurnInput
 
 from .frames import (
     BrowserInputFrame,
@@ -22,8 +22,8 @@ from .frames import (
 class BrainProcessor:
     """Convert completed user turns into SDKMessageFrame streams."""
 
-    def __init__(self, agent: BrainAgent) -> None:
-        """Create a processor bound to one SDK-backed Brain agent."""
+    def __init__(self, agent: Any) -> None:
+        """Create a processor bound to one brain agent (Claude SDK or Pi RPC)."""
         self.agent = agent
         self.context_buffer: list[Any] = []
         self.tts_active = False
