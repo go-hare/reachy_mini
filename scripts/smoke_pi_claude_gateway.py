@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""E2E smoke: Pi RPC brain using ~/.claude/settings.json gateway (auto models.json staging)."""
+"""E2E smoke: Pi RPC brain + Claude gateway + Live2D adapter body path."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ import asyncio
 import json
 import os
 import sys
-import tempfile
 import traceback
 from pathlib import Path
 
@@ -29,9 +28,15 @@ from reachy_mini.reachy_brain.pi_binary_brain import (  # noqa: E402
 )
 from reachy_mini.reachy_brain.pi_tool_bridge import PiToolBridge  # noqa: E402
 from reachy_mini.reachy_brain.pi_tool_bridge_server import PiToolBridgeServer  # noqa: E402
+from reachy_mini.robot_runtime.adapters.live2d import Live2DAdapter  # noqa: E402
 from reachy_mini.robot_runtime.config import RobotRuntimeConfig  # noqa: E402
+from reachy_mini.robot_runtime.contracts import RuntimeMode  # noqa: E402
 from reachy_mini.robot_runtime.runtime import RobotRuntime  # noqa: E402
 from reachy_mini.robot_runtime.tools import RobotIntentTools  # noqa: E402
+from reachy_mini.runtime.live2d_avatar import (  # noqa: E402
+    Live2DCapabilities,
+    Live2DNativeAction,
+)
 
 
 def _load_claude_env() -> dict[str, str]:
@@ -43,38 +48,25 @@ def _load_claude_env() -> dict[str, str]:
     return {str(k): str(v) for k, v in env.items()}
 
 
-def _write_temp_models_json(*, base: str, model: str) -> Path:
-    agent_dir = Path(tempfile.mkdtemp(prefix="pi-agent-claude-e2e-"))
-    models = {
-        "providers": {
-            "anthropic": {
-                "baseUrl": base,
-                "api": "anthropic-messages",
-                "apiKey": "$ANTHROPIC_AUTH_TOKEN",
-                "authHeader": True,
-                "models": [
-                    {
-                        "id": model,
-                        "name": "Grok via Claude gateway",
-                        "reasoning": True,
-                        "input": ["text"],
-                        "contextWindow": 200000,
-                        "maxTokens": 8192,
-                        "cost": {
-                            "input": 0,
-                            "output": 0,
-                            "cacheRead": 0,
-                            "cacheWrite": 0,
-                        },
-                    }
-                ],
-            }
-        }
-    }
-    (agent_dir / "models.json").write_text(
-        json.dumps(models, indent=2), encoding="utf-8"
+def _live2d_capabilities() -> Live2DCapabilities:
+    """In-memory IceGirl-like caps so greet resolves without profile assets."""
+    return Live2DCapabilities(
+        model_name="IceGirl",
+        root_url="/static/assets/live2d/IceGirl",
+        vtube_file="IceGirl.vtube.json",
+        model_file="IceGirl.model3.json",
+        idle_motion="DaiJi",
+        motions=("DaiJi", "HuiShou"),
+        expressions=(),
+        motion_details=(
+            Live2DNativeAction(
+                name="HuiShou",
+                file_name="HuiShou.motion3.json",
+                aliases=("greet", "wave"),
+                duration_s=2.0,
+            ),
+        ),
     )
-    return agent_dir
 
 
 async def main() -> int:
@@ -91,7 +83,6 @@ async def main() -> int:
     print("gateway", base, "model", model)
 
     ext = Path(r"D:\work\py\pi\packages\robot-agent\extensions\robot-tools.ts")
-    # Parent env: proxies + auth. models.json is staged by PiBinaryBrain.
     child_env = {
         "ANTHROPIC_AUTH_TOKEN": token,
         "ANTHROPIC_API_KEY": token,
@@ -108,11 +99,28 @@ async def main() -> int:
     }
     os.environ.update(child_env)
 
-    runtime = RobotRuntime(config=RobotRuntimeConfig(enabled=True))
+    frames: list[object] = []
+
+    async def publish_frame(frame: object) -> None:
+        frames.append(frame)
+        print(
+            "FRAME",
+            getattr(frame, "action", None),
+            getattr(frame, "target", None),
+            getattr(frame, "payload", None),
+            getattr(frame, "turn_id", None),
+        )
+
+    runtime = RobotRuntime(
+        config=RobotRuntimeConfig(enabled=True, mode=RuntimeMode.AVATAR_ONLY)
+    )
     tools = RobotIntentTools(runtime)
     bridge_obj = PiToolBridge(robot_tools=tools)
     server = PiToolBridgeServer(bridge_obj, host="127.0.0.1", port=0)
     await runtime.start()
+    await runtime.register_adapter(
+        Live2DAdapter(_live2d_capabilities(), publish_frame=publish_frame)
+    )
     await server.start()
     url = server.base_url
     print("bridge", url)
@@ -139,7 +147,8 @@ async def main() -> int:
         system_prompt_append=(
             "You control a robot body only via the emit_embodied_intent tool. "
             'When the user greets you, you MUST call emit_embodied_intent with '
-            'intent_type="greet" before answering. Then reply briefly in Chinese.'
+            'intent_type="greet" (and modalities=["gesture"] if supported) '
+            "before answering. Then reply briefly in Chinese."
         ),
     )
 
@@ -153,44 +162,33 @@ async def main() -> int:
         if t == "message_update":
             ame = ev.get("assistantMessageEvent") or {}
             summary["ame_type"] = ame.get("type")
-            if ame.get("type") in {"text_delta", "thinking_delta"}:
+            if ame.get("type") == "text_delta":
                 summary["delta"] = str(ame.get("delta") or "")[:80]
         elif t and "tool" in str(t):
             summary["name"] = ev.get("toolName") or ev.get("name") or ev.get("tool")
-            summary["keys"] = list(ev.keys())[:15]
             for k in ("error", "result", "status", "isError"):
                 if k in ev:
-                    summary[k] = str(ev.get(k))[:200]
-        elif "error" in json.dumps(ev, ensure_ascii=False).lower():
-            summary["raw"] = {k: str(v)[:160] for k, v in list(ev.items())[:12]}
-        else:
-            summary["keys"] = list(ev.keys())[:10]
+                    summary[k] = str(ev.get(k))[:240]
         events.append(summary)
-        print("EV", json.dumps(summary, ensure_ascii=False)[:320])
+        if summary.get("ame_type") != "thinking_delta":
+            print("EV", json.dumps(summary, ensure_ascii=False)[:320])
 
     unsub = brain._client.on_event(on_ev)
     turn = BrainTurnInput(
         text="你好，请打个招呼并做个 greet 动作。",
-        turn_id="e2e-claude-1",
-        context="body=live2d; intent_tools_enabled=true",
+        turn_id="e2e-claude-live2d-1",
+        context="body=live2d; intent_tools_enabled=true; adapter=live2d",
     )
     texts: list[str] = []
     results: list[str] = []
     try:
         async for msg in brain.run_turn(turn):
-            print(
-                "MSG",
-                type(msg).__name__,
-                "result=",
-                getattr(msg, "result", None),
-                "content=",
-                getattr(msg, "content", None),
-            )
             if isinstance(msg, AssistantMessage):
                 for block in msg.content:
                     texts.append(getattr(block, "text", "") or "")
             if isinstance(msg, PiResultMessage):
                 results.append(str(msg.result or ""))
+                print("MSG PiResultMessage result=", (msg.result or "")[:200])
     except Exception as exc:
         print("TURN_ERR", type(exc).__name__, exc)
         traceback.print_exc()
@@ -199,17 +197,42 @@ async def main() -> int:
         unsub()
 
     metrics = await tools.query_robot_metrics()
-    log = await tools.query_robot_structured_log(limit=20)
+    log = await tools.query_robot_structured_log(limit=30)
     full_text = "".join(texts).strip()
     print("TEXT", full_text[:800])
-    print("RESULT", results)
-    print("METRICS", metrics)
-    print("LOG", json.dumps(log, ensure_ascii=False)[:1200])
-    print("EVENT_TYPES", [e.get("type") for e in events])
-    print("stderr_tail", (brain._client.stderr if brain._client else "")[-1500:])
+    print("RESULT", [r[:200] for r in results])
+    print(
+        "METRICS",
+        {
+            k: metrics.get(k)
+            for k in (
+                "intent_count",
+                "completed_intent_count",
+                "adapter_success_count",
+                "capability_unresolved_count",
+                "adapter_results_by_adapter",
+            )
+        },
+    )
+    print(
+        "FRAMES",
+        [
+            {
+                "action": getattr(f, "action", None),
+                "target": getattr(f, "target", None),
+                "payload": getattr(f, "payload", None),
+                "turn_id": getattr(f, "turn_id", None),
+            }
+            for f in frames
+        ],
+    )
+    print(
+        "EVENT_TYPES",
+        [e.get("type") for e in events if e.get("type") != "message_update"][:40],
+    )
     try:
         state = await brain._client.get_state()
-        print("STATE", json.dumps(state, ensure_ascii=False)[:1000])
+        print("STATE_MODEL", (state.get("model") or {}).get("id"), (state.get("model") or {}).get("baseUrl"))
     except Exception as exc:
         print("STATE_ERR", exc)
 
@@ -217,21 +240,26 @@ async def main() -> int:
     await server.stop()
     await runtime.stop()
 
-    text_ok = bool(full_text or any(r.strip() for r in results))
-    intent_count = 0
-    if isinstance(metrics, dict):
-        intent_count = int(
-            metrics.get("intent_count")
-            or metrics.get("intents_handled")
-            or (metrics.get("metrics") or {}).get("intent_count")
-            or 0
-        )
-    log_blob = json.dumps(log, ensure_ascii=False).lower()
-    log_intents = log_blob.count("emit_embodied_intent") + log_blob.count(
-        '"intent_type"'
+    intent_count = int(metrics.get("intent_count") or 0)
+    adapter_ok = int(metrics.get("adapter_success_count") or 0)
+    unresolved = int(metrics.get("capability_unresolved_count") or 0)
+    frame_ok = any(
+        getattr(f, "action", None) == "live2d_motion"
+        and (getattr(f, "payload", None) or {}).get("name") == "HuiShou"
+        for f in frames
     )
-    tool_events = sum(1 for e in events if e.get("type") and "tool" in str(e.get("type")))
-    ok = text_ok or intent_count > 0 or tool_events > 0
+    text_ok = bool(full_text or any(r.strip() for r in results))
+    tool_events = sum(
+        1 for e in events if e.get("type") and "tool_execution" in str(e.get("type"))
+    )
+
+    ok = (
+        intent_count >= 1
+        and adapter_ok >= 1
+        and unresolved == 0
+        and frame_ok
+        and tool_events >= 1
+    )
     print(
         "E2E",
         "PASS" if ok else "FAIL",
@@ -239,10 +267,14 @@ async def main() -> int:
         text_ok,
         "intent_count",
         intent_count,
+        "adapter_success",
+        adapter_ok,
+        "unresolved",
+        unresolved,
+        "frame_ok",
+        frame_ok,
         "tool_events",
         tool_events,
-        "log_intents",
-        log_intents,
     )
     return 0 if ok else 1
 

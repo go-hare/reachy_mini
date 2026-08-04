@@ -263,6 +263,7 @@ set REACHY_RUNTIME_URL=http://127.0.0.1:8787
 | Python bridge + RPC host + session switch | 工作区已实现（以 git 为准） |
 | 单元测试 / soft smoke | 已有 |
 | Windows `pi` 可执行解析 | 已修（`resolve_pi_executable`） |
-| 真模型 E2E greet（Claude 网关 + grok-4.5） | 已通：`intent_count=1`，`emit_embodied_intent` 成功（adapter 无 body 时 `capability_unresolved` 属预期） |
+| 真模型 E2E greet（Claude 网关 + grok-4.5） | 已通：`intent_count=1`，`emit_embodied_intent` 成功 |
+| Live2D body 全链路（headless adapter） | 已通：注册 `Live2DAdapter` 后 `adapter_success_count>=1`，frame=`live2d_motion/HuiShou`，`capability_unresolved=0` |
 | 合入默认 profile | 未默认；需 env/profile 显式开启 |
-| Live2D 真 body 全链路 | 仍依赖注册 live2d adapter 的完整 session |
+| 浏览器可见 Live2D 渲染 | 需完整 sim_front_app session + 前端；headless E2E 不覆盖 |
