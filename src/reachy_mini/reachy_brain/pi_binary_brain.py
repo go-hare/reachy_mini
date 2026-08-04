@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
+import tempfile
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +23,9 @@ _DEFAULT_EXT_CANDIDATES = (
     Path(__file__).resolve().parents[4] / "pi" / "packages" / "robot-agent" / "extensions" / "robot-tools.ts",
 )
 
+# Built-in anthropic catalog does not include proxy model ids like grok-4.5.
+_DEFAULT_ANTHROPIC_BASE = "https://api.anthropic.com"
+
 
 def _default_extension_path() -> Path:
     env = os.environ.get("REACHY_PI_EXT", "").strip()
@@ -30,6 +35,99 @@ def _default_extension_path() -> Path:
         if candidate.is_file():
             return candidate
     return _DEFAULT_EXT_CANDIDATES[0]
+
+
+def prepare_pi_agent_dir_for_model(
+    *,
+    provider: str,
+    model: str,
+    base_url: str | None,
+    agent_dir: Path | None = None,
+) -> Path | None:
+    """Stage a temporary ``models.json`` so Pi can use custom base URL / model ids.
+
+    Pi does **not** honor ``ANTHROPIC_BASE_URL`` by itself; custom endpoints and
+    non-catalog model ids (e.g. Claude Code gateway + ``grok-4.5``) need
+    ``~/.pi/agent/models.json`` or ``PI_CODING_AGENT_DIR``.
+    """
+    provider_l = (provider or "").strip().lower()
+    model_id = (model or "").strip()
+    base = (base_url or "").strip().rstrip("/")
+    if not provider_l or provider_l == "mock":
+        return None
+
+    needs_base = bool(base) and base.rstrip("/") != _DEFAULT_ANTHROPIC_BASE.rstrip("/")
+    # Always stage when base_url is custom; also stage anthropic when model looks non-Claude.
+    needs_model = False
+    if provider_l == "anthropic" and model_id:
+        needs_model = not model_id.startswith("claude-")
+    if not needs_base and not needs_model:
+        return None
+
+    root = Path(agent_dir) if agent_dir is not None else Path(
+        tempfile.mkdtemp(prefix="reachy-pi-agent-")
+    )
+    root.mkdir(parents=True, exist_ok=True)
+
+    if provider_l == "anthropic":
+        api = "anthropic-messages"
+        api_key_ref = "$ANTHROPIC_AUTH_TOKEN"
+        provider_block: dict[str, Any] = {
+            "api": api,
+            # Prefer bearer token (Claude Code style); API key also accepted by Pi.
+            "apiKey": api_key_ref,
+            "authHeader": True,
+        }
+        if base:
+            provider_block["baseUrl"] = base
+        if needs_model or needs_base:
+            provider_block["models"] = [
+                {
+                    "id": model_id or "custom-model",
+                    "name": model_id or "custom-model",
+                    "reasoning": True,
+                    "input": ["text"],
+                    "contextWindow": 200000,
+                    "maxTokens": 8192,
+                    "cost": {
+                        "input": 0,
+                        "output": 0,
+                        "cacheRead": 0,
+                        "cacheWrite": 0,
+                    },
+                }
+            ]
+    else:
+        # Generic OpenAI-compatible staging for openai/deepseek-style providers.
+        api = "openai-completions"
+        provider_block = {
+            "api": api,
+            "apiKey": "$OPENAI_API_KEY",
+        }
+        if base:
+            provider_block["baseUrl"] = base
+        provider_block["models"] = [
+            {
+                "id": model_id or "custom-model",
+                "name": model_id or "custom-model",
+                "reasoning": False,
+                "input": ["text"],
+                "contextWindow": 128000,
+                "maxTokens": 8192,
+                "cost": {
+                    "input": 0,
+                    "output": 0,
+                    "cacheRead": 0,
+                    "cacheWrite": 0,
+                },
+            }
+        ]
+
+    payload = {"providers": {provider_l: provider_block}}
+    models_path = root / "models.json"
+    models_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    LOGGER.info("staged pi models.json at %s (provider=%s model=%s)", models_path, provider_l, model_id)
+    return root
 
 
 @dataclass
@@ -73,6 +171,7 @@ class PiBinaryBrain:
         tool_bridge: Any | None = None,
         extra_env: dict[str, str] | None = None,
         client: PiRpcClient | None = None,
+        stage_models_json: bool = True,
     ) -> None:
         self.config = config
         self.extension_path = Path(extension_path) if extension_path else _default_extension_path()
@@ -87,9 +186,11 @@ class PiBinaryBrain:
         self.system_prompt_append = str(system_prompt_append or "").strip()
         self.tool_bridge = tool_bridge
         self.extra_env = dict(extra_env or {})
+        self.stage_models_json = stage_models_json
         self._client = client
         self._owns_client = client is None
         self._started = False
+        self._staged_agent_dir: Path | None = None
         # Robot tools live in the TS extension, not Claude MCP.
         self.robot_tools = None
 
@@ -230,15 +331,39 @@ class PiBinaryBrain:
         }
         if self.runtime_token:
             env["REACHY_RUNTIME_TOKEN"] = self.runtime_token
-        if self.config.model.api_key:
-            env.setdefault("ANTHROPIC_API_KEY", self.config.model.api_key)
-            provider = self.config.model.provider.lower()
-            if provider in {"openai", "deepseek"}:
-                env.setdefault("OPENAI_API_KEY", self.config.model.api_key)
-        if self.config.model.base_url:
-            env.setdefault("ANTHROPIC_BASE_URL", self.config.model.base_url)
 
-        provider = self.config.model.provider or None
+        provider = (self.config.model.provider or "").lower()
+        api_key = (self.config.model.api_key or "").strip()
+        if api_key:
+            # Claude Code uses ANTHROPIC_AUTH_TOKEN (Bearer); Pi also accepts API key.
+            env.setdefault("ANTHROPIC_API_KEY", api_key)
+            env.setdefault("ANTHROPIC_AUTH_TOKEN", api_key)
+            if provider in {"openai", "deepseek"}:
+                env.setdefault("OPENAI_API_KEY", api_key)
+            if provider == "deepseek":
+                env.setdefault("DEEPSEEK_API_KEY", api_key)
+
+        base_url = (self.config.model.base_url or "").strip()
+        if base_url:
+            # Informational for operators / other tools; Pi itself needs models.json.
+            env.setdefault("ANTHROPIC_BASE_URL", base_url)
+
+        # Inherit local proxy settings if the parent shell has them (Claude Code often does).
+        for proxy_key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "NO_PROXY", "no_proxy"):
+            if proxy_key not in env and os.environ.get(proxy_key):
+                env[proxy_key] = os.environ[proxy_key]
+
+        if self.stage_models_json and "PI_CODING_AGENT_DIR" not in env:
+            staged = prepare_pi_agent_dir_for_model(
+                provider=provider,
+                model=self.config.model.model or "",
+                base_url=base_url or None,
+                agent_dir=self._staged_agent_dir,
+            )
+            if staged is not None:
+                self._staged_agent_dir = staged
+                env["PI_CODING_AGENT_DIR"] = str(staged)
+
         model = self.config.model.model or None
         return PiRpcClientOptions(
             pi_bin=self.pi_bin,
@@ -268,13 +393,17 @@ class PiBinaryBrain:
 
 
 def _extract_text_delta(event: dict[str, Any]) -> str:
-    """Pull text deltas out of Pi agent session events."""
+    """Pull *spoken* text deltas out of Pi agent session events.
+
+    Intentionally ignores ``thinking_delta`` so extended-thinking models do not
+    leak chain-of-thought into the speech / Live2D bubble path.
+    """
     if event.get("type") != "message_update":
         return ""
     ame = event.get("assistantMessageEvent") or event.get("assistant_message_event") or {}
     if not isinstance(ame, dict):
         return ""
-    if ame.get("type") in {"text_delta", "thinking_delta"}:
+    if ame.get("type") == "text_delta":
         return str(ame.get("delta") or "")
     if ame.get("type") == "text" and ame.get("text"):
         return str(ame.get("text") or "")
@@ -286,4 +415,5 @@ __all__ = [
     "PiBinaryBrain",
     "PiResultMessage",
     "TextBlock",
+    "prepare_pi_agent_dir_for_model",
 ]

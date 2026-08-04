@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -13,6 +14,7 @@ from reachy_mini.reachy_brain.pi_binary_brain import (
     PiBinaryBrain,
     TextBlock,
     _extract_text_delta,
+    prepare_pi_agent_dir_for_model,
 )
 from reachy_mini.reachy_brain.config import (
     AgentConfig,
@@ -162,7 +164,66 @@ def test_extract_text_delta() -> None:
         )
         == "hi"
     )
+    # thinking must not become speech
+    assert (
+        _extract_text_delta(
+            {
+                "type": "message_update",
+                "assistantMessageEvent": {"type": "thinking_delta", "delta": "secret"},
+            }
+        )
+        == ""
+    )
     assert _extract_text_delta({"type": "agent_settled"}) == ""
+
+
+def test_prepare_pi_agent_dir_for_custom_anthropic(tmp_path) -> None:
+    staged = prepare_pi_agent_dir_for_model(
+        provider="anthropic",
+        model="grok-4.5",
+        base_url="http://204.44.121.220:8317",
+        agent_dir=tmp_path / "agent",
+    )
+    assert staged is not None
+    data = json.loads((staged / "models.json").read_text(encoding="utf-8"))
+    anth = data["providers"]["anthropic"]
+    assert anth["baseUrl"] == "http://204.44.121.220:8317"
+    assert anth["authHeader"] is True
+    assert any(m["id"] == "grok-4.5" for m in anth["models"])
+
+
+def test_prepare_pi_agent_dir_skips_stock_claude() -> None:
+    assert (
+        prepare_pi_agent_dir_for_model(
+            provider="anthropic",
+            model="claude-sonnet-4-6",
+            base_url="https://api.anthropic.com",
+        )
+        is None
+    )
+
+
+def test_client_options_sets_auth_token_and_stages_models(tmp_path) -> None:
+    config = AgentConfig(
+        model=ModelConfig(
+            provider="anthropic",
+            model="grok-4.5",
+            api_key="sk-test",
+            base_url="http://proxy.example:8317",
+        ),
+        speech=SpeechConfig(),
+        speech_input=SpeechInputConfig(),
+        vision=VisionConfig(),
+        extras={},
+    )
+    brain = PiBinaryBrain(config=config, cwd=tmp_path)
+    opts = brain._client_options()
+    assert opts.env.get("ANTHROPIC_AUTH_TOKEN") == "sk-test"
+    assert opts.env.get("ANTHROPIC_API_KEY") == "sk-test"
+    assert opts.env.get("ANTHROPIC_BASE_URL") == "http://proxy.example:8317"
+    assert "PI_CODING_AGENT_DIR" in opts.env
+    staged = Path(opts.env["PI_CODING_AGENT_DIR"])
+    assert (staged / "models.json").is_file()
 
 
 def test_resolve_pi_executable_uses_which(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:

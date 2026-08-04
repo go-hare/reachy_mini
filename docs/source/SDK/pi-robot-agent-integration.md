@@ -128,6 +128,15 @@ pi_rpc      → PiBinaryBrain + pi --mode rpc + TS robot tools + HTTP bridge
 
 模型 key / base_url 仍来自 profile `kind:model`（`AgentConfig`），由 `PiBinaryBrain` 写入子进程 env（`ANTHROPIC_*` / `OPENAI_*` 等）。
 
+**Claude Code / 自定义网关注意：**
+
+| 点 | 说明 |
+|---|---|
+| Auth | Claude Code 常用 `ANTHROPIC_AUTH_TOKEN`（Bearer）。`PiBinaryBrain` 会同时注入 `ANTHROPIC_AUTH_TOKEN` 与 `ANTHROPIC_API_KEY`。 |
+| Base URL | Pi **不会**只靠 `ANTHROPIC_BASE_URL` 改 endpoint。自定义网关 / 非目录模型（如 `grok-4.5`）时，宿主会临时写 `PI_CODING_AGENT_DIR/models.json`（`prepare_pi_agent_dir_for_model`）。 |
+| 代理 | 继承父进程 `HTTP(S)_PROXY` / `NO_PROXY`（若已设置）。 |
+| Speech | 仅 `text_delta` 进气泡；`thinking_delta` 不进 TTS/Live2D。 |
+
 ---
 
 ## 6. HTTP Intent 契约（Pi TS ↔ Python）
@@ -254,5 +263,6 @@ set REACHY_RUNTIME_URL=http://127.0.0.1:8787
 | Python bridge + RPC host + session switch | 工作区已实现（以 git 为准） |
 | 单元测试 / soft smoke | 已有 |
 | Windows `pi` 可执行解析 | 已修（`resolve_pi_executable`） |
-| 真模型 E2E greet/Live2D | 待全链路验收 |
+| 真模型 E2E greet（Claude 网关 + grok-4.5） | 已通：`intent_count=1`，`emit_embodied_intent` 成功（adapter 无 body 时 `capability_unresolved` 属预期） |
 | 合入默认 profile | 未默认；需 env/profile 显式开启 |
+| Live2D 真 body 全链路 | 仍依赖注册 live2d adapter 的完整 session |
